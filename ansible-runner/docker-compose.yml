@@ -1,0 +1,15 @@
+services:
+  ansible:
+    build: .
+    image: ansible-runner:latest
+    environment:
+      HOME: /tmp
+      ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
+      EDITOR: nano
+    volumes:
+      - ./playbooks:/ansible/playbooks
+      - ./inventory:/ansible/inventory
+      # Uncomment to use SSH keys for Linux targets:
+      # - ~/.ssh:/tmp/.ssh:ro
+    # Not long-running: use `docker compose run --rm ansible ...` (see run.sh)
+    profiles: ["run"]

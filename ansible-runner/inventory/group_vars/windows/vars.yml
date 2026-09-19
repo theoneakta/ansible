@@ -1,0 +1,8 @@
+---
+# Plain-text vars. Secrets live in vault.yml (encrypted) and are referenced here.
+ansible_user: "{{ vault_win_user }}"
+ansible_password: "{{ vault_win_password }}"
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_transport: ntlm          # or credssp / kerberos
+ansible_winrm_server_cert_validation: ignore

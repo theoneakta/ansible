@@ -1,0 +1,93 @@
+---
+# Installs / upgrades the software list on Windows hosts using Chocolatey.
+#
+# Requirements (control node):
+#   ansible-galaxy collection install chocolatey.chocolatey ansible.windows
+#
+# Inventory: hosts in group "windows" (WinRM or SSH connection).
+# Run:  ansible-playbook -i inventory install_software.yml
+#       ansible-playbook -i inventory install_software.yml -e wazuh_manager=10.0.0.5
+
+- name: Install latest versions of standard software
+  hosts: windows
+  gather_facts: false
+
+  vars:
+    # Set to your Wazuh manager IP/FQDN to auto-enroll the agent
+    wazuh_manager: ""
+
+    # state: latest -> installs if missing, upgrades if outdated
+    choco_packages:
+      # --- Confident package IDs ---
+      - { name: 7zip,             label: 7zip }
+      - { name: adobereader,      label: Acrobat (Reader) }
+      - { name: advanced-renamer, label: Advanced Renamer }
+      - { name: etcher,           label: balenaEtcher }
+      - { name: bulkrenameutility, label: Bulk Rename Utility }
+      - { name: filebot,          label: FileBot }
+      - { name: git,              label: Git }
+      - { name: googlechrome,     label: Chrome }
+      - { name: googledrive,      label: Google Drive }
+      - { name: temurin,          label: Java (Eclipse Temurin, latest) }
+      - { name: vscode,           label: VS Code }
+      - { name: firefox,          label: Firefox }
+      - { name: notepadplusplus,  label: Notepad++ }
+      - { name: potplayer,        label: PotPlayer }
+      - { name: powertoys,        label: PowerToys }
+      - { name: rambox,           label: Rambox }
+      - { name: rpi-imager,       label: Raspberry Pi Imager }
+      - { name: rdm,              label: Remote Desktop Manager }
+      - { name: screenpresso,     label: Screenpresso }
+      - { name: steam-client,     label: Steam }
+      - { name: tailscale,        label: Tailscale }
+      - { name: winscp,           label: WinSCP }
+      # --- Verify these IDs with: choco search <name> ---
+      - { name: pdfgear,          label: PDFgear }
+      - { name: battle.net,       label: Battle.net }
+
+  tasks:
+    - name: Ensure Chocolatey is installed
+      chocolatey.chocolatey.win_chocolatey:
+        name: chocolatey
+        state: present
+
+    - name: Install / upgrade packages to latest
+      chocolatey.chocolatey.win_chocolatey:
+        name: "{{ item.name }}"
+        state: latest
+        ignore_checksums: false
+      loop: "{{ choco_packages }}"
+      loop_control:
+        label: "{{ item.label }}"
+      register: choco_results
+      ignore_errors: true   # one bad package ID shouldn't stop the rest
+
+    - name: Install Wazuh agent (needs manager address)
+      chocolatey.chocolatey.win_chocolatey:
+        name: wazuh-agent
+        state: latest
+        package_params: "/WAZUH_MANAGER={{ wazuh_manager }}"
+      when: wazuh_manager | length > 0
+
+    - name: Warn about Wazuh agent being skipped
+      ansible.builtin.debug:
+        msg: "wazuh_manager not set - Wazuh agent skipped."
+      when: wazuh_manager | length == 0
+
+    - name: Report packages that failed
+      ansible.builtin.debug:
+        msg: "FAILED: {{ item.item.label }} ({{ item.item.name }}) - check package ID"
+      loop: "{{ choco_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.failed | default(false)
+
+    - name: Items that need manual install (not in Chocolatey / licensed / unclear)
+      ansible.builtin.debug:
+        msg:
+          - "Bitdefender            - deploy from your Bitdefender/GravityZone console (tenant-specific installer)"
+          - "Punch! Software 22     - commercial, no public package; deploy your licensed installer"
+          - "Duplicate Cleaner Pro  - licensed; deploy your installer/key"
+          - "DownloadHelper         - browser extension (+ optional CoApp); deploy via browser policy"
+          - "Deadpool / Future Fragments - unclear what these are; please confirm"
+          - "Plantronics Hub        - now Poly Lens; verify with 'choco search poly' or deploy installer"
