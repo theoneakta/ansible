@@ -27,6 +27,8 @@ ansible-runner/
 │   └── host_vars/<host>/       # optional per-host overrides
 ├── playbooks/
 │   └── install_software.yml
+├── scripts/
+│   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
 └── gui/                        # web GUI (own Dockerfile, started via --gui)
     ├── app.py
     ├── static/index.html
@@ -147,6 +149,16 @@ vault_win_password: theirpassword
 ```
 
 Host-level values override the group default for that host.
+
+## Preparing a target Windows PC
+
+Before adding a PC to the inventory, enable WinRM/HTTPS on it. From an elevated PowerShell prompt **on that PC**:
+
+```powershell
+.\scripts\setup-winrm-ssl.ps1
+```
+
+This enables WinRM, creates a self-signed certificate and HTTPS listener on port 5986, opens the firewall, enables NTLM (Negotiate) auth, and - importantly - sets `LocalAccountTokenFilterPolicy=1` so a local (non-domain) administrator account other than the built-in `Administrator` can authenticate over the network at all. Without that registry value, WinRM rejects an otherwise-correct username/password from any other local admin account with a plain "Access is denied", which looks identical to a wrong password. It also raises WinRM's default operation timeout and per-shell quotas, which are too tight for long-running tasks like installing a large package via Chocolatey. Safe to re-run - it only changes what isn't already set.
 
 ## Inventory and connection settings
 
