@@ -6,6 +6,21 @@
 #   ./run.sh --shell                     bash in the container
 #   ./run.sh --build                     (re)build image
 #
+# Convenience install params (translated to `-e key=value` for you):
+#   --wazuh-manager <ip|fqdn>            Wazuh manager address (installs the agent)
+#   --wazuh-port <port>                  default: 1514
+#   --wazuh-protocol <tcp|udp>           default: tcp
+#   --wazuh-group <group>
+#   --wazuh-agent-name <name>
+#   --wazuh-registration-password <pw>
+#   --tailscale-authkey <key>            join the tailnet on install
+#   --git-name <name>                    git config --global user.name
+#   --git-email <email>                  git config --global user.email
+# Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
+#
+# Example:
+#   ./run.sh install_software.yml --wazuh-manager 10.0.0.5 --tailscale-authkey tskey-...
+#
 # Vault:
 #   ./run.sh --vault-init                create .vault_pass + encrypted group creds
 #   ./run.sh --vault-edit [file]         edit (default: group_vars/windows/vault.yml)
@@ -46,6 +61,7 @@ case "${1:-}" in
     cat > "$DEFAULT_VAULT" <<'YML'
 vault_win_user: administrator
 vault_win_password: changeme
+vault_tailscale_authkey: ""
 YML
     vault encrypt "$DEFAULT_VAULT"
     echo "Now run: ./run.sh --vault-edit   (set the real username/password)"
@@ -58,5 +74,24 @@ YML
                   mkdir -p "$(dirname "$2")"; vault create "$2" ;;
 
   "") echo "Usage: $0 <playbook.yml> [args] | --ping | --shell | --build | --vault-*"; exit 1 ;;
-  *)  pb="$1"; shift; "${RUN[@]}" ansible "playbooks/${pb}" "$@" "${VAULT_ARGS[@]}" ;;
+  *)
+    pb="$1"; shift
+    EXTRA_VARS=()
+    PASSTHRU=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --wazuh-manager)               EXTRA_VARS+=(-e "wazuh_manager=$2"); shift 2 ;;
+        --wazuh-port)                  EXTRA_VARS+=(-e "wazuh_manager_port=$2"); shift 2 ;;
+        --wazuh-protocol)              EXTRA_VARS+=(-e "wazuh_protocol=$2"); shift 2 ;;
+        --wazuh-group)                 EXTRA_VARS+=(-e "wazuh_group=$2"); shift 2 ;;
+        --wazuh-agent-name)            EXTRA_VARS+=(-e "wazuh_agent_name=$2"); shift 2 ;;
+        --wazuh-registration-password) EXTRA_VARS+=(-e "wazuh_registration_password=$2"); shift 2 ;;
+        --tailscale-authkey)           EXTRA_VARS+=(-e "tailscale_authkey=$2"); shift 2 ;;
+        --git-name)                    EXTRA_VARS+=(-e "git_user_name=$2"); shift 2 ;;
+        --git-email)                   EXTRA_VARS+=(-e "git_user_email=$2"); shift 2 ;;
+        *) PASSTHRU+=("$1"); shift ;;
+      esac
+    done
+    "${RUN[@]}" ansible "playbooks/${pb}" "${PASSTHRU[@]}" "${EXTRA_VARS[@]}" "${VAULT_ARGS[@]}"
+    ;;
 esac
