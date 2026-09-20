@@ -30,6 +30,12 @@
     git_user_name: ""
     git_user_email: ""
 
+    # WSL + latest Ubuntu: enabling the underlying Windows features can require
+    # a reboot to finish. Off by default since a PC provisioning run shouldn't
+    # reboot someone's machine out from under them; set to true (or
+    # -e wsl_allow_reboot=true / --wsl-allow-reboot) to let it reboot and finish.
+    wsl_allow_reboot: false
+
     # state: latest -> installs if missing, upgrades if outdated
     choco_packages:
       # --- Confident package IDs ---
@@ -75,6 +81,48 @@
         label: "{{ item.label }}"
       register: choco_results
       ignore_errors: true   # one bad package ID shouldn't stop the rest
+
+    - name: Check installed WSL distros
+      ansible.windows.win_shell: >-
+        (wsl --list --quiet | Out-String) -replace '\x00', ''
+      register: wsl_distros_before
+      changed_when: false
+      failed_when: false
+
+    - name: Install WSL with the latest Ubuntu
+      ansible.windows.win_shell: wsl --install -d Ubuntu
+      register: wsl_install
+      when: "'Ubuntu' not in (wsl_distros_before.stdout | default(''))"
+      changed_when: wsl_install.rc == 0
+      failed_when: wsl_install.rc != 0
+
+    - name: Reboot to finish the WSL/Ubuntu install
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: wsl_install is changed and wsl_allow_reboot | bool
+
+    - name: Re-check installed WSL distros after reboot
+      ansible.windows.win_shell: >-
+        (wsl --list --quiet | Out-String) -replace '\x00', ''
+      register: wsl_distros_after
+      when: wsl_install is changed and wsl_allow_reboot | bool
+      changed_when: false
+      failed_when: false
+
+    - name: Finish the WSL/Ubuntu install after reboot
+      ansible.windows.win_shell: wsl --install -d Ubuntu
+      when: >-
+        wsl_install is changed and wsl_allow_reboot | bool
+        and ('Ubuntu' not in (wsl_distros_after.stdout | default('')))
+      changed_when: true
+
+    - name: Warn that a reboot is needed to finish the WSL/Ubuntu install
+      ansible.builtin.debug:
+        msg: >-
+          WSL/Ubuntu install may need a reboot to finish. Re-run this playbook after
+          rebooting, or pass -e wsl_allow_reboot=true (--wsl-allow-reboot from run.sh)
+          to let this run reboot the PC automatically.
+      when: wsl_install is changed and not (wsl_allow_reboot | bool)
 
     - name: Install Wazuh agent (needs manager address)
       chocolatey.chocolatey.win_chocolatey:

@@ -13,3 +13,21 @@ services:
       # - ~/.ssh:/tmp/.ssh:ro
     # Not long-running: use `docker compose run --rm ansible ...` (see run.sh)
     profiles: ["run"]
+
+  gui:
+    build:
+      context: .
+      dockerfile: gui/Dockerfile
+    image: ansible-gui:latest
+    environment:
+      HOME: /tmp
+      ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
+    volumes:
+      - ./playbooks:/ansible/playbooks
+      - ./inventory:/ansible/inventory
+      - ./gui/data:/ansible/gui-data
+      - ./.vault_pass:/run/secrets/vault_pass:ro
+    ports:
+      - "127.0.0.1:8080:8000"
+    # Long-running web server, started/stopped via `./run.sh --gui` / `--gui-stop`.
+    profiles: ["gui"]
