@@ -12,6 +12,9 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -207,6 +210,64 @@ def list_packages() -> list[dict]:
     return docs[0]["vars"]["choco_packages"]
 
 
+PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
+
+CHOCO_NS = {
+    "atom": "http://www.w3.org/2005/Atom",
+    "d": "http://schemas.microsoft.com/ado/2007/08/dataservices",
+    "m": "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata",
+}
+
+
+def search_chocolatey(term: str, limit: int = 20) -> list[dict]:
+    query = {
+        "$filter": "IsLatestVersion",
+        "$skip": "0",
+        "$top": str(limit),
+        "searchTerm": "'" + term.replace("'", "''") + "'",
+        "targetFramework": "''",
+        "includePrerelease": "false",
+    }
+    url = "https://community.chocolatey.org/api/v2/Search()?" + urllib.parse.urlencode(query)
+    req = urllib.request.Request(url, headers={"User-Agent": "ansible-runner-gui/1.0", "Accept": "application/atom+xml"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+        root = ET.fromstring(data)
+    except Exception as e:
+        raise HTTPException(502, f"Could not search the Chocolatey package index: {e}")
+
+    results = []
+    for entry in root.findall("atom:entry", CHOCO_NS):
+        pkg_id = (entry.findtext("atom:title", default="", namespaces=CHOCO_NS) or "").strip()
+        if not pkg_id:
+            continue
+        props = entry.find("m:properties", CHOCO_NS)
+        title = ((props.findtext("d:Title", default="", namespaces=CHOCO_NS) if props is not None else "") or pkg_id).strip()
+        version = ((props.findtext("d:Version", default="", namespaces=CHOCO_NS) if props is not None else "") or "").strip()
+        summary = " ".join((entry.findtext("atom:summary", default="", namespaces=CHOCO_NS) or "").split())
+        if len(summary) > 220:
+            summary = summary[:220].rsplit(" ", 1)[0] + "..."
+        results.append({"id": pkg_id, "title": title, "version": version, "summary": summary})
+    return results
+
+
+def add_package_to_playbook(name: str, label: str) -> None:
+    if name in {p["name"] for p in list_packages()}:
+        raise HTTPException(400, f"Package '{name}' is already in the list.")
+
+    path = BASE / PLAYBOOK
+    text = path.read_text()
+    match = re.search(r"^(\s*)tasks:[ \t]*\r?\n", text, flags=re.MULTILINE)
+    if not match:
+        raise HTTPException(500, "Could not find the 'tasks:' section in the playbook.")
+
+    label_escaped = label.replace("\\", "\\\\").replace('"', '\\"')
+    new_line = f'      - {{ name: {name}, label: "{label_escaped}" }}\n'
+    insert_at = match.start()
+    path.write_text(text[:insert_at] + new_line + text[insert_at:])
+
+
 def list_wsl_distros() -> list[dict]:
     docs = yaml.safe_load((BASE / PLAYBOOK).read_text())
     return docs[0]["vars"].get("wsl_distros_available", [])
@@ -320,6 +381,29 @@ def api_test_host(name: str):
 @app.get("/api/packages")
 def api_packages():
     return list_packages()
+
+
+class PackageIn(BaseModel):
+    name: str
+    label: Optional[str] = None
+
+
+@app.post("/api/packages")
+def api_add_package(body: PackageIn):
+    name = body.name.strip()
+    if not PACKAGE_ID_RE.match(name):
+        raise HTTPException(400, "Invalid package id - use letters, numbers, dots, and hyphens only.")
+    label = (body.label or name).strip()[:120] or name
+    add_package_to_playbook(name, label)
+    return {"ok": True, "name": name, "label": label}
+
+
+@app.get("/api/chocolatey/search")
+def api_chocolatey_search(q: str = ""):
+    q = q.strip()
+    if len(q) < 2:
+        raise HTTPException(400, "Search term must be at least 2 characters.")
+    return search_chocolatey(q)
 
 
 @app.get("/api/wsl-distros")
