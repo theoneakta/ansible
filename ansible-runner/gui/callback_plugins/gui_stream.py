@@ -53,6 +53,14 @@ class CallbackModule(CallbackBase):
         return str(item)
 
     def _record(self, result, *, failed=False, skipped=False, unreachable=False):
+        # Looped tasks fire this once per item via the v2_runner_item_on_*
+        # hooks, then ansible-core fires v2_runner_on_ok/failed once more for
+        # the task as a whole with an aggregated "results" list and no item -
+        # skip that aggregate call so per-package rows aren't drowned out by
+        # one generic entry.
+        if "results" in result._result:
+            return
+
         host = result._host.get_name()
         task_name = result._task.get_name()
         changed = bool(result._result.get("changed"))
@@ -91,6 +99,15 @@ class CallbackModule(CallbackBase):
 
     def v2_runner_on_unreachable(self, result):
         self._record(result, unreachable=True)
+
+    def v2_runner_item_on_ok(self, result):
+        self._record(result)
+
+    def v2_runner_item_on_failed(self, result):
+        self._record(result, failed=True)
+
+    def v2_runner_item_on_skipped(self, result):
+        self._record(result, skipped=True)
 
     def v2_playbook_on_stats(self, stats):
         summary = {}
