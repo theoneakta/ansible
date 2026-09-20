@@ -21,7 +21,8 @@
 #   --tailscale-authkey <key>            join the tailnet on install
 #   --git-name <name>                    git config --global user.name
 #   --git-email <email>                  git config --global user.email
-#   --wsl-allow-reboot                   let WSL/Ubuntu install reboot the PC if needed
+#   --wsl-distro <name>                  install this WSL distro (repeatable; omit to skip WSL entirely)
+#   --wsl-allow-reboot                   let the WSL distro install reboot the PC if needed
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
 # Example:
@@ -93,6 +94,7 @@ YML
     pb="$1"; shift
     EXTRA_VARS=()
     PASSTHRU=()
+    WSL_DISTROS=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --wazuh-manager)               EXTRA_VARS+=(-e "wazuh_manager=$2"); shift 2 ;;
@@ -104,10 +106,15 @@ YML
         --tailscale-authkey)           EXTRA_VARS+=(-e "tailscale_authkey=$2"); shift 2 ;;
         --git-name)                    EXTRA_VARS+=(-e "git_user_name=$2"); shift 2 ;;
         --git-email)                   EXTRA_VARS+=(-e "git_user_email=$2"); shift 2 ;;
+        --wsl-distro)                  WSL_DISTROS+=("$2"); shift 2 ;;
         --wsl-allow-reboot)            EXTRA_VARS+=(-e "wsl_allow_reboot=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
     done
+    if [[ ${#WSL_DISTROS[@]} -gt 0 ]]; then
+      json=$(printf '"%s",' "${WSL_DISTROS[@]}"); json="[${json%,}]"
+      EXTRA_VARS+=(-e "wsl_enabled=true" -e "wsl_distros_selected=$json")
+    fi
     "${RUN[@]}" ansible "playbooks/${pb}" "${PASSTHRU[@]}" "${EXTRA_VARS[@]}" "${VAULT_ARGS[@]}"
     ;;
 esac

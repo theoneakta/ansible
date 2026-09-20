@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -30,11 +31,12 @@ DATA_DIR = pathlib.Path("/ansible/gui-data")
 DB_PATH = DATA_DIR / "history.db"
 VAULT_PASS_FILE = pathlib.Path("/run/secrets/vault_pass")
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
+CALLBACK_PLUGINS_DIR = pathlib.Path(__file__).parent / "callback_plugins"
 
 TASK_KIND = {
     "Install / upgrade packages to latest": "loop",
-    "Install WSL with the latest Ubuntu": "single",
-    "Finish the WSL/Ubuntu install after reboot": "single",
+    "Install selected WSL distros": "loop",
+    "Finish any WSL distro installs after reboot": "loop",
     "Install Wazuh agent (needs manager address)": "single",
     "Join Tailscale tailnet with auth key": "single",
     "Configure Git global user.name": "single",
@@ -55,8 +57,18 @@ def vault_password_args() -> list[str]:
     return ["--vault-password-file", str(VAULT_PASS_FILE)] if has_vault_pass() else []
 
 
+def db_connect() -> sqlite3.Connection:
+    # WAL lets the frequent live-log polling reads proceed while a run's
+    # background thread is writing results; busy_timeout retries instead of
+    # raising "database is locked" on the rare overlap.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,9 +121,95 @@ def add_host_to_inventory(name: str) -> None:
     HOSTS_FILE.write_text(new_text)
 
 
+def get_winrm_port() -> int:
+    vars_path = INVENTORY_DIR / "group_vars" / "windows" / "vars.yml"
+    try:
+        data = yaml.safe_load(vars_path.read_text()) or {}
+        return int(data.get("ansible_port", 5986))
+    except (OSError, ValueError, TypeError):
+        return 5986
+
+
+def check_ping(host: str) -> dict:
+    try:
+        proc = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", host], capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0:
+            return {"ok": True, "detail": "Host replied to ICMP ping."}
+        return {"ok": False, "detail": "No ICMP reply (often blocked by Windows Firewall by default - not necessarily a problem on its own)."}
+    except FileNotFoundError:
+        return {"ok": None, "detail": "ping is not available in this container."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "Ping timed out."}
+
+
+def check_tcp_port(host: str, port: int, timeout: float = 3.0) -> dict:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return {"ok": True, "detail": f"Connected to port {port}."}
+    except socket.timeout:
+        return {"ok": False, "detail": f"Timed out connecting to port {port}."}
+    except ConnectionRefusedError:
+        return {"ok": False, "detail": f"Port {port} is closed (connection refused)."}
+    except OSError as e:
+        return {"ok": False, "detail": f"Could not reach port {port}: {e}"}
+
+
+def check_winrm(host: str) -> dict:
+    if not has_vault_pass():
+        return {"ok": False, "detail": "No vault password file on the server - cannot authenticate."}
+    cmd = ["ansible", host, "-m", "ansible.windows.win_ping"] + vault_password_args()
+    env = os.environ.copy()
+    env.setdefault("HOME", "/tmp")
+    env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE), env=env, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "WinRM check timed out after 30 seconds."}
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return {"ok": proc.returncode == 0, "detail": output[-1500:] or "(no output)"}
+
+
+def test_host(host: str) -> dict:
+    port = get_winrm_port()
+    ping = check_ping(host)
+    tcp = check_tcp_port(host, port)
+    winrm = check_winrm(host)
+
+    if winrm["ok"]:
+        summary = "Connected successfully - credentials and WinRM are working."
+    elif not tcp["ok"]:
+        if ping["ok"] is False:
+            summary = (
+                f"Host looks unreachable on the network (no ping reply, port {port} closed). "
+                "Check the IP/VLAN and that the PC is powered on and networked."
+            )
+        else:
+            summary = (
+                f"Network reachable but WinRM port {port} is closed. "
+                "Check WinRM is enabled (`winrm quickconfig`) and the firewall allows that port."
+            )
+    else:
+        summary = "WinRM port is open but the connection failed - likely a credentials or WinRM configuration issue. See details below."
+
+    return {
+        "host": host,
+        "ping": ping,
+        "port": {**tcp, "port": port},
+        "winrm": winrm,
+        "summary": summary,
+    }
+
+
 def list_packages() -> list[dict]:
     docs = yaml.safe_load((BASE / PLAYBOOK).read_text())
     return docs[0]["vars"]["choco_packages"]
+
+
+def list_wsl_distros() -> list[dict]:
+    docs = yaml.safe_load((BASE / PLAYBOOK).read_text())
+    return docs[0]["vars"].get("wsl_distros_available", [])
 
 
 def vault_file_for_target(target: str) -> pathlib.Path:
@@ -126,13 +224,24 @@ def redact(extra_vars: dict) -> dict:
     return redacted
 
 
-def record_run(started, finished, hosts, extra_vars, status, error, stats, per_host) -> int:
-    conn = sqlite3.connect(DB_PATH)
+def start_run_record(started, hosts, extra_vars) -> int:
+    conn = db_connect()
     cur = conn.execute(
         "INSERT INTO runs (started_at, finished_at, hosts, params, status, error) VALUES (?,?,?,?,?,?)",
-        (started, finished, json.dumps(hosts or ["<all>"]), json.dumps(redact(extra_vars)), status, error),
+        (started, None, json.dumps(hosts or ["<all>"]), json.dumps(redact(extra_vars)), "running", None),
     )
     run_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def finalize_run(run_id, finished, status, error, stats, per_host) -> None:
+    conn = db_connect()
+    conn.execute(
+        "UPDATE runs SET finished_at = ?, status = ?, error = ? WHERE id = ?",
+        (finished, status, error, run_id),
+    )
     if per_host:
         for host, items in per_host.items():
             for it in items:
@@ -149,7 +258,38 @@ def record_run(started, finished, hosts, extra_vars, status, error, stats, per_h
             )
     conn.commit()
     conn.close()
-    return run_id
+
+
+def build_per_host(host_events: dict, stats: dict) -> dict:
+    """Turns the callback's flat per-host event list into the same
+    {host: [{"package": label, "status": ...}]} shape the GUI renders."""
+    per_host: dict[str, list] = {}
+    for host, events in host_events.items():
+        bucket = per_host.setdefault(host, [])
+        for e in events:
+            kind = TASK_KIND.get(e["task"])
+            if not kind:
+                continue
+            label = (e["item"] or "?") if kind == "loop" else e["task"]
+            if e.get("unreachable"):
+                status = "unreachable"
+            elif e.get("failed"):
+                status = "failed"
+            elif e.get("changed"):
+                status = "installed/upgraded" if kind == "loop" else "done"
+            else:
+                status = "already up to date" if kind == "loop" else "no change"
+            bucket.append({"package": label, "status": status})
+
+    for host, s in stats.items():
+        bucket = per_host.setdefault(host, [])
+        if not bucket and (s.get("unreachable") or s.get("failures")):
+            bucket.append({
+                "package": "(connection)",
+                "status": "unreachable" if s.get("unreachable") else "failed",
+            })
+
+    return per_host
 
 
 @app.get("/api/hosts")
@@ -170,9 +310,21 @@ def api_add_host(body: HostIn):
     return {"ok": True, "name": name}
 
 
+@app.post("/api/hosts/{name}/test")
+def api_test_host(name: str):
+    if name not in {h["name"] for h in list_hosts()}:
+        raise HTTPException(404, f"Host '{name}' not found in inventory.")
+    return test_host(name)
+
+
 @app.get("/api/packages")
 def api_packages():
     return list_packages()
+
+
+@app.get("/api/wsl-distros")
+def api_wsl_distros():
+    return list_wsl_distros()
 
 
 @app.get("/api/credentials/status")
@@ -256,6 +408,7 @@ class RunIn(BaseModel):
     wazuh: Optional[WazuhParams] = None
     tailscale_authkey: Optional[str] = None
     git: Optional[GitParams] = None
+    wsl_distros: list[str] = []  # empty = WSL step skipped entirely
     wsl_allow_reboot: bool = False
 
 
@@ -263,6 +416,9 @@ def build_extra_vars(body: RunIn) -> dict:
     extra_vars: dict = {}
     if body.packages:
         extra_vars["choco_packages_selected"] = json.dumps(body.packages)
+    if body.wsl_distros:
+        extra_vars["wsl_enabled"] = "true"
+        extra_vars["wsl_distros_selected"] = json.dumps(body.wsl_distros)
     if body.wazuh and body.wazuh.manager:
         extra_vars["wazuh_manager"] = body.wazuh.manager
         if body.wazuh.port:
@@ -287,48 +443,41 @@ def build_extra_vars(body: RunIn) -> dict:
     return extra_vars
 
 
-def parse_run_output(stdout: str) -> tuple[dict, dict]:
-    """Returns (stats, per_host_package_results)."""
-    data = json.loads(stdout)
-    stats = data.get("stats", {})
-    per_host: dict[str, list] = {}
+def run_log_path(run_id: int) -> pathlib.Path:
+    return DATA_DIR / f"run-{run_id}.log"
 
-    for play in data.get("plays", []):
-        for task in play.get("tasks", []):
-            tname = task.get("task", {}).get("name")
-            kind = TASK_KIND.get(tname)
-            if not kind:
-                continue
-            for host, hostres in task.get("hosts", {}).items():
-                bucket = per_host.setdefault(host, [])
-                if kind == "loop":
-                    for r in hostres.get("results", []):
-                        if r.get("skipped"):
-                            continue
-                        item = r.get("item", {})
-                        label = item.get("label") or item.get("name") or "?"
-                        if r.get("failed"):
-                            status = "failed"
-                        elif r.get("changed"):
-                            status = "installed/upgraded"
-                        else:
-                            status = "already up to date"
-                        bucket.append({"package": label, "status": status})
-                else:
-                    if hostres.get("skipped"):
-                        continue
-                    status = "failed" if hostres.get("failed") else ("done" if hostres.get("changed") else "no change")
-                    bucket.append({"package": tname, "status": status})
 
-    for host, s in stats.items():
-        bucket = per_host.setdefault(host, [])
-        if not bucket and (s.get("unreachable") or s.get("failures")):
-            bucket.append({
-                "package": "(connection)",
-                "status": "unreachable" if s.get("unreachable") else "failed",
-            })
+def run_result_path(run_id: int) -> pathlib.Path:
+    return DATA_DIR / f"run-{run_id}.result.json"
 
-    return stats, per_host
+
+def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
+    try:
+        try:
+            subprocess.run(cmd, cwd=str(BASE), env=env, capture_output=True, text=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            finished = datetime.now(timezone.utc).isoformat()
+            finalize_run(run_id, finished, "timeout", "Run exceeded 30 minute timeout", {}, {})
+            return
+
+        finished = datetime.now(timezone.utc).isoformat()
+        result_path = run_result_path(run_id)
+        if result_path.exists():
+            data = json.loads(result_path.read_text())
+            stats = data.get("stats", {})
+            per_host = build_per_host(data.get("host_events", {}), stats)
+            overall_status = "failed" if any(
+                s.get("failures", 0) > 0 or s.get("unreachable", 0) > 0 for s in stats.values()
+            ) else "success"
+            error = None
+        else:
+            stats, per_host = {}, {}
+            overall_status = "error"
+            error = run_log_path(run_id).read_text()[-4000:] if run_log_path(run_id).exists() else "No output produced."
+
+        finalize_run(run_id, finished, overall_status, error, stats, per_host)
+    finally:
+        run_lock.release()
 
 
 @app.post("/api/run")
@@ -347,48 +496,61 @@ def api_run(body: RunIn):
             cmd += ["-e", f"{k}={v}"]
         cmd += vault_password_args()
 
+        started = datetime.now(timezone.utc).isoformat()
+        run_id = start_run_record(started, body.hosts, extra_vars)
+
+        log_path = run_log_path(run_id)
+        log_path.write_text("")
+
         env = os.environ.copy()
-        env["ANSIBLE_STDOUT_CALLBACK"] = "json"
+        env["ANSIBLE_STDOUT_CALLBACK"] = "gui_stream"
+        env["ANSIBLE_CALLBACK_PLUGINS"] = str(CALLBACK_PLUGINS_DIR)
+        env["GUI_LOG_PATH"] = str(log_path)
+        env["GUI_RESULT_PATH"] = str(run_result_path(run_id))
         env.setdefault("HOME", "/tmp")
         env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
 
-        started = datetime.now(timezone.utc).isoformat()
-        try:
-            proc = subprocess.run(cmd, cwd=str(BASE), env=env, capture_output=True, text=True, timeout=1800)
-        except subprocess.TimeoutExpired:
-            finished = datetime.now(timezone.utc).isoformat()
-            record_run(started, finished, body.hosts, extra_vars, "timeout", "Run exceeded 30 minute timeout", {}, {})
-            raise HTTPException(504, "Ansible run timed out after 30 minutes.")
-
-        finished = datetime.now(timezone.utc).isoformat()
-
-        try:
-            stats, per_host = parse_run_output(proc.stdout)
-            overall_status = "failed" if any(
-                s.get("failures", 0) > 0 or s.get("unreachable", 0) > 0 for s in stats.values()
-            ) else "success"
-            error = None
-        except (json.JSONDecodeError, KeyError, TypeError):
-            stats, per_host = {}, {}
-            overall_status = "error"
-            error = (proc.stderr or proc.stdout or "")[-4000:]
-
-        run_id = record_run(started, finished, body.hosts, extra_vars, overall_status, error, stats, per_host)
-
-        return {
-            "run_id": run_id,
-            "status": overall_status,
-            "stats": stats,
-            "hosts": per_host,
-            "error": error,
-        }
-    finally:
+        threading.Thread(target=_execute_run, args=(run_id, cmd, env), daemon=True).start()
+    except Exception:
         run_lock.release()
+        raise
+
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.get("/api/run/{run_id}/log")
+def api_run_log(run_id: int):
+    conn = db_connect()
+    row = conn.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Run not found.")
+    log_path = run_log_path(run_id)
+    text = log_path.read_text() if log_path.exists() else ""
+    return {"log": text, "status": row[0], "done": row[0] != "running"}
+
+
+@app.get("/api/run/{run_id}")
+def api_run_status(run_id: int):
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    r = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not r:
+        conn.close()
+        raise HTTPException(404, "Run not found.")
+    results = conn.execute(
+        "SELECT host, package, status FROM run_results WHERE run_id = ?", (run_id,)
+    ).fetchall()
+    conn.close()
+    by_host: dict[str, list] = {}
+    for row in results:
+        by_host.setdefault(row["host"], []).append({"package": row["package"], "status": row["status"]})
+    return {"run_id": r["id"], "status": r["status"], "error": r["error"], "hosts": by_host}
 
 
 @app.get("/api/history")
 def api_history(limit: int = 20):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     conn.row_factory = sqlite3.Row
     runs = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     out = []
