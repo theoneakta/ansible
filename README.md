@@ -25,8 +25,12 @@ ansible-runner/
 │   │   ├── vars.yml            # connection settings (plain text)
 │   │   └── vault.yml           # encrypted credentials (created by --vault-init)
 │   └── host_vars/<host>/       # optional per-host overrides
-└── playbooks/
-    └── install_software.yml
+├── playbooks/
+│   └── install_software.yml
+└── gui/                        # web GUI (own Dockerfile, started via --gui)
+    ├── app.py
+    ├── static/index.html
+    └── data/                   # run history SQLite db, gitignored
 ```
 
 `playbooks/` and `inventory/` are mounted into the container, so edits take effect immediately without rebuilding.
@@ -50,6 +54,7 @@ ansible-runner/
 | `./run.sh --ping` | `win_ping` against the `windows` group |
 | `./run.sh --shell` | Open a bash shell in the container |
 | `./run.sh --build` | Build or rebuild the image |
+| `./run.sh --gui` | Start the [web GUI](#web-gui) at `http://localhost:8080` |
 
 Examples:
 
@@ -74,6 +79,7 @@ Examples:
 | `--tailscale-authkey <key>` | Joins the tailnet with this key right after install (overrides the vault default, see below) |
 | `--git-name <name>` | Sets `git config --global user.name` |
 | `--git-email <email>` | Sets `git config --global user.email` |
+| `--wsl-allow-reboot` | Let the run reboot the PC if needed to finish installing WSL/Ubuntu (see below) |
 
 ```bash
 ./run.sh install_software.yml \
@@ -82,6 +88,32 @@ Examples:
 ```
 
 **Tailscale auth key default:** so you don't have to pass `--tailscale-authkey` on every run, store it in the vault as `vault_tailscale_authkey` (new vaults created with `--vault-init` already include an empty placeholder for it; for an existing vault run `./run.sh --vault-edit` and add the line). `vars.yml` maps it to `tailscale_authkey`, which every host uses by default; `--tailscale-authkey` on the command line still overrides it for a one-off run (e.g. a different tailnet).
+
+## Web GUI
+
+A small web UI runs the playbook without touching a terminal. It runs entirely in its own Docker container (`gui` service) alongside the `ansible` container - nothing is installed on the Windows/host machine.
+
+```bash
+./run.sh --vault-init     # must exist first - the GUI needs it to reach hosts
+./run.sh --gui            # builds (first time) and starts it
+```
+
+Open http://localhost:8080 (bound to localhost only). From there you can:
+
+- **Hosts** - pick specific hosts from `inventory/hosts.yml`, or run against all of them.
+- **Credentials** - set the Windows username/password (and default Tailscale key) for the group or a specific host. Submitting encrypts the values straight into the matching vault file (`group_vars/windows/vault.yml` or `host_vars/<host>/vault.yml`) using Ansible Vault; the GUI never displays them back.
+- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), and whether WSL/Ubuntu is allowed to reboot the PC to finish installing - the same params as the [CLI flags](#install-time-parameters) above.
+- **History** - every run is logged (SQLite, persisted under `gui/data/`) with a per-host, per-package breakdown of what installed, what was already up to date, and what failed.
+
+Manage it with:
+
+| Command | What it does |
+|---|---|
+| `./run.sh --gui` | Build (if needed) and start the GUI at `http://localhost:8080` |
+| `./run.sh --gui-stop` | Stop it |
+| `./run.sh --gui-logs` | Tail its logs |
+
+**Security note:** the GUI can trigger installs on real machines using the stored vault credentials, and lets anyone who can reach it write new credentials into the vault. The port is bound to `127.0.0.1` by default (see `docker-compose.yml`) - keep it that way unless you put a trusted reverse proxy with auth in front of it.
 
 ## Credentials (Ansible Vault)
 
@@ -136,6 +168,7 @@ For Linux targets, uncomment the `~/.ssh` mount in `docker-compose.yml` and add 
 - Packages are installed one at a time with `ignore_errors`, so one bad package ID does not stop the run. A summary lists any that failed.
 - `pdfgear` and `battle.net` are less certain package IDs. Verify with `choco search <name>`.
 - The Wazuh agent only installs if you pass `-e wazuh_manager=<ip-or-fqdn>`.
+- **WSL + latest Ubuntu** installs on every run via `wsl --install -d Ubuntu` (skipped if Ubuntu is already registered). Requires Windows 10 2004+/Windows 11. Enabling the underlying Windows features can require a reboot to finish - by default the playbook just warns and leaves the PC running; pass `--wsl-allow-reboot` (or `-e wsl_allow_reboot=true`) to let it reboot and complete automatically. Note the distro's first launch still needs an interactive step to create the Linux user account (`wsl -d Ubuntu`), which isn't automated here.
 - Some items are not installable via Chocolatey (Bitdefender, Punch! Software, Duplicate Cleaner Pro, DownloadHelper, Plantronics Hub / Poly Lens). The playbook prints them at the end as a manual-install reminder.
 
 To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourplaybook.yml`.

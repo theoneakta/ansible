@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ansible Install Runner</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: .3rem; }
+  section { margin-bottom: 1rem; }
+  fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: .75rem; }
+  legend { padding: 0 .4rem; }
+  label { display: inline-block; min-width: 11rem; }
+  input[type=text], input[type=password], select { padding: .3rem; min-width: 16rem; }
+  .row { margin-bottom: .5rem; }
+  .params { margin-left: 1.5rem; display: none; }
+  .params.open { display: block; }
+  button { padding: .5rem 1rem; cursor: pointer; }
+  #runBtn { font-size: 1rem; }
+  .badge { padding: .1rem .5rem; border-radius: 4px; font-size: .8rem; }
+  .ok { background: #1a7f37; color: white; }
+  .fail { background: #c0392b; color: white; }
+  .neutral { background: #8884; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  td, th { border: 1px solid #8884; padding: .3rem .5rem; text-align: left; font-size: .9rem; }
+  .warning { background: #f1c40f33; border: 1px solid #f1c40f; padding: .6rem; border-radius: 6px; }
+  details { border: 1px solid #8884; border-radius: 6px; padding: .5rem; margin-bottom: .5rem; }
+  summary { cursor: pointer; }
+  #runStatus { margin-top: .5rem; }
+  .muted { opacity: .7; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Ansible Install Runner</h1>
+<div id="vaultWarning" class="warning" style="display:none;">
+  No vault password file found on the server. Run <code>./run.sh --vault-init</code> on the Docker host first, then reload this page.
+</div>
+
+<h2>1. Hosts</h2>
+<section id="hostsSection">
+  <div class="row"><label><input type="checkbox" id="allHosts" checked> All hosts</label></div>
+  <div id="hostList"></div>
+</section>
+
+<h2>2. Credentials</h2>
+<section>
+  <div class="row">
+    <label for="credTarget">Apply to</label>
+    <select id="credTarget"></select>
+  </div>
+  <div class="row"><label for="credUser">Windows username</label><input type="text" id="credUser" placeholder="administrator"></div>
+  <div class="row"><label for="credPass">Windows password</label><input type="password" id="credPass"></div>
+  <div class="row"><label for="credTailscale">Tailscale auth key (default for all runs)</label><input type="text" id="credTailscale" placeholder="tskey-auth-..."></div>
+  <div class="row"><button id="saveCredsBtn">Save to vault</button> <span id="credStatus" class="muted"></span></div>
+  <p class="muted">Values are encrypted with Ansible Vault on save and are never displayed back here.</p>
+</section>
+
+<h2>3. Install parameters</h2>
+<section>
+  <fieldset>
+    <legend><label><input type="checkbox" id="wazuhToggle"> Install Wazuh agent</label></legend>
+    <div class="params" id="wazuhParams">
+      <div class="row"><label for="wazuhManager">Manager IP/FQDN *</label><input type="text" id="wazuhManager"></div>
+      <div class="row"><label for="wazuhPort">Port</label><input type="text" id="wazuhPort" placeholder="1514"></div>
+      <div class="row"><label for="wazuhProtocol">Protocol</label>
+        <select id="wazuhProtocol"><option value="">(default tcp)</option><option value="tcp">tcp</option><option value="udp">udp</option></select>
+      </div>
+      <div class="row"><label for="wazuhGroup">Agent group</label><input type="text" id="wazuhGroup"></div>
+      <div class="row"><label for="wazuhAgentName">Agent name</label><input type="text" id="wazuhAgentName"></div>
+      <div class="row"><label for="wazuhRegPass">Registration password</label><input type="password" id="wazuhRegPass"></div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><label><input type="checkbox" id="tailscaleToggle"> Override Tailscale key for this run</label></legend>
+    <div class="params" id="tailscaleParams">
+      <div class="row"><label for="tailscaleKey">Auth key</label><input type="text" id="tailscaleKey"></div>
+      <p class="muted">Leave unchecked to use the key stored in vault (recommended).</p>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><label><input type="checkbox" id="gitToggle"> Set Git global identity</label></legend>
+    <div class="params" id="gitParams">
+      <div class="row"><label for="gitName">Name</label><input type="text" id="gitName"></div>
+      <div class="row"><label for="gitEmail">Email</label><input type="text" id="gitEmail"></div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>WSL + latest Ubuntu</legend>
+    <p class="muted">Installed on every run automatically (skipped if already present). Enabling the underlying Windows feature can require a reboot to finish.</p>
+    <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
+  </fieldset>
+
+  <button id="runBtn">Install now</button>
+  <div id="runStatus"></div>
+  <div id="runResult"></div>
+</section>
+
+<h2>4. History</h2>
+<section id="historySection"></section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function toggleParams(toggleId, paramsId) {
+  const t = $(toggleId), p = $(paramsId);
+  const sync = () => p.classList.toggle('open', t.checked);
+  t.addEventListener('change', sync);
+  sync();
+}
+toggleParams('wazuhToggle', 'wazuhParams');
+toggleParams('tailscaleToggle', 'tailscaleParams');
+toggleParams('gitToggle', 'gitParams');
+
+let hostsCache = [];
+
+async function loadHosts() {
+  const hosts = await fetch('/api/hosts').then(r => r.json());
+  hostsCache = hosts;
+  const list = $('hostList');
+  list.innerHTML = '';
+  hosts.forEach(h => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginLeft = '1.5rem';
+    row.innerHTML = `<label><input type="checkbox" class="hostCheck" value="${h.name}" disabled>
+      ${h.name} ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>`;
+    list.appendChild(row);
+  });
+  const credTarget = $('credTarget');
+  credTarget.innerHTML = '<option value="group">Group default (all hosts)</option>' +
+    hosts.map(h => `<option value="${h.name}">${h.name} (override)</option>`).join('');
+}
+
+$('allHosts').addEventListener('change', () => {
+  document.querySelectorAll('.hostCheck').forEach(c => { c.disabled = $('allHosts').checked; });
+});
+
+function selectedHosts() {
+  if ($('allHosts').checked) return [];
+  return [...document.querySelectorAll('.hostCheck:checked')].map(c => c.value);
+}
+
+async function loadCredStatus() {
+  const status = await fetch('/api/credentials/status').then(r => r.json());
+  $('vaultWarning').style.display = status.vault_pass_configured ? 'none' : 'block';
+}
+
+$('saveCredsBtn').addEventListener('click', async () => {
+  const body = {
+    target: $('credTarget').value,
+    username: $('credUser').value || null,
+    password: $('credPass').value || null,
+    tailscale_authkey: $('credTailscale').value || null,
+  };
+  $('credStatus').textContent = 'Saving...';
+  try {
+    const res = await fetch('/api/credentials', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed');
+    $('credStatus').textContent = `Saved to ${data.file}`;
+    $('credUser').value = ''; $('credPass').value = ''; $('credTailscale').value = '';
+    loadHosts();
+  } catch (e) {
+    $('credStatus').textContent = 'Error: ' + e.message;
+  }
+});
+
+function statusClass(status) {
+  if (['failed', 'unreachable', 'error'].includes(status)) return 'fail';
+  if (['installed/upgraded', 'done', 'success'].includes(status)) return 'ok';
+  return 'neutral';
+}
+
+function renderHostResults(container, hostsResults) {
+  container.innerHTML = '';
+  Object.entries(hostsResults).forEach(([host, items]) => {
+    const table = document.createElement('table');
+    table.innerHTML = `<tr><th colspan="2">${host}</th></tr>` +
+      items.map(it => `<tr><td>${it.package}</td><td><span class="badge ${statusClass(it.status)}">${it.status}</span></td></tr>`).join('');
+    container.appendChild(table);
+  });
+}
+
+$('runBtn').addEventListener('click', async () => {
+  const body = { hosts: selectedHosts() };
+  if ($('wazuhToggle').checked) {
+    if (!$('wazuhManager').value) { alert('Wazuh manager address is required.'); return; }
+    body.wazuh = {
+      manager: $('wazuhManager').value,
+      port: $('wazuhPort').value || null,
+      protocol: $('wazuhProtocol').value || null,
+      group: $('wazuhGroup').value || null,
+      agent_name: $('wazuhAgentName').value || null,
+      registration_password: $('wazuhRegPass').value || null,
+    };
+  }
+  if ($('tailscaleToggle').checked && $('tailscaleKey').value) {
+    body.tailscale_authkey = $('tailscaleKey').value;
+  }
+  if ($('gitToggle').checked) {
+    body.git = { name: $('gitName').value || null, email: $('gitEmail').value || null };
+  }
+  body.wsl_allow_reboot = $('wslRebootToggle').checked;
+
+  $('runBtn').disabled = true;
+  $('runStatus').textContent = 'Running... this can take several minutes.';
+  $('runResult').innerHTML = '';
+  try {
+    const res = await fetch('/api/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Run failed');
+    $('runStatus').innerHTML = `Run #${data.run_id}: <span class="badge ${statusClass(data.status)}">${data.status}</span>`;
+    renderHostResults($('runResult'), data.hosts || {});
+    if (data.error) {
+      const pre = document.createElement('pre');
+      pre.textContent = data.error;
+      $('runResult').appendChild(pre);
+    }
+    loadHistory();
+  } catch (e) {
+    $('runStatus').textContent = 'Error: ' + e.message;
+  } finally {
+    $('runBtn').disabled = false;
+  }
+});
+
+async function loadHistory() {
+  const runs = await fetch('/api/history').then(r => r.json());
+  const section = $('historySection');
+  section.innerHTML = '';
+  if (!runs.length) { section.innerHTML = '<p class="muted">No runs yet.</p>'; return; }
+  runs.forEach(r => {
+    const det = document.createElement('details');
+    const hostsLabel = (r.hosts[0] === '<all>') ? 'all hosts' : r.hosts.join(', ');
+    det.innerHTML = `<summary>#${r.id} - ${new Date(r.started_at).toLocaleString()} -
+      <span class="badge ${statusClass(r.status)}">${r.status}</span> - ${hostsLabel}</summary>`;
+    const body = document.createElement('div');
+    renderHostResults(body, r.results);
+    if (r.error) {
+      const pre = document.createElement('pre');
+      pre.textContent = r.error;
+      body.appendChild(pre);
+    }
+    det.appendChild(body);
+    section.appendChild(det);
+  });
+}
+
+loadHosts();
+loadCredStatus();
+loadHistory();
+</script>
+</body>
+</html>

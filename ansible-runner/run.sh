@@ -6,6 +6,11 @@
 #   ./run.sh --shell                     bash in the container
 #   ./run.sh --build                     (re)build image
 #
+# Web GUI (runs in its own container, nothing installed on the host):
+#   ./run.sh --gui                       build (if needed) and start at http://localhost:8080
+#   ./run.sh --gui-stop                  stop it
+#   ./run.sh --gui-logs                  tail its logs
+#
 # Convenience install params (translated to `-e key=value` for you):
 #   --wazuh-manager <ip|fqdn>            Wazuh manager address (installs the agent)
 #   --wazuh-port <port>                  default: 1514
@@ -16,6 +21,7 @@
 #   --tailscale-authkey <key>            join the tailnet on install
 #   --git-name <name>                    git config --global user.name
 #   --git-email <email>                  git config --global user.email
+#   --wsl-allow-reboot                   let WSL/Ubuntu install reboot the PC if needed
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
 # Example:
@@ -67,13 +73,22 @@ YML
     echo "Now run: ./run.sh --vault-edit   (set the real username/password)"
     ;;
 
+  --gui)
+    [[ -f "$PASSFILE" ]] || { echo "No $PASSFILE found. Run ./run.sh --vault-init first (the GUI needs it to reach hosts)."; exit 1; }
+    mkdir -p gui/data
+    docker compose --profile gui up -d --build gui
+    echo "GUI running at http://localhost:8080"
+    ;;
+  --gui-stop) docker compose --profile gui stop gui ;;
+  --gui-logs) docker compose --profile gui logs -f gui ;;
+
   --vault-edit)   vault edit   "${2:-$DEFAULT_VAULT}" ;;
   --vault-view)   vault view   "${2:-$DEFAULT_VAULT}" ;;
   --vault-rekey)  vault rekey  "${2:-$DEFAULT_VAULT}" ;;
   --vault-create) [[ -n "${2:-}" ]] || { echo "Usage: $0 --vault-create <file>"; exit 1; }
                   mkdir -p "$(dirname "$2")"; vault create "$2" ;;
 
-  "") echo "Usage: $0 <playbook.yml> [args] | --ping | --shell | --build | --vault-*"; exit 1 ;;
+  "") echo "Usage: $0 <playbook.yml> [args] | --ping | --shell | --build | --gui* | --vault-*"; exit 1 ;;
   *)
     pb="$1"; shift
     EXTRA_VARS=()
@@ -89,6 +104,7 @@ YML
         --tailscale-authkey)           EXTRA_VARS+=(-e "tailscale_authkey=$2"); shift 2 ;;
         --git-name)                    EXTRA_VARS+=(-e "git_user_name=$2"); shift 2 ;;
         --git-email)                   EXTRA_VARS+=(-e "git_user_email=$2"); shift 2 ;;
+        --wsl-allow-reboot)            EXTRA_VARS+=(-e "wsl_allow_reboot=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
     done
