@@ -105,6 +105,13 @@
       loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
       loop_control:
         label: "{{ item.label }}"
+      # Large installers can take minutes to download; a synchronous WinRM
+      # call that long risks hitting the connection's read/operation timeout
+      # mid-download, which aborts the WHOLE loop (remaining packages never
+      # even attempted) rather than just that one item. async+poll avoids
+      # holding a single WinRM request open for the full install duration.
+      async: 1800
+      poll: 15
       register: choco_results
       ignore_errors: true   # one bad package ID shouldn't stop the rest
 
