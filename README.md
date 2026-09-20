@@ -79,7 +79,8 @@ Examples:
 | `--tailscale-authkey <key>` | Joins the tailnet with this key right after install (overrides the vault default, see below) |
 | `--git-name <name>` | Sets `git config --global user.name` |
 | `--git-email <email>` | Sets `git config --global user.email` |
-| `--wsl-allow-reboot` | Let the run reboot the PC if needed to finish installing WSL/Ubuntu (see below) |
+| `--wsl-distro <name>` | Install this WSL distro (repeatable for multiple; omit entirely to skip WSL) |
+| `--wsl-allow-reboot` | Let the run reboot the PC if needed to finish the WSL distro install(s) (see below) |
 
 ```bash
 ./run.sh install_software.yml \
@@ -100,9 +101,10 @@ A small web UI runs the playbook without touching a terminal. It runs entirely i
 
 Open http://localhost:8080 (bound to localhost only). From there you can:
 
-- **Hosts** - pick specific hosts from `inventory/hosts.yml`, or run against all of them.
+- **Hosts** - pick specific hosts from `inventory/hosts.yml`, run against all of them, or add a new host (name/IP) straight into the inventory.
 - **Credentials** - set the Windows username/password (and default Tailscale key) for the group or a specific host. Submitting encrypts the values straight into the matching vault file (`group_vars/windows/vault.yml` or `host_vars/<host>/vault.yml`) using Ansible Vault; the GUI never displays them back.
-- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), and whether WSL/Ubuntu is allowed to reboot the PC to finish installing - the same params as the [CLI flags](#install-time-parameters) above.
+- **Software** - check "All packages" (default) or uncheck it to pick specific packages from the list in `install_software.yml` for this run.
+- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), and WSL - opt in, pick one or more distros to install, and whether the run may reboot the PC to finish - the same params as the [CLI flags](#install-time-parameters) above.
 - **History** - every run is logged (SQLite, persisted under `gui/data/`) with a per-host, per-package breakdown of what installed, what was already up to date, and what failed.
 
 Manage it with:
@@ -168,7 +170,7 @@ For Linux targets, uncomment the `~/.ssh` mount in `docker-compose.yml` and add 
 - Packages are installed one at a time with `ignore_errors`, so one bad package ID does not stop the run. A summary lists any that failed.
 - `pdfgear` and `battle.net` are less certain package IDs. Verify with `choco search <name>`.
 - The Wazuh agent only installs if you pass `-e wazuh_manager=<ip-or-fqdn>`.
-- **WSL + latest Ubuntu** installs on every run via `wsl --install -d Ubuntu` (skipped if Ubuntu is already registered). Requires Windows 10 2004+/Windows 11. Enabling the underlying Windows features can require a reboot to finish - by default the playbook just warns and leaves the PC running; pass `--wsl-allow-reboot` (or `-e wsl_allow_reboot=true`) to let it reboot and complete automatically. Note the distro's first launch still needs an interactive step to create the Linux user account (`wsl -d Ubuntu`), which isn't automated here.
+- **WSL is opt-in**: off by default, and skipped entirely unless you pass one or more `--wsl-distro <name>` flags (or `-e wsl_enabled=true -e 'wsl_distros_selected=["Ubuntu"]'`) - see `wsl_distros_available` in the playbook for the built-in list (Ubuntu variants, Debian, Kali Linux, openSUSE, Fedora, AlmaLinux, Oracle Linux); any name from `wsl --list --online` works even if not in that list. Already-installed distros are skipped. Requires Windows 10 2004+/Windows 11. Enabling the underlying Windows feature for the first distro on a machine can require a reboot to finish - by default the playbook just warns and leaves the PC running; pass `--wsl-allow-reboot` (or `-e wsl_allow_reboot=true`) to let it reboot and complete automatically. Note a distro's first launch still needs an interactive step to create the Linux user account (`wsl -d <name>`), which isn't automated here.
 - Some items are not installable via Chocolatey (Bitdefender, Punch! Software, Duplicate Cleaner Pro, DownloadHelper, Plantronics Hub / Poly Lens). The playbook prints them at the end as a manual-install reminder.
 
 To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourplaybook.yml`.

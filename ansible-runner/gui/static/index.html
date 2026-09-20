@@ -29,6 +29,18 @@
   summary { cursor: pointer; }
   #runStatus { margin-top: .5rem; }
   .muted { opacity: .7; font-size: .85rem; }
+  #liveLog {
+    margin-top: .5rem; max-height: 16rem; overflow-y: auto; padding: .6rem;
+    background: #0d1117; color: #c9d1d9; border-radius: 6px; font-size: .8rem;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .hostTestBox {
+    margin: .4rem 0 .75rem 1.5rem; padding: .5rem .75rem; border: 1px solid #8884; border-radius: 6px;
+  }
+  .hostTestBox pre {
+    max-height: 10rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+    background: #0d1117; color: #c9d1d9; padding: .5rem; border-radius: 4px; font-size: .75rem;
+  }
 </style>
 </head>
 <body>
@@ -101,13 +113,17 @@
   </fieldset>
 
   <fieldset>
-    <legend>WSL + latest Ubuntu</legend>
-    <p class="muted">Installed on every run automatically (skipped if already present). Enabling the underlying Windows feature can require a reboot to finish.</p>
-    <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
+    <legend><label><input type="checkbox" id="wslToggle"> Install WSL distro(s)</label></legend>
+    <div class="params" id="wslParams">
+      <div id="wslDistroList" style="columns: 2; margin-bottom: .5rem;"></div>
+      <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
+      <p class="muted">Already-installed distros are skipped. Enabling the underlying Windows feature can require a reboot to finish; if not allowed, the run warns and you can re-run later.</p>
+    </div>
   </fieldset>
 
   <button id="runBtn">Install now</button>
   <div id="runStatus"></div>
+  <pre id="liveLog" style="display:none;"></pre>
   <div id="runResult"></div>
 </section>
 
@@ -126,6 +142,7 @@ function toggleParams(toggleId, paramsId) {
 toggleParams('wazuhToggle', 'wazuhParams');
 toggleParams('tailscaleToggle', 'tailscaleParams');
 toggleParams('gitToggle', 'gitParams');
+toggleParams('wslToggle', 'wslParams');
 
 let hostsCache = [];
 
@@ -139,8 +156,14 @@ async function loadHosts() {
     row.className = 'row';
     row.style.marginLeft = '1.5rem';
     row.innerHTML = `<label><input type="checkbox" class="hostCheck" value="${h.name}" disabled>
-      ${h.name} ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>`;
+      ${h.name} ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>
+      <button class="testHostBtn" data-host="${h.name}">Test</button>
+      <span class="testHostStatus muted" data-host="${h.name}"></span>`;
     list.appendChild(row);
+    const resultDiv = document.createElement('div');
+    resultDiv.className = 'testHostResult';
+    resultDiv.dataset.host = h.name;
+    list.appendChild(resultDiv);
   });
   const credTarget = $('credTarget');
   credTarget.innerHTML = '<option value="group">Group default (all hosts)</option>' +
@@ -155,6 +178,66 @@ function selectedHosts() {
   if ($('allHosts').checked) return [];
   return [...document.querySelectorAll('.hostCheck:checked')].map(c => c.value);
 }
+
+function badgeRow(label, res, opts = {}) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const badgeClass = res.ok === true ? 'ok' : (res.ok === false ? 'fail' : 'neutral');
+  const badgeText = res.ok === true ? 'ok' : (res.ok === false ? 'fail' : 'unknown');
+  const b = document.createElement('span');
+  b.className = `badge ${badgeClass}`;
+  b.textContent = `${label}: ${badgeText}`;
+  row.appendChild(b);
+  if (opts.inlineDetail !== false) {
+    const d = document.createElement('span');
+    d.className = 'muted';
+    d.style.marginLeft = '.5rem';
+    d.textContent = res.detail;
+    row.appendChild(d);
+  }
+  return row;
+}
+
+function renderHostTest(container, data) {
+  container.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'hostTestBox';
+  box.appendChild(badgeRow('Ping', data.ping));
+  box.appendChild(badgeRow(`Port ${data.port.port}`, data.port));
+  box.appendChild(badgeRow('WinRM / credentials', data.winrm, { inlineDetail: false }));
+  const summary = document.createElement('p');
+  summary.className = 'muted';
+  summary.textContent = data.summary;
+  box.appendChild(summary);
+  if (!data.winrm.ok) {
+    const pre = document.createElement('pre');
+    pre.textContent = data.winrm.detail;
+    box.appendChild(pre);
+  }
+  container.appendChild(box);
+}
+
+$('hostList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.testHostBtn');
+  if (!btn) return;
+  const host = btn.dataset.host;
+  const statusEl = document.querySelector(`.testHostStatus[data-host="${CSS.escape(host)}"]`);
+  const resultEl = document.querySelector(`.testHostResult[data-host="${CSS.escape(host)}"]`);
+  btn.disabled = true;
+  statusEl.textContent = 'Testing... (can take up to 30s)';
+  resultEl.innerHTML = '';
+  try {
+    const res = await fetch(`/api/hosts/${encodeURIComponent(host)}/test`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Test failed');
+    statusEl.textContent = '';
+    renderHostTest(resultEl, data);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 async function addHost() {
   const name = $('newHost').value.trim();
@@ -189,12 +272,29 @@ async function loadPackages() {
 }
 
 $('allPackages').addEventListener('change', () => {
-  document.querySelectorAll('.packageCheck').forEach(c => { c.disabled = $('allPackages').checked; });
+  const all = $('allPackages').checked;
+  document.querySelectorAll('.packageCheck').forEach(c => { c.disabled = all; c.checked = all; });
 });
 
 function selectedPackages() {
   if ($('allPackages').checked) return [];
   return [...document.querySelectorAll('.packageCheck:checked')].map(c => c.value);
+}
+
+async function loadWslDistros() {
+  const distros = await fetch('/api/wsl-distros').then(r => r.json());
+  const list = $('wslDistroList');
+  list.innerHTML = '';
+  distros.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label><input type="checkbox" class="wslDistroCheck" value="${d.name}"> ${d.label}</label>`;
+    list.appendChild(row);
+  });
+}
+
+function selectedWslDistros() {
+  return [...document.querySelectorAll('.wslDistroCheck:checked')].map(c => c.value);
 }
 
 async function loadCredStatus() {
@@ -263,22 +363,42 @@ $('runBtn').addEventListener('click', async () => {
   if ($('gitToggle').checked) {
     body.git = { name: $('gitName').value || null, email: $('gitEmail').value || null };
   }
-  body.wsl_allow_reboot = $('wslRebootToggle').checked;
+  if ($('wslToggle').checked) {
+    const distros = selectedWslDistros();
+    if (!distros.length) { alert('Select at least one WSL distro to install.'); return; }
+    body.wsl_distros = distros;
+    body.wsl_allow_reboot = $('wslRebootToggle').checked;
+  }
 
   $('runBtn').disabled = true;
-  $('runStatus').textContent = 'Running... this can take several minutes.';
+  $('runStatus').innerHTML = 'Starting...';
   $('runResult').innerHTML = '';
+  const log = $('liveLog');
+  log.textContent = '';
+  log.style.display = 'block';
   try {
     const res = await fetch('/api/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Run failed');
-    $('runStatus').innerHTML = `Run #${data.run_id}: <span class="badge ${statusClass(data.status)}">${data.status}</span>`;
-    renderHostResults($('runResult'), data.hosts || {});
-    if (data.error) {
+    if (!res.ok) throw new Error(data.detail || 'Failed to start run');
+    const runId = data.run_id;
+    $('runStatus').innerHTML = `Run #${runId}: <span class="badge neutral">running</span>`;
+
+    while (true) {
+      const logData = await fetch(`/api/run/${runId}/log`).then(r => r.json());
+      log.textContent = logData.log;
+      log.scrollTop = log.scrollHeight;
+      if (logData.done) break;
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    const final = await fetch(`/api/run/${runId}`).then(r => r.json());
+    $('runStatus').innerHTML = `Run #${runId}: <span class="badge ${statusClass(final.status)}">${final.status}</span>`;
+    renderHostResults($('runResult'), final.hosts || {});
+    if (final.error) {
       const pre = document.createElement('pre');
-      pre.textContent = data.error;
+      pre.textContent = final.error;
       $('runResult').appendChild(pre);
     }
     loadHistory();
@@ -313,6 +433,7 @@ async function loadHistory() {
 
 loadHosts();
 loadPackages();
+loadWslDistros();
 loadCredStatus();
 loadHistory();
 </script>

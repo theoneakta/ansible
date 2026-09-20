@@ -30,11 +30,30 @@
     git_user_name: ""
     git_user_email: ""
 
-    # WSL + latest Ubuntu: enabling the underlying Windows features can require
-    # a reboot to finish. Off by default since a PC provisioning run shouldn't
-    # reboot someone's machine out from under them; set to true (or
-    # -e wsl_allow_reboot=true / --wsl-allow-reboot) to let it reboot and finish.
+    # WSL: off by default - only runs when explicitly enabled with distro(s) picked.
+    wsl_enabled: false
+    wsl_distros_selected: []   # e.g. ["Ubuntu", "kali-linux"]
+
+    # Enabling the underlying Windows feature for the first WSL distro on a
+    # machine can require a reboot to finish. Off by default since a PC
+    # provisioning run shouldn't reboot someone's machine out from under them;
+    # set to true (or -e wsl_allow_reboot=true / --wsl-allow-reboot) to let it
+    # reboot and finish automatically.
     wsl_allow_reboot: false
+
+    # Distros installable via `wsl --install -d <name>` (see `wsl --list --online`
+    # on a Windows host for the current catalog).
+    wsl_distros_available:
+      - { name: Ubuntu,                label: "Ubuntu (latest)" }
+      - { name: Ubuntu-24.04,          label: "Ubuntu 24.04 LTS" }
+      - { name: Ubuntu-22.04,          label: "Ubuntu 22.04 LTS" }
+      - { name: Debian,                label: Debian }
+      - { name: kali-linux,            label: Kali Linux }
+      - { name: openSUSE-Tumbleweed,   label: "openSUSE Tumbleweed" }
+      - { name: openSUSE-Leap-15.6,    label: "openSUSE Leap 15.6" }
+      - { name: FedoraLinux-42,        label: "Fedora Linux 42" }
+      - { name: AlmaLinux-9,           label: "AlmaLinux 9" }
+      - { name: OracleLinux_9_5,       label: "Oracle Linux 9.5" }
 
     # Which packages to install this run, by name (see choco_packages below).
     # Empty/unset = install everything in the list.
@@ -52,7 +71,9 @@
       - { name: git,              label: Git }
       - { name: googlechrome,     label: Chrome }
       - { name: googledrive,      label: Google Drive }
+      - { name: handbrake,        label: HandBrake }
       - { name: temurin,          label: Java (Eclipse Temurin, latest) }
+      - { name: jdownloader,      label: JDownloader }
       - { name: vscode,           label: VS Code }
       - { name: firefox,          label: Firefox }
       - { name: notepadplusplus,  label: Notepad++ }
@@ -64,6 +85,7 @@
       - { name: screenpresso,     label: Screenpresso }
       - { name: steam-client,     label: Steam }
       - { name: tailscale,        label: Tailscale }
+      - { name: windirstat,       label: WinDirStat }
       - { name: winscp,           label: WinSCP }
       # --- Verify these IDs with: choco search <name> ---
       - { name: pdfgear,          label: PDFgear }
@@ -92,41 +114,46 @@
       register: wsl_distros_before
       changed_when: false
       failed_when: false
+      when: wsl_enabled and (wsl_distros_selected | length > 0)
 
-    - name: Install WSL with the latest Ubuntu
-      ansible.windows.win_shell: wsl --install -d Ubuntu
+    - name: Install selected WSL distros
+      ansible.windows.win_shell: "wsl --install -d {{ item }}"
+      loop: "{{ wsl_distros_selected }}"
       register: wsl_install
-      when: "'Ubuntu' not in (wsl_distros_before.stdout | default(''))"
+      when: >-
+        wsl_enabled and (wsl_distros_selected | length > 0)
+        and (item not in (wsl_distros_before.stdout | default('')))
       changed_when: wsl_install.rc == 0
-      failed_when: wsl_install.rc != 0
+      failed_when: wsl_install.rc is defined and wsl_install.rc != 0
 
-    - name: Reboot to finish the WSL/Ubuntu install
+    - name: Reboot to finish the WSL distro install(s)
       ansible.windows.win_reboot:
         reboot_timeout: 900
-      when: wsl_install is changed and wsl_allow_reboot | bool
+      when: wsl_enabled and wsl_install is changed and wsl_allow_reboot | bool
 
     - name: Re-check installed WSL distros after reboot
       ansible.windows.win_shell: >-
         (wsl --list --quiet | Out-String) -replace '\x00', ''
       register: wsl_distros_after
-      when: wsl_install is changed and wsl_allow_reboot | bool
+      when: wsl_enabled and wsl_install is changed and wsl_allow_reboot | bool
       changed_when: false
       failed_when: false
 
-    - name: Finish the WSL/Ubuntu install after reboot
-      ansible.windows.win_shell: wsl --install -d Ubuntu
+    - name: Finish any WSL distro installs after reboot
+      ansible.windows.win_shell: "wsl --install -d {{ item }}"
+      loop: "{{ wsl_distros_selected }}"
       when: >-
-        wsl_install is changed and wsl_allow_reboot | bool
-        and ('Ubuntu' not in (wsl_distros_after.stdout | default('')))
+        wsl_enabled and wsl_install is changed and wsl_allow_reboot | bool
+        and (item not in (wsl_distros_after.stdout | default('')))
       changed_when: true
 
-    - name: Warn that a reboot is needed to finish the WSL/Ubuntu install
+    - name: Warn that a reboot is needed to finish the WSL distro install(s)
       ansible.builtin.debug:
         msg: >-
-          WSL/Ubuntu install may need a reboot to finish. Re-run this playbook after
+          WSL distro install may need a reboot to finish. Re-run this playbook after
           rebooting, or pass -e wsl_allow_reboot=true (--wsl-allow-reboot from run.sh)
           to let this run reboot the PC automatically.
-      when: wsl_install is changed and not (wsl_allow_reboot | bool)
+      when: wsl_enabled and wsl_install is changed and not (wsl_allow_reboot | bool)
 
     - name: Install Wazuh agent (needs manager address)
       chocolatey.chocolatey.win_chocolatey:
