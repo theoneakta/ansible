@@ -13,8 +13,22 @@
   gather_facts: false
 
   vars:
-    # Set to your Wazuh manager IP/FQDN to auto-enroll the agent
+    # Wazuh agent enrollment (wazuh_manager is required to install the agent at all)
     wazuh_manager: ""
+    wazuh_manager_port: "1514"
+    wazuh_protocol: "tcp"
+    wazuh_registration_password: ""
+    wazuh_group: ""
+    wazuh_agent_name: ""
+
+    # Tailscale: join the tailnet automatically with an auth key.
+    # Defaults from vault via group_vars/windows/vars.yml (vault_tailscale_authkey);
+    # override per-run with --tailscale-authkey. Deliberately NOT defaulted here,
+    # since play vars would outrank the group_vars default and always win.
+
+    # Git: set global identity after install
+    git_user_name: ""
+    git_user_email: ""
 
     # state: latest -> installs if missing, upgrades if outdated
     choco_packages:
@@ -66,13 +80,34 @@
       chocolatey.chocolatey.win_chocolatey:
         name: wazuh-agent
         state: latest
-        package_params: "/WAZUH_MANAGER={{ wazuh_manager }}"
+        package_params: >-
+          /WAZUH_MANAGER={{ wazuh_manager }}
+          /WAZUH_MANAGER_PORT={{ wazuh_manager_port }}
+          /WAZUH_PROTOCOL={{ wazuh_protocol }}
+          {% if wazuh_registration_password %}/WAZUH_REGISTRATION_PASSWORD={{ wazuh_registration_password }}{% endif %}
+          {% if wazuh_group %}/WAZUH_GROUP={{ wazuh_group }}{% endif %}
+          {% if wazuh_agent_name %}/WAZUH_AGENT_NAME={{ wazuh_agent_name }}{% endif %}
       when: wazuh_manager | length > 0
 
     - name: Warn about Wazuh agent being skipped
       ansible.builtin.debug:
         msg: "wazuh_manager not set - Wazuh agent skipped."
       when: wazuh_manager | length == 0
+
+    - name: Join Tailscale tailnet with auth key
+      ansible.windows.win_command: >-
+        "C:\Program Files\Tailscale\tailscale.exe" up --authkey={{ tailscale_authkey | default('') }} --accept-routes
+      when: (tailscale_authkey | default('')) | length > 0
+
+    - name: Configure Git global user.name
+      ansible.windows.win_command: >-
+        git config --global user.name "{{ git_user_name }}"
+      when: git_user_name | length > 0
+
+    - name: Configure Git global user.email
+      ansible.windows.win_command: >-
+        git config --global user.email "{{ git_user_email }}"
+      when: git_user_email | length > 0
 
     - name: Report packages that failed
       ansible.builtin.debug:

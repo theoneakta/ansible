@@ -2,6 +2,11 @@
 # Plain-text vars. Secrets live in vault.yml (encrypted) and are referenced here.
 ansible_user: "{{ vault_win_user }}"
 ansible_password: "{{ vault_win_password }}"
+
+# Default Tailscale auth key for install_software.yml, used unless
+# --tailscale-authkey overrides it for a run. Set vault_tailscale_authkey via
+# `./run.sh --vault-edit`; leave unset/empty to skip auto-join by default.
+tailscale_authkey: "{{ vault_tailscale_authkey | default('') }}"
 ansible_connection: winrm
 ansible_port: 5986
 ansible_winrm_transport: ntlm          # or credssp / kerberos

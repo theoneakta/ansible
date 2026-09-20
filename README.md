@@ -59,6 +59,30 @@ Examples:
 ./run.sh install_software.yml --check          # dry run
 ```
 
+### Install-time parameters
+
+`run.sh` accepts friendly flags for packages that need extra settings and translates them into Ansible extra-vars for you. Anything not listed below (e.g. `--limit`, `--check`, raw `-e foo=bar`) is passed straight through to `ansible-playbook`.
+
+| Flag | Effect |
+|---|---|
+| `--wazuh-manager <ip\|fqdn>` | Installs the Wazuh agent and points it at this manager (omit to skip Wazuh entirely) |
+| `--wazuh-port <port>` | Manager port, default `1514` |
+| `--wazuh-protocol <tcp\|udp>` | default `tcp` |
+| `--wazuh-group <group>` | Agent group for enrollment |
+| `--wazuh-agent-name <name>` | Override the agent's registered name |
+| `--wazuh-registration-password <pw>` | Password for manager auto-enrollment |
+| `--tailscale-authkey <key>` | Joins the tailnet with this key right after install (overrides the vault default, see below) |
+| `--git-name <name>` | Sets `git config --global user.name` |
+| `--git-email <email>` | Sets `git config --global user.email` |
+
+```bash
+./run.sh install_software.yml \
+  --wazuh-manager 10.0.0.5 --wazuh-group workstations \
+  --git-name "Michel Mondor" --git-email michel.bernard.mondor@gmail.com
+```
+
+**Tailscale auth key default:** so you don't have to pass `--tailscale-authkey` on every run, store it in the vault as `vault_tailscale_authkey` (new vaults created with `--vault-init` already include an empty placeholder for it; for an existing vault run `./run.sh --vault-edit` and add the line). `vars.yml` maps it to `tailscale_authkey`, which every host uses by default; `--tailscale-authkey` on the command line still overrides it for a one-off run (e.g. a different tailnet).
+
 ## Credentials (Ansible Vault)
 
 Credentials are stored in `inventory/group_vars/windows/vault.yml`, encrypted with AES-256. `vars.yml` maps them to `ansible_user` / `ansible_password`, so playbooks use them automatically. The encrypted file is safe to commit; `.vault_pass` is not.
