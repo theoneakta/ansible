@@ -41,6 +41,12 @@
     max-height: 10rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
     background: #0d1117; color: #c9d1d9; padding: .5rem; border-radius: 4px; font-size: .75rem;
   }
+  .chocoResult {
+    display: flex; align-items: center; gap: .75rem; justify-content: space-between;
+    border-bottom: 1px solid #8884; padding: .5rem 0;
+  }
+  .chocoResult .info { min-width: 0; }
+  .chocoResult .info div:last-child { font-size: .85rem; }
 </style>
 </head>
 <body>
@@ -78,6 +84,14 @@
 <section id="packagesSection">
   <div class="row"><label><input type="checkbox" id="allPackages" checked> All packages</label></div>
   <div id="packageList" class="params open" style="margin-left:1.5rem; columns: 2;"></div>
+
+  <div class="row" style="margin-top:.75rem;">
+    <label for="chocoSearch">Add a package (search Chocolatey)</label>
+    <input type="text" id="chocoSearch" placeholder="e.g. spotify">
+    <button id="chocoSearchBtn">Search</button>
+  </div>
+  <div id="chocoSearchStatus" class="muted"></div>
+  <div id="chocoSearchResults"></div>
 </section>
 
 <h2>4. Install parameters</h2>
@@ -259,16 +273,24 @@ async function addHost() {
 $('addHostBtn').addEventListener('click', addHost);
 $('newHost').addEventListener('keydown', (e) => { if (e.key === 'Enter') addHost(); });
 
+let knownPackageIds = null;
+
 async function loadPackages() {
+  const allChecked = $('allPackages').checked;
+  const previouslyChecked = new Set([...document.querySelectorAll('.packageCheck:checked')].map(c => c.value));
   const packages = await fetch('/api/packages').then(r => r.json());
   const list = $('packageList');
   list.innerHTML = '';
   packages.forEach(p => {
+    const wasKnown = knownPackageIds && knownPackageIds.has(p.name);
+    const isChecked = allChecked || !wasKnown || previouslyChecked.has(p.name);
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" checked disabled> ${p.label}</label>`;
+    row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" ${isChecked ? 'checked' : ''} ${allChecked ? 'disabled' : ''}> ${p.label}</label>`;
     list.appendChild(row);
   });
+  knownPackageIds = new Set(packages.map(p => p.name));
+  return packages;
 }
 
 $('allPackages').addEventListener('change', () => {
@@ -280,6 +302,68 @@ function selectedPackages() {
   if ($('allPackages').checked) return [];
   return [...document.querySelectorAll('.packageCheck:checked')].map(c => c.value);
 }
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function searchChocolatey() {
+  const q = $('chocoSearch').value.trim();
+  const statusEl = $('chocoSearchStatus');
+  const resultsEl = $('chocoSearchResults');
+  resultsEl.innerHTML = '';
+  if (q.length < 2) { statusEl.textContent = 'Type at least 2 characters.'; return; }
+  statusEl.textContent = 'Searching...';
+  try {
+    const res = await fetch(`/api/chocolatey/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Search failed');
+    statusEl.textContent = data.length ? `${data.length} result(s)` : 'No results.';
+    const already = knownPackageIds || new Set();
+    data.forEach(pkg => {
+      const row = document.createElement('div');
+      row.className = 'chocoResult';
+      const info = document.createElement('div');
+      info.className = 'info';
+      info.innerHTML = `<div><strong>${escapeHtml(pkg.title || pkg.id)}</strong> <span class="muted">(${escapeHtml(pkg.id)}${pkg.version ? ' v' + escapeHtml(pkg.version) : ''})</span></div>
+        <div class="muted">${escapeHtml(pkg.summary || '')}</div>`;
+      row.appendChild(info);
+      const btn = document.createElement('button');
+      const isKnown = already.has(pkg.id);
+      btn.textContent = isKnown ? 'Already added' : 'Add';
+      btn.disabled = isKnown;
+      btn.addEventListener('click', () => addChocoPackage(pkg, btn));
+      row.appendChild(btn);
+      resultsEl.appendChild(row);
+    });
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function addChocoPackage(pkg, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+  try {
+    const res = await fetch('/api/packages', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: pkg.id, label: pkg.title || pkg.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to add');
+    btn.textContent = 'Added';
+    await loadPackages();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Add';
+    alert('Error: ' + e.message);
+  }
+}
+
+$('chocoSearchBtn').addEventListener('click', searchChocolatey);
+$('chocoSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchChocolatey(); });
 
 async function loadWslDistros() {
   const distros = await fetch('/api/wsl-distros').then(r => r.json());
