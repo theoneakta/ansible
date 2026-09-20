@@ -41,6 +41,12 @@
 <section id="hostsSection">
   <div class="row"><label><input type="checkbox" id="allHosts" checked> All hosts</label></div>
   <div id="hostList"></div>
+  <div class="row" style="margin-top:.75rem;">
+    <label for="newHost">Add host (name or IP)</label>
+    <input type="text" id="newHost" placeholder="192.168.3.18">
+    <button id="addHostBtn">Add</button>
+    <span id="addHostStatus" class="muted"></span>
+  </div>
 </section>
 
 <h2>2. Credentials</h2>
@@ -56,7 +62,13 @@
   <p class="muted">Values are encrypted with Ansible Vault on save and are never displayed back here.</p>
 </section>
 
-<h2>3. Install parameters</h2>
+<h2>3. Software</h2>
+<section id="packagesSection">
+  <div class="row"><label><input type="checkbox" id="allPackages" checked> All packages</label></div>
+  <div id="packageList" class="params open" style="margin-left:1.5rem; columns: 2;"></div>
+</section>
+
+<h2>4. Install parameters</h2>
 <section>
   <fieldset>
     <legend><label><input type="checkbox" id="wazuhToggle"> Install Wazuh agent</label></legend>
@@ -99,7 +111,7 @@
   <div id="runResult"></div>
 </section>
 
-<h2>4. History</h2>
+<h2>5. History</h2>
 <section id="historySection"></section>
 
 <script>
@@ -142,6 +154,47 @@ $('allHosts').addEventListener('change', () => {
 function selectedHosts() {
   if ($('allHosts').checked) return [];
   return [...document.querySelectorAll('.hostCheck:checked')].map(c => c.value);
+}
+
+async function addHost() {
+  const name = $('newHost').value.trim();
+  if (!name) return;
+  $('addHostStatus').textContent = 'Adding...';
+  try {
+    const res = await fetch('/api/hosts', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed');
+    $('newHost').value = '';
+    $('addHostStatus').textContent = `Added ${data.name}`;
+    await loadHosts();
+  } catch (e) {
+    $('addHostStatus').textContent = 'Error: ' + e.message;
+  }
+}
+$('addHostBtn').addEventListener('click', addHost);
+$('newHost').addEventListener('keydown', (e) => { if (e.key === 'Enter') addHost(); });
+
+async function loadPackages() {
+  const packages = await fetch('/api/packages').then(r => r.json());
+  const list = $('packageList');
+  list.innerHTML = '';
+  packages.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" checked disabled> ${p.label}</label>`;
+    list.appendChild(row);
+  });
+}
+
+$('allPackages').addEventListener('change', () => {
+  document.querySelectorAll('.packageCheck').forEach(c => { c.disabled = $('allPackages').checked; });
+});
+
+function selectedPackages() {
+  if ($('allPackages').checked) return [];
+  return [...document.querySelectorAll('.packageCheck:checked')].map(c => c.value);
 }
 
 async function loadCredStatus() {
@@ -188,7 +241,11 @@ function renderHostResults(container, hostsResults) {
 }
 
 $('runBtn').addEventListener('click', async () => {
-  const body = { hosts: selectedHosts() };
+  const body = { hosts: selectedHosts(), packages: selectedPackages() };
+  if (!$('allPackages').checked && body.packages.length === 0) {
+    alert('Select at least one package, or check "All packages".');
+    return;
+  }
   if ($('wazuhToggle').checked) {
     if (!$('wazuhManager').value) { alert('Wazuh manager address is required.'); return; }
     body.wazuh = {
@@ -255,6 +312,7 @@ async function loadHistory() {
 }
 
 loadHosts();
+loadPackages();
 loadCredStatus();
 loadHistory();
 </script>

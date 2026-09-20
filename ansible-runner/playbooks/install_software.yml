@@ -36,6 +36,10 @@
     # -e wsl_allow_reboot=true / --wsl-allow-reboot) to let it reboot and finish.
     wsl_allow_reboot: false
 
+    # Which packages to install this run, by name (see choco_packages below).
+    # Empty/unset = install everything in the list.
+    choco_packages_selected: []
+
     # state: latest -> installs if missing, upgrades if outdated
     choco_packages:
       # --- Confident package IDs ---
@@ -76,7 +80,7 @@
         name: "{{ item.name }}"
         state: latest
         ignore_checksums: false
-      loop: "{{ choco_packages }}"
+      loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
       loop_control:
         label: "{{ item.label }}"
       register: choco_results

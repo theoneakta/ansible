@@ -6,6 +6,7 @@ the same Ansible stack used by run.sh - nothing here executes on the host.
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -88,6 +89,26 @@ def list_hosts() -> list[dict]:
     ]
 
 
+HOST_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
+
+
+def add_host_to_inventory(name: str) -> None:
+    if not HOST_NAME_RE.match(name):
+        raise HTTPException(400, "Invalid host name/IP - use letters, numbers, dots, and hyphens only.")
+    if name in {h["name"] for h in list_hosts()}:
+        raise HTTPException(400, f"Host '{name}' is already in the inventory.")
+
+    text = HOSTS_FILE.read_text()
+    match = re.search(r"^([ \t]*)hosts:[ \t]*\r?\n", text, flags=re.MULTILINE)
+    if not match:
+        raise HTTPException(500, "Could not find a 'hosts:' section in inventory/hosts.yml.")
+
+    entry_indent = match.group(1) + "  "
+    insert_at = match.end()
+    new_text = text[:insert_at] + f"{entry_indent}{name}:\n" + text[insert_at:]
+    HOSTS_FILE.write_text(new_text)
+
+
 def list_packages() -> list[dict]:
     docs = yaml.safe_load((BASE / PLAYBOOK).read_text())
     return docs[0]["vars"]["choco_packages"]
@@ -134,6 +155,19 @@ def record_run(started, finished, hosts, extra_vars, status, error, stats, per_h
 @app.get("/api/hosts")
 def api_hosts():
     return list_hosts()
+
+
+class HostIn(BaseModel):
+    name: str
+
+
+@app.post("/api/hosts")
+def api_add_host(body: HostIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Host name/IP is required.")
+    add_host_to_inventory(name)
+    return {"ok": True, "name": name}
 
 
 @app.get("/api/packages")
@@ -218,6 +252,7 @@ class GitParams(BaseModel):
 
 class RunIn(BaseModel):
     hosts: list[str] = []  # empty = all hosts in the windows group
+    packages: list[str] = []  # empty = install every package in choco_packages
     wazuh: Optional[WazuhParams] = None
     tailscale_authkey: Optional[str] = None
     git: Optional[GitParams] = None
@@ -226,6 +261,8 @@ class RunIn(BaseModel):
 
 def build_extra_vars(body: RunIn) -> dict:
     extra_vars: dict = {}
+    if body.packages:
+        extra_vars["choco_packages_selected"] = json.dumps(body.packages)
     if body.wazuh and body.wazuh.manager:
         extra_vars["wazuh_manager"] = body.wazuh.manager
         if body.wazuh.port:
