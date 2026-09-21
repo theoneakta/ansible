@@ -106,7 +106,7 @@
       - { name: googlechrome,     label: Chrome,                          category: tools }
       - { name: googledrive,      label: Google Drive,                    category: tools }
       - { name: handbrake,        label: HandBrake,                       category: multimedia }
-      - { name: temurin,          label: Java (Eclipse Temurin, latest),  category: dev }
+      - { name: temurinjre,       label: Java Runtime (Eclipse Temurin JRE), category: tools }
       - { name: jdownloader,      label: JDownloader,                     category: tools }
       - { name: vscode,           label: VS Code,                         category: dev }
       - { name: firefox,          label: Firefox,                         category: tools }
