@@ -141,7 +141,14 @@
       when: wsl_enabled and (wsl_distros_selected | length > 0)
 
     - name: Install selected WSL distros
-      ansible.windows.win_shell: "wsl --install -d {{ item }}"
+      # --no-launch: plain `wsl --install -d` also auto-launches the distro
+      # for its first-run setup, which prompts interactively for a Linux
+      # username/password. Over a non-interactive WinRM session that prompt
+      # never gets answered, so the command hangs indefinitely even though
+      # the actual install already succeeded. Skip the auto-launch entirely -
+      # the first-run account setup still needs a manual `wsl -d <name>` step
+      # regardless (see the README note on this).
+      ansible.windows.win_shell: "wsl --install -d {{ item }} --no-launch"
       loop: "{{ wsl_distros_selected }}"
       register: wsl_install
       when: >-
@@ -164,7 +171,7 @@
       failed_when: false
 
     - name: Finish any WSL distro installs after reboot
-      ansible.windows.win_shell: "wsl --install -d {{ item }}"
+      ansible.windows.win_shell: "wsl --install -d {{ item }} --no-launch"
       loop: "{{ wsl_distros_selected }}"
       when: >-
         wsl_enabled and wsl_install is changed and wsl_allow_reboot | bool
