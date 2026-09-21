@@ -1,0 +1,28 @@
+---
+# CIS Benchmark hardening for Windows 11, via ansible-lockdown's own role:
+#   https://github.com/ansible-lockdown/Windows-11-CIS
+#
+# WARNING: unlike install_software.yml, this changes real security settings
+# (password/lockout policy, auditing, services, network protocols, etc) on
+# the target. Level 2 is stricter and more likely to break something (older
+# apps, some remote-access tooling). Read the role's own docs before running
+# it against a machine you rely on, and test on a non-critical PC first.
+# skip_reboot defaults to true upstream, but some controls only take effect
+# after a reboot.
+#
+# The role selects what to apply via --tags, not a simple variable - use
+# run.sh's --cis-level flag (or pass --tags yourself):
+#   level1-corporate-enterprise-environment
+#   level2-high-security-sensitive-data-environment
+#
+# Run:  ./run.sh cis_hardening.yml --cis-level 1
+#       ./run.sh cis_hardening.yml --cis-level 1 --cis-audit-only   (report only, no changes)
+#
+# Requirements (control node): ansible-galaxy install -r requirements.yml
+# (done automatically at image build time)
+
+- name: Apply CIS Benchmark hardening (Windows 11)
+  hosts: windows
+  gather_facts: true
+  roles:
+    - Windows-11-CIS
