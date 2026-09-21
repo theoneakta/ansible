@@ -503,14 +503,20 @@ class RunIn(BaseModel):
 
 
 def build_extra_vars(body: RunIn) -> dict:
+    # Native Python types (bool/list/str), not pre-stringified - api_run sends
+    # this whole dict as a single `-e <json>` argument, which is the only
+    # extra-vars form ansible-playbook reliably parses complex types from.
+    # `-e key=[...]` shorthand does NOT auto-parse as JSON in this ansible-core
+    # version - the value stays a literal string, which silently breaks any
+    # `loop:` over it ("must resolve to a 'list', not 'str'").
     extra_vars: dict = {}
     if not body.install_packages:
-        extra_vars["install_packages"] = "false"
+        extra_vars["install_packages"] = False
     elif body.packages:
-        extra_vars["choco_packages_selected"] = json.dumps(body.packages)
+        extra_vars["choco_packages_selected"] = body.packages
     if body.wsl_distros:
-        extra_vars["wsl_enabled"] = "true"
-        extra_vars["wsl_distros_selected"] = json.dumps(body.wsl_distros)
+        extra_vars["wsl_enabled"] = True
+        extra_vars["wsl_distros_selected"] = body.wsl_distros
     if body.wazuh and body.wazuh.manager:
         extra_vars["wazuh_manager"] = body.wazuh.manager
         if body.wazuh.port:
@@ -524,7 +530,7 @@ def build_extra_vars(body: RunIn) -> dict:
         if body.wazuh.registration_password:
             extra_vars["wazuh_registration_password"] = body.wazuh.registration_password
     if body.tailscale_join:
-        extra_vars["tailscale_join_enabled"] = "true"
+        extra_vars["tailscale_join_enabled"] = True
         if body.tailscale_authkey:
             extra_vars["tailscale_authkey"] = body.tailscale_authkey
     if body.git:
@@ -533,9 +539,9 @@ def build_extra_vars(body: RunIn) -> dict:
         if body.git.email:
             extra_vars["git_user_email"] = body.git.email
     if body.wsl_allow_reboot:
-        extra_vars["wsl_allow_reboot"] = "true"
+        extra_vars["wsl_allow_reboot"] = True
     if body.win11debloat:
-        extra_vars["win11debloat_enabled"] = "true"
+        extra_vars["win11debloat_enabled"] = True
     return extra_vars
 
 
@@ -599,8 +605,8 @@ def api_run(body: RunIn):
         cmd = ["ansible-playbook", PLAYBOOK]
         if body.hosts:
             cmd += ["--limit", ",".join(body.hosts)]
-        for k, v in extra_vars.items():
-            cmd += ["-e", f"{k}={v}"]
+        if extra_vars:
+            cmd += ["-e", json.dumps(extra_vars)]
         cmd += vault_password_args()
 
         started = datetime.now(timezone.utc).isoformat()
