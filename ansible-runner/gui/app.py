@@ -3,6 +3,7 @@
 Runs entirely inside the `gui` container (see docker-compose.yml) alongside
 the same Ansible stack used by run.sh - nothing here executes on the host.
 """
+import functools
 import json
 import os
 import pathlib
@@ -661,6 +662,7 @@ CIS_PROFILES = {
         "role": "Windows-11-CIS",
         "var_prefix": "win11cis",
         "section_width": 1,
+        "control_glob": "tasks/section_{n}/*.yml",
         "levels": [
             {"id": "1", "label": "Level 1 (corporate/enterprise)",
              "tags": ["level1-corporate-enterprise-environment", "level1-bitlocker"]},
@@ -688,16 +690,22 @@ _SERVER_LEVELS = [
 ]
 _SERVER_SECTIONS = CIS_PROFILES["windows11"]["sections"]  # same 7 section numbers/names on every role
 
-for _key, _label, _role, _prefix in [
-    ("windows2019", "Windows Server 2019", "Windows-2019-CIS", "win19cis"),
-    ("windows2022", "Windows Server 2022", "Windows-2022-CIS", "win22cis"),
-    ("windows2025", "Windows Server 2025", "Windows-2025-CIS", "win25cis"),
+for _key, _label, _role, _prefix, _glob in [
+    # 2019/2022: flat, zero-padded files nested under ansible_hardening/
+    # (the older, GPO-capable role layout). 2025: same unpadded section_N/
+    # folder layout as Windows-11-CIS (the newer, simpler role layout) -
+    # despite that, its *variables* are still zero-padded like 2019/2022
+    # (section_width below), only the file path differs.
+    ("windows2019", "Windows Server 2019", "Windows-2019-CIS", "win19cis", "tasks/ansible_hardening/section{nn}*.yml"),
+    ("windows2022", "Windows Server 2022", "Windows-2022-CIS", "win22cis", "tasks/ansible_hardening/section{nn}*.yml"),
+    ("windows2025", "Windows Server 2025", "Windows-2025-CIS", "win25cis", "tasks/section_{n}/*.yml"),
 ]:
     CIS_PROFILES[_key] = {
         "label": _label,
         "role": _role,
         "var_prefix": _prefix,
         "section_width": 2,
+        "control_glob": _glob,
         "levels": _SERVER_LEVELS,
         "sections": _SERVER_SECTIONS,
     }
@@ -709,12 +717,55 @@ class CisRunIn(BaseModel):
     cis_level: str = "1"  # a level "id" from that profile's levels list
     mode: str = "all"  # "all" or "sections"
     sections: list[str] = []  # section ids to include when mode == "sections"
+    excluded_controls: list[str] = []  # individual control ids (e.g. "2.3.1.1") to turn off
     audit_only: bool = False
 
 
 @app.get("/api/cis/options")
 def api_cis_options():
     return CIS_PROFILES
+
+
+ROLES_DIR = pathlib.Path("/usr/share/ansible/roles")
+# Matches a control's own top-level task name, e.g.
+# `name: "2.3.1.1 | PATCH | Ensure ... accounts"` - deliberately requires
+# PATCH/AUDIT/MANUAL after the id so it doesn't also match the nested
+# `"2.3.1.1 | PATCH | ... | Set Variable."` sub-tasks some controls have
+# (those share the same id, so dedup below would collapse them anyway, but
+# this keeps the FIRST/outer, cleanly-titled match rather than risking the
+# inner one winning first for some entry).
+_CONTROL_NAME_RE = re.compile(r'name:\s*"(\d+(?:\.\d+){1,})\s*\|\s*(?:PATCH|AUDIT|MANUAL)\s*\|\s*(.+?)"', re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=None)
+def _discover_controls(role: str, control_glob: str, section_id: str, section_width: int) -> list[dict]:
+    """Individual CIS control IDs/titles for one section, parsed straight out
+    of the role's own installed task files (there are ~200+ per role across
+    all sections - no hardcoded list here, ever). Cached: these are read-only
+    files baked into the image, stable for the process lifetime."""
+    pattern = control_glob.format(n=section_id, nn=section_id.zfill(section_width))
+    seen: dict[str, str] = {}
+    for path in sorted(ROLES_DIR.glob(f"{role}/{pattern}")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in _CONTROL_NAME_RE.finditer(text):
+            control_id, title = m.group(1), m.group(2).strip()
+            if control_id.split(".")[0] != section_id:
+                continue  # e.g. section_18's files also define 19.x helper tasks in places
+            seen.setdefault(control_id, title)
+    return [{"id": cid, "label": seen[cid]} for cid in sorted(seen, key=lambda s: [int(p) for p in s.split(".")])]
+
+
+@app.get("/api/cis/controls")
+def api_cis_controls(os: str, section: str):
+    profile = CIS_PROFILES.get(os)
+    if not profile:
+        raise HTTPException(400, f"Unknown OS '{os}'.")
+    if not any(s["id"] == section for s in profile["sections"]):
+        raise HTTPException(400, f"Unknown section '{section}' for {os}.")
+    return _discover_controls(profile["role"], profile["control_glob"], section, profile["section_width"])
 
 
 @app.post("/api/cis/run")
@@ -739,6 +790,11 @@ def api_cis_run(body: CisRunIn):
         for section in profile["sections"]:
             var = f"{profile['var_prefix']}_section{section['id'].zfill(profile['section_width'])}"
             extra_vars[var] = section["id"] in body.sections
+    for control_id in body.excluded_controls:
+        # Only override the ones explicitly unchecked - everything else keeps
+        # the role's own default (on), so this stays small regardless of how
+        # many hundred controls a section actually has.
+        extra_vars[f"{profile['var_prefix']}_rule_{control_id.replace('.', '_')}"] = False
     if body.audit_only:
         extra_vars.update({"audit_only": True, "setup_audit": True, "run_audit": True})
 
