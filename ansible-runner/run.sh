@@ -27,6 +27,10 @@
 #   --wsl-user <name>                    also provision the WSL distro(s) for this Windows user (repeatable)
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
+#
+# For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
+#   --cis-level <1|2>                    which CIS level to apply (translates to the role's own --tags)
+#   --cis-audit-only                     report what would change without making changes
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
 # Example:
@@ -117,6 +121,14 @@ YML
         --wsl-user)                    WSL_TARGET_USERS+=("$2"); shift 2 ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
+        --cis-level)
+          if [[ "$2" == "2" ]]; then
+            PASSTHRU+=(--tags level2-high-security-sensitive-data-environment)
+          else
+            PASSTHRU+=(--tags level1-corporate-enterprise-environment)
+          fi
+          shift 2 ;;
+        --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
     done

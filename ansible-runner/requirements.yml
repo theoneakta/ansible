@@ -1,0 +1,8 @@
+---
+# Third-party roles, installed via `ansible-galaxy install -r requirements.yml`
+# (done automatically at image build time - see Dockerfile).
+roles:
+  - name: Windows-11-CIS
+    src: https://github.com/ansible-lockdown/Windows-11-CIS.git
+    scm: git
+    version: main

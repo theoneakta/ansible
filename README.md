@@ -14,9 +14,10 @@ Nothing runs in the background: each `./run.sh` call starts a throwaway containe
 
 ```
 ansible-runner/
-├── Dockerfile                  # ansible-core, pywinrm, pypsrp, CredSSP, collections
+├── Dockerfile                  # ansible-core, pywinrm, pypsrp, CredSSP, collections, roles
 ├── docker-compose.yml          # service definition (used via run.sh)
 ├── ansible.cfg
+├── requirements.yml            # third-party roles (CIS hardening), installed at build time
 ├── run.sh                      # main entry point
 ├── .vault_pass                 # vault password (created by --vault-init, gitignored)
 ├── inventory/
@@ -26,7 +27,8 @@ ansible-runner/
 │   │   └── vault.yml           # encrypted credentials (created by --vault-init)
 │   └── host_vars/<host>/       # optional per-host overrides
 ├── playbooks/
-│   └── install_software.yml
+│   ├── install_software.yml
+│   └── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI only, not in the GUI
 ├── scripts/
 │   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
 └── gui/                        # web GUI (own Dockerfile, started via --gui)
@@ -192,6 +194,27 @@ For Linux targets, uncomment the `~/.ssh` mount in `docker-compose.yml` and add 
 - **RSAT is opt-in**: off by default, pass `--rsat` (or `-e rsat_enabled=true`) to install every available RSAT (Remote Server Administration Tools) capability - AD DS, DNS, DHCP, Group Policy, Hyper-V, and the rest. RSAT ships as Windows Capabilities (Features on Demand), not Chocolatey packages, so it's installed via `Add-WindowsCapability` rather than through `choco_packages`. No per-tool selection here; it's all of them or none. Each missing capability downloads from Windows Update, so a fresh machine can take a while.
 
 To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourplaybook.yml`.
+
+## CIS Benchmark hardening
+
+`playbooks/cis_hardening.yml` applies [ansible-lockdown's Windows-11-CIS role](https://github.com/ansible-lockdown/Windows-11-CIS) - CLI only, not exposed in the web GUI.
+
+> **This is a fundamentally different kind of operation from `install_software.yml`.** It changes real security settings on the target - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this whole toolkit depends on) or break older/legacy software. **Read the [role's own documentation](https://github.com/ansible-lockdown/Windows-11-CIS) first, and test against a non-critical PC before running it against anything you rely on.**
+
+The role picks what to apply via `--tags`, not a simple on/off variable - `run.sh` translates a level number for you:
+
+```bash
+./run.sh cis_hardening.yml --cis-level 1                # CIS Level 1 (corporate/enterprise) - less strict
+./run.sh cis_hardening.yml --cis-level 2                # CIS Level 2 (high security) - stricter, more likely to break something
+./run.sh cis_hardening.yml --cis-level 1 --cis-audit-only  # report what would change, without changing anything
+```
+
+| Flag | Effect |
+|---|---|
+| `--cis-level <1\|2>` | Which CIS level to apply (maps to the role's own tags) |
+| `--cis-audit-only` | Report only - sets the role's own `audit_only`/`setup_audit`/`run_audit` vars, makes no changes |
+
+The role is installed from `requirements.yml` at image build time (`ansible-galaxy install -r requirements.yml`) - rebuild (`./run.sh --build`) after changing its pinned `version`.
 
 ## Updating Ansible / collections
 
