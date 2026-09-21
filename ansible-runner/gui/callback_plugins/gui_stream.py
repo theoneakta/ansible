@@ -78,7 +78,13 @@ class CallbackModule(CallbackBase):
         else:
             status = "ok"
 
-        self._log(f"[{host}] {status}: {label}")
+        line = f"[{host}] {status}: {label}"
+        msg = result._result.get("msg")
+        if isinstance(msg, str) and msg:
+            line += "\n    " + msg
+        elif isinstance(msg, list):
+            line += "\n    " + "\n    ".join(str(m) for m in msg)
+        self._log(line)
         self.host_events.setdefault(host, []).append({
             "task": task_name, "item": item,
             "changed": changed, "failed": bool(failed),
