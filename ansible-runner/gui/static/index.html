@@ -295,8 +295,8 @@ $('newHost').addEventListener('keydown', (e) => { if (e.key === 'Enter') addHost
 
 let knownPackageIds = null;
 
-const CATEGORY_LABELS = { multimedia: 'Multimedia', dev: 'Dev', tools: 'Tools' };
-const CATEGORY_ORDER = ['multimedia', 'dev', 'tools'];
+const CATEGORY_LABELS = { multimedia: 'Multimedia', internet: 'Internet', dev: 'Dev', tools: 'Tools' };
+const CATEGORY_ORDER = ['multimedia', 'internet', 'dev', 'tools'];
 
 async function loadPackages() {
   const allChecked = $('allPackages').checked;
