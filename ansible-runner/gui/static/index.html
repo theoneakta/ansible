@@ -143,6 +143,13 @@
     </div>
   </fieldset>
 
+  <fieldset>
+    <legend><label><input type="checkbox" id="rsatToggle"> Install RSAT tools (all)</label></legend>
+    <div class="params" id="rsatParams">
+      <p class="muted">Installs every available RSAT (Remote Server Administration Tools) capability - AD DS, DNS, DHCP, Group Policy, Hyper-V, and the rest - via Windows's own Add-WindowsCapability, not Chocolatey. No per-tool picker; this is all of them. Each missing capability downloads from Windows Update, so this can take a while on a fresh machine.</p>
+    </div>
+  </fieldset>
+
   <button id="runBtn">Install now</button>
   <div id="runStatus"></div>
   <pre id="liveLog" style="display:none;"></pre>
@@ -166,6 +173,7 @@ toggleParams('tailscaleToggle', 'tailscaleParams');
 toggleParams('gitToggle', 'gitParams');
 toggleParams('wslToggle', 'wslParams');
 toggleParams('win11debloatToggle', 'win11debloatParams');
+toggleParams('rsatToggle', 'rsatParams');
 
 let hostsCache = [];
 
@@ -449,8 +457,9 @@ $('runBtn').addEventListener('click', async () => {
   const wantsGit = $('gitToggle').checked;
   const wantsWsl = $('wslToggle').checked;
   const wantsWin11Debloat = $('win11debloatToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat).');
+  const wantsRsat = $('rsatToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -485,6 +494,9 @@ $('runBtn').addEventListener('click', async () => {
   }
   if ($('win11debloatToggle').checked) {
     body.win11debloat = true;
+  }
+  if ($('rsatToggle').checked) {
+    body.rsat = true;
   }
 
   $('runBtn').disabled = true;

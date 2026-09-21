@@ -26,6 +26,7 @@
 #   --wsl-allow-reboot                   let the WSL distro install reboot the PC if needed
 #   --wsl-user <name>                    also provision the WSL distro(s) for this Windows user (repeatable)
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
+#   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
 # Example:
@@ -115,6 +116,7 @@ YML
         --wsl-allow-reboot)            EXTRA_VARS+=(-e "wsl_allow_reboot=true"); shift ;;
         --wsl-user)                    WSL_TARGET_USERS+=("$2"); shift 2 ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
+        --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
     done

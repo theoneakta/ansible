@@ -46,6 +46,7 @@ TASK_KIND = {
     "Configure Git global user.name": "single",
     "Configure Git global user.email": "single",
     "Run Win11Debloat (basic defaults, silent)": "single",
+    "Install all RSAT (Remote Server Administration Tools) capabilities": "single",
 }
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -502,6 +503,7 @@ class RunIn(BaseModel):
     wsl_allow_reboot: bool = False
     wsl_target_users: list[str] = []  # also provision selected distro(s) for these specific Windows users
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
+    rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
 
 
 def build_extra_vars(body: RunIn) -> dict:
@@ -546,6 +548,8 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["wsl_target_users"] = body.wsl_target_users
     if body.win11debloat:
         extra_vars["win11debloat_enabled"] = True
+    if body.rsat:
+        extra_vars["rsat_enabled"] = True
     return extra_vars
 
 

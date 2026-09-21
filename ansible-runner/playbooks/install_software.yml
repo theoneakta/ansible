@@ -61,6 +61,14 @@
     # this is meant to be their standard "basic default" profile as-is.
     win11debloat_enabled: false
 
+    # RSAT (Remote Server Administration Tools): off by default. RSAT ships
+    # as Windows Capabilities (Features on Demand), not Chocolatey packages,
+    # so it's installed separately via Add-WindowsCapability rather than
+    # through choco_packages above. When enabled, installs ALL available
+    # Rsat.* capabilities (AD DS, DNS, DHCP, Group Policy, Hyper-V, etc) -
+    # there's no per-tool picker here, matching "with all options".
+    rsat_enabled: false
+
     # Distros installable via `wsl --install -d <name>` (see `wsl --list --online`
     # on a Windows host for the current catalog).
     wsl_distros_available:
@@ -89,6 +97,7 @@
       - { name: 7zip,             label: 7zip }
       - { name: adobereader,      label: Acrobat (Reader) }
       - { name: advanced-renamer, label: Advanced Renamer }
+      - { name: azure-cli,        label: Azure CLI }
       - { name: etcher,           label: balenaEtcher }
       - { name: bulkrenameutility, label: Bulk Rename Utility }
       - { name: filebot,          label: FileBot }
@@ -102,6 +111,7 @@
       - { name: firefox,          label: Firefox }
       - { name: notepadplusplus,  label: Notepad++ }
       - { name: potplayer,        label: PotPlayer }
+      - { name: powershell-core,  label: PowerShell 7 }
       - { name: powertoys,        label: PowerToys }
       - { name: rambox,           label: Rambox }
       - { name: rpi-imager,       label: Raspberry Pi Imager }
@@ -338,6 +348,65 @@
       async: 1800
       poll: 15
       when: win11debloat_enabled | bool
+
+    - name: Check which RSAT capabilities still need installing
+      ansible.windows.win_shell: >-
+        (Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Rsat*' -and $_.State -ne 'Installed' }).Name -join ','
+      register: rsat_missing
+      changed_when: false
+      when: rsat_enabled | bool
+
+    - name: Create a one-off task to install RSAT capabilities as SYSTEM
+      # Add-WindowsCapability returns "Access is denied" (a COMException)
+      # when invoked directly over WinRM - confirmed in testing - because
+      # DISM servicing operations need a genuinely elevated/interactive-
+      # equivalent token, which a WinRM network-logon session doesn't carry
+      # even for a full local admin. A Scheduled Task gets a real token
+      # regardless of how it was created, so route the actual install
+      # through one instead (same idea as the per-user WSL provisioning
+      # above). Fires once, immediately, via a "registration" trigger.
+      community.windows.win_scheduled_task:
+        name: RSAT-Install-OneOff
+        actions:
+          - path: powershell.exe
+            arguments: >-
+              -NoProfile -Command "(Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Rsat*' -and $_.State -ne 'Installed' } | Add-WindowsCapability -Online) *>&1 | Out-File C:\Windows\Temp\rsat-install.log"
+        triggers:
+          - type: registration
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: true
+      when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
+
+    - name: Wait for the RSAT install task to finish
+      # Confirmed in testing this can take 15+ minutes for a full set of
+      # missing capabilities (each downloads from Windows Update) - poll
+      # rather than block a single WinRM call for that whole duration.
+      # 267009 (0x41301, SCHED_S_TASK_RUNNING) means still running; 0 means
+      # it finished successfully; anything else is a real failure.
+      ansible.windows.win_shell: (Get-ScheduledTaskInfo -TaskName RSAT-Install-OneOff).LastTaskResult
+      register: rsat_wait
+      until: rsat_wait.stdout | trim != '267009'
+      retries: 120
+      delay: 15
+      changed_when: false
+      when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
+
+    - name: Report the RSAT install result
+      ansible.builtin.debug:
+        msg: >-
+          RSAT install finished with result code {{ rsat_wait.stdout | trim }}
+          (0 = success; anything else, check C:\Windows\Temp\rsat-install.log
+          on the target for details).
+      when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
+
+    - name: Remove the one-off RSAT install task
+      community.windows.win_scheduled_task:
+        name: RSAT-Install-OneOff
+        state: absent
+      when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
+      changed_when: true
 
     - name: Report packages that failed
       ansible.builtin.debug:
