@@ -21,10 +21,13 @@
     wazuh_group: ""
     wazuh_agent_name: ""
 
-    # Tailscale: join the tailnet automatically with an auth key.
-    # Defaults from vault via group_vars/windows/vars.yml (vault_tailscale_authkey);
-    # override per-run with --tailscale-authkey. Deliberately NOT defaulted here,
-    # since play vars would outrank the group_vars default and always win.
+    # Tailscale: off unless explicitly requested for this run (--tailscale-join,
+    # or just --tailscale-authkey - passing a key IS the explicit request).
+    # The key itself still defaults from vault via group_vars/windows/vars.yml
+    # (vault_tailscale_authkey) once joining is enabled, so you don't have to
+    # retype it - but a stored vault key alone must never be enough to make a
+    # run silently join every time.
+    tailscale_join_enabled: false
 
     # Git: set global identity after install
     git_user_name: ""
@@ -40,6 +43,14 @@
     # set to true (or -e wsl_allow_reboot=true / --wsl-allow-reboot) to let it
     # reboot and finish automatically.
     wsl_allow_reboot: false
+
+    # Win11Debloat (https://github.com/Raphire/Win11Debloat): off by default.
+    # When enabled, downloads and runs the latest script straight from
+    # debloat.raphi.re with its own recommended defaults, unattended -
+    # removes the maintainers' default bloatware list and applies their
+    # default privacy/UI tweaks. No custom app list/options here deliberately;
+    # this is meant to be their standard "basic default" profile as-is.
+    win11debloat_enabled: false
 
     # Distros installable via `wsl --install -d <name>` (see `wsl --list --online`
     # on a Windows host for the current catalog).
@@ -221,7 +232,7 @@
     - name: Join Tailscale tailnet with auth key
       ansible.windows.win_command: >-
         "C:\Program Files\Tailscale\tailscale.exe" up --authkey={{ tailscale_authkey | default('') }} --accept-routes
-      when: (tailscale_authkey | default('')) | length > 0
+      when: tailscale_join_enabled | bool and (tailscale_authkey | default('')) | length > 0
 
     - name: Configure Git global user.name
       ansible.windows.win_command: >-
@@ -232,6 +243,18 @@
       ansible.windows.win_command: >-
         git config --global user.email "{{ git_user_email }}"
       when: git_user_email | length > 0
+
+    - name: Run Win11Debloat (basic defaults, silent)
+      ansible.windows.win_shell: >-
+        & ([scriptblock]::Create((irm "https://debloat.raphi.re/"))) -RunDefaults -Silent
+      # Downloading the script and applying its full default set of removals
+      # and tweaks can easily run past the WinRM connection's operation/read
+      # timeout (group_vars/windows/vars.yml) if left as a single blocking
+      # call - same issue the Chocolatey loop above had. async+poll avoids
+      # holding one WinRM request open for the whole duration.
+      async: 1800
+      poll: 15
+      when: win11debloat_enabled | bool
 
     - name: Report packages that failed
       ansible.builtin.debug:
