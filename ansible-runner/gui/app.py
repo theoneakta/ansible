@@ -336,6 +336,8 @@ def build_per_host(host_events: dict, stats: dict) -> dict:
                 status = "unreachable"
             elif e.get("failed"):
                 status = "failed"
+            elif e.get("skipped"):
+                status = "skipped"
             elif e.get("changed"):
                 status = "installed/upgraded" if kind == "loop" else "done"
             else:
@@ -488,7 +490,8 @@ class GitParams(BaseModel):
 
 class RunIn(BaseModel):
     hosts: list[str] = []  # empty = all hosts in the windows group
-    packages: list[str] = []  # empty = install every package in choco_packages
+    packages: list[str] = []  # empty = install every package in choco_packages (see install_packages)
+    install_packages: bool = True  # false = skip the Chocolatey step entirely (e.g. a WSL/Wazuh-only run)
     wazuh: Optional[WazuhParams] = None
     tailscale_authkey: Optional[str] = None
     git: Optional[GitParams] = None
@@ -498,7 +501,9 @@ class RunIn(BaseModel):
 
 def build_extra_vars(body: RunIn) -> dict:
     extra_vars: dict = {}
-    if body.packages:
+    if not body.install_packages:
+        extra_vars["install_packages"] = "false"
+    elif body.packages:
         extra_vars["choco_packages_selected"] = json.dumps(body.packages)
     if body.wsl_distros:
         extra_vars["wsl_enabled"] = "true"
@@ -538,7 +543,18 @@ def run_result_path(run_id: int) -> pathlib.Path:
 def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
     try:
         try:
-            subprocess.run(cmd, cwd=str(BASE), env=env, capture_output=True, text=True, timeout=1800)
+            # gui_stream writes everything useful (log + result JSON) straight
+            # to files, so the parent doesn't need piped stdout/stderr - and
+            # capturing via pipes from a background thread risks the pipe
+            # filling up and backpressuring the child if this thread doesn't
+            # get scheduled promptly (e.g. while the main thread is busy
+            # serving frequent /api/run/{id}/log polls), which can disrupt
+            # the run partway through. Redirect to /dev/null instead.
+            subprocess.run(
+                cmd, cwd=str(BASE), env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=1800,
+            )
         except subprocess.TimeoutExpired:
             finished = datetime.now(timezone.utc).isoformat()
             finalize_run(run_id, finished, "timeout", "Run exceeded 30 minute timeout", {}, {})

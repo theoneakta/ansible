@@ -78,12 +78,12 @@ class CallbackModule(CallbackBase):
         else:
             status = "ok"
 
-        if not skipped:
-            self._log(f"[{host}] {status}: {label}")
-            self.host_events.setdefault(host, []).append({
-                "task": task_name, "item": item,
-                "changed": changed, "failed": bool(failed), "unreachable": bool(unreachable),
-            })
+        self._log(f"[{host}] {status}: {label}")
+        self.host_events.setdefault(host, []).append({
+            "task": task_name, "item": item,
+            "changed": changed, "failed": bool(failed),
+            "unreachable": bool(unreachable), "skipped": bool(skipped),
+        })
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._log(f">>> {task.get_name()}")

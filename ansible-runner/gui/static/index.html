@@ -426,8 +426,21 @@ function renderHostResults(container, hostsResults) {
 
 $('runBtn').addEventListener('click', async () => {
   const body = { hosts: selectedHosts(), packages: selectedPackages() };
-  if (!$('allPackages').checked && body.packages.length === 0) {
-    alert('Select at least one package, or check "All packages".');
+  // "All packages" unchecked with nothing individually picked means the user
+  // wants to skip the Chocolatey step entirely for this run (e.g. a
+  // WSL/Wazuh-only run), NOT "install everything" - packages:[] alone can't
+  // tell those two apart server-side, so say so explicitly.
+  const wantsPackages = $('allPackages').checked || body.packages.length > 0;
+  if (!wantsPackages) {
+    body.install_packages = false;
+    delete body.packages;
+  }
+  const wantsWazuh = $('wazuhToggle').checked;
+  const wantsTailscale = $('tailscaleToggle').checked && $('tailscaleKey').value;
+  const wantsGit = $('gitToggle').checked;
+  const wantsWsl = $('wslToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git).');
     return;
   }
   if ($('wazuhToggle').checked) {
