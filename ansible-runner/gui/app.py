@@ -601,24 +601,17 @@ def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
         run_lock.release()
 
 
-@app.post("/api/run")
-def api_run(body: RunIn):
-    if not has_vault_pass():
-        raise HTTPException(400, "No vault password file on the server - cannot authenticate to hosts.")
+def _start_run(cmd: list[str], hosts: list[str], extra_vars: dict) -> int:
+    """Common run-launching machinery, shared by every playbook the GUI can
+    trigger: acquire the single run_lock, record the run, wire up gui_stream,
+    and kick it off in a background thread. Releases the lock itself on
+    failure to start; _execute_run releases it on completion."""
     if not run_lock.acquire(blocking=False):
         raise HTTPException(409, "A run is already in progress. Wait for it to finish.")
 
     try:
-        extra_vars = build_extra_vars(body)
-        cmd = ["ansible-playbook", PLAYBOOK]
-        if body.hosts:
-            cmd += ["--limit", ",".join(body.hosts)]
-        if extra_vars:
-            cmd += ["-e", json.dumps(extra_vars)]
-        cmd += vault_password_args()
-
         started = datetime.now(timezone.utc).isoformat()
-        run_id = start_run_record(started, body.hosts, extra_vars)
+        run_id = start_run_record(started, hosts, extra_vars)
 
         log_path = run_log_path(run_id)
         log_path.write_text("")
@@ -632,10 +625,129 @@ def api_run(body: RunIn):
         env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
 
         threading.Thread(target=_execute_run, args=(run_id, cmd, env), daemon=True).start()
+        return run_id
     except Exception:
         run_lock.release()
         raise
 
+
+@app.post("/api/run")
+def api_run(body: RunIn):
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server - cannot authenticate to hosts.")
+    extra_vars = build_extra_vars(body)
+    cmd = ["ansible-playbook", PLAYBOOK]
+    if body.hosts:
+        cmd += ["--limit", ",".join(body.hosts)]
+    if extra_vars:
+        cmd += ["-e", json.dumps(extra_vars)]
+    cmd += vault_password_args()
+    run_id = _start_run(cmd, body.hosts, extra_vars)
+    return {"run_id": run_id, "status": "running"}
+
+
+CIS_PLAYBOOK = "playbooks/cis_hardening.yml"
+
+# Single source of truth for every CIS profile the GUI (and run.sh --cis-os)
+# can target. Verified live against each role's actual installed source
+# (tags, section numbers/names, section-var naming and padding, and the
+# ansible_remediation/create_gpos mode defaults) - see the commit message
+# for how this was derived. section_width is passed to str.zfill() to build
+# the right var name for each role (e.g. "1" -> "1" for Windows-11-CIS,
+# "1" -> "01" for the rest).
+CIS_PROFILES = {
+    "windows11": {
+        "label": "Windows 11",
+        "role": "Windows-11-CIS",
+        "var_prefix": "win11cis",
+        "section_width": 1,
+        "levels": [
+            {"id": "1", "label": "Level 1 (corporate/enterprise)",
+             "tags": ["level1-corporate-enterprise-environment", "level1-bitlocker"]},
+            {"id": "2", "label": "Level 2 (high security)",
+             "tags": ["level2-high-security-sensitive-data-environment", "level2-bitlocker"]},
+        ],
+        "sections": [
+            {"id": "1", "label": "Account Policies"},
+            {"id": "2", "label": "Local Policies"},
+            {"id": "5", "label": "System Services"},
+            {"id": "9", "label": "Windows Defender Firewall"},
+            {"id": "17", "label": "Advanced Audit Policy Configuration"},
+            {"id": "18", "label": "Administrative Templates (Computer)"},
+            {"id": "19", "label": "Administrative Templates (User)"},
+        ],
+    },
+}
+
+_SERVER_LEVELS = [
+    {"id": "1-dc", "label": "Level 1 - Domain Controller", "tags": ["level1-domaincontroller"]},
+    {"id": "1-member", "label": "Level 1 - Domain Member", "tags": ["level1-domainmember"]},
+    {"id": "1-standalone", "label": "Level 1 - Member Server", "tags": ["level1-memberserver"]},
+    {"id": "2-dc", "label": "Level 2 - Domain Controller", "tags": ["level2-domaincontroller"]},
+    {"id": "2-standalone", "label": "Level 2 - Member Server", "tags": ["level2-memberserver"]},
+]
+_SERVER_SECTIONS = CIS_PROFILES["windows11"]["sections"]  # same 7 section numbers/names on every role
+
+for _key, _label, _role, _prefix in [
+    ("windows2019", "Windows Server 2019", "Windows-2019-CIS", "win19cis"),
+    ("windows2022", "Windows Server 2022", "Windows-2022-CIS", "win22cis"),
+    ("windows2025", "Windows Server 2025", "Windows-2025-CIS", "win25cis"),
+]:
+    CIS_PROFILES[_key] = {
+        "label": _label,
+        "role": _role,
+        "var_prefix": _prefix,
+        "section_width": 2,
+        "levels": _SERVER_LEVELS,
+        "sections": _SERVER_SECTIONS,
+    }
+
+
+class CisRunIn(BaseModel):
+    hosts: list[str] = []
+    os: str = "windows11"  # key into CIS_PROFILES
+    cis_level: str = "1"  # a level "id" from that profile's levels list
+    mode: str = "all"  # "all" or "sections"
+    sections: list[str] = []  # section ids to include when mode == "sections"
+    audit_only: bool = False
+
+
+@app.get("/api/cis/options")
+def api_cis_options():
+    return CIS_PROFILES
+
+
+@app.post("/api/cis/run")
+def api_cis_run(body: CisRunIn):
+    # cis_hardening.yml applies real security-setting changes (see its own
+    # header comment) - a fundamentally different, higher-stakes operation
+    # than install_software.yml. Level/section selection is via --tags and
+    # per-section booleans on the ansible-lockdown role, not plain vars.
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server - cannot authenticate to hosts.")
+    profile = CIS_PROFILES.get(body.os)
+    if not profile:
+        raise HTTPException(400, f"Unknown OS '{body.os}'.")
+    level = next((entry for entry in profile["levels"] if entry["id"] == body.cis_level), None)
+    if not level:
+        raise HTTPException(400, f"Unknown level '{body.cis_level}' for {body.os}.")
+
+    extra_vars: dict = {"cis_role": profile["role"]}
+    if body.mode == "sections":
+        if not body.sections:
+            raise HTTPException(400, "Select at least one section, or switch to 'All'.")
+        for section in profile["sections"]:
+            var = f"{profile['var_prefix']}_section{section['id'].zfill(profile['section_width'])}"
+            extra_vars[var] = section["id"] in body.sections
+    if body.audit_only:
+        extra_vars.update({"audit_only": True, "setup_audit": True, "run_audit": True})
+
+    cmd = ["ansible-playbook", CIS_PLAYBOOK, "--tags", ",".join(level["tags"])]
+    if body.hosts:
+        cmd += ["--limit", ",".join(body.hosts)]
+    cmd += ["-e", json.dumps(extra_vars)]
+    cmd += vault_password_args()
+    run_id = _start_run(cmd, body.hosts, {**extra_vars, "cis_level": body.cis_level, "cis_os": body.os})
     return {"run_id": run_id, "status": "running"}
 
 

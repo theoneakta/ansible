@@ -29,8 +29,11 @@
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
-#   --cis-level <1|2>                    which CIS level to apply (translates to the role's own --tags)
+#   --cis-os <windows11|windows2019|windows2022|windows2025>  default: windows11
+#   --cis-level <id>                     windows11: 1 or 2
+#                                         servers:   1-dc, 1-member, 1-standalone, 2-dc, or 2-standalone
 #   --cis-audit-only                     report what would change without making changes
+#   (section-level selection is GUI-only for now - use --tags/-e directly on the CLI if needed)
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
 # Example:
@@ -121,13 +124,8 @@ YML
         --wsl-user)                    WSL_TARGET_USERS+=("$2"); shift 2 ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
-        --cis-level)
-          if [[ "$2" == "2" ]]; then
-            PASSTHRU+=(--tags level2-high-security-sensitive-data-environment)
-          else
-            PASSTHRU+=(--tags level1-corporate-enterprise-environment)
-          fi
-          shift 2 ;;
+        --cis-os)                      CIS_OS="$2"; shift 2 ;;
+        --cis-level)                   CIS_LEVEL_ID="$2"; shift 2 ;;
         --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
@@ -142,6 +140,31 @@ YML
         users_json=$(printf '"%s",' "${WSL_TARGET_USERS[@]}"); users_json="[${users_json%,}]"
       fi
       EXTRA_VARS+=(-e "{\"wsl_enabled\": true, \"wsl_distros_selected\": $distros_json, \"wsl_target_users\": $users_json}")
+    fi
+    if [[ -n "${CIS_OS:-}" || -n "${CIS_LEVEL_ID:-}" ]]; then
+      # Keep in sync with CIS_PROFILES in gui/app.py (the single source of
+      # truth, verified against each role's actual installed source).
+      CIS_OS="${CIS_OS:-windows11}"
+      CIS_LEVEL_ID="${CIS_LEVEL_ID:-1}"
+      case "$CIS_OS" in
+        windows11)   CIS_ROLE=Windows-11-CIS ;;
+        windows2019) CIS_ROLE=Windows-2019-CIS ;;
+        windows2022) CIS_ROLE=Windows-2022-CIS ;;
+        windows2025) CIS_ROLE=Windows-2025-CIS ;;
+        *) echo "Unknown --cis-os '$CIS_OS' (expected windows11, windows2019, windows2022, or windows2025)" >&2; exit 1 ;;
+      esac
+      case "$CIS_OS:$CIS_LEVEL_ID" in
+        windows11:1)     CIS_TAGS="level1-corporate-enterprise-environment,level1-bitlocker" ;;
+        windows11:2)     CIS_TAGS="level2-high-security-sensitive-data-environment,level2-bitlocker" ;;
+        *:1-dc)          CIS_TAGS="level1-domaincontroller" ;;
+        *:1-member)      CIS_TAGS="level1-domainmember" ;;
+        *:1-standalone)  CIS_TAGS="level1-memberserver" ;;
+        *:2-dc)          CIS_TAGS="level2-domaincontroller" ;;
+        *:2-standalone)  CIS_TAGS="level2-memberserver" ;;
+        *) echo "Unknown --cis-level '$CIS_LEVEL_ID' for --cis-os '$CIS_OS'" >&2; exit 1 ;;
+      esac
+      EXTRA_VARS+=(-e "cis_role=$CIS_ROLE")
+      PASSTHRU+=(--tags "$CIS_TAGS")
     fi
     "${RUN[@]}" ansible "playbooks/${pb}" "${PASSTHRU[@]}" "${EXTRA_VARS[@]}" "${VAULT_ARGS[@]}"
     ;;

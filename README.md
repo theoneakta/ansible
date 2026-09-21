@@ -28,7 +28,7 @@ ansible-runner/
 │   └── host_vars/<host>/       # optional per-host overrides
 ├── playbooks/
 │   ├── install_software.yml
-│   └── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI only, not in the GUI
+│   └── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
 ├── scripts/
 │   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
 └── gui/                        # web GUI (own Dockerfile, started via --gui)
@@ -111,8 +111,9 @@ Open http://localhost:8080 (bound to localhost only). From there you can:
 - **Hosts** - pick specific hosts from `inventory/hosts.yml`, run against all of them, or add a new host (name/IP) straight into the inventory.
 - **Credentials** - set the Windows username/password (and default Tailscale key) for the group or a specific host. Submitting encrypts the values straight into the matching vault file (`group_vars/windows/vault.yml` or `host_vars/<host>/vault.yml`) using Ansible Vault; the GUI never displays them back.
 - **Software** - check "All packages" (default) or uncheck it to pick specific packages from the list in `install_software.yml` for this run.
-- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), WSL (opt in, pick one or more distros to install, and whether the run may reboot the PC to finish), and Win11Debloat - the same params as the [CLI flags](#install-time-parameters) above.
-- **History** - every run is logged (SQLite, persisted under `gui/data/`) with a per-host, per-package breakdown of what installed, what was already up to date, and what failed.
+- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), joining Tailscale, Git identity (name/email), WSL (opt in, pick one or more distros to install, whether the run may reboot the PC to finish, and optionally provision specific other Windows users too), Win11Debloat, and RSAT - the same params as the [CLI flags](#install-time-parameters) above.
+- **CIS Benchmark hardening** - a separate section for `cis_hardening.yml` (see [below](#cis-benchmark-hardening)): pick the target OS, level, and all-or-specific-sections, with an audit-only mode. Deliberately kept apart from the install form above - it's a different kind of operation with real security-setting consequences, not just more packages.
+- **History** - every run (either kind) is logged (SQLite, persisted under `gui/data/`) with a per-host, per-package breakdown of what installed, what was already up to date, and what failed.
 
 Manage it with:
 
@@ -197,24 +198,31 @@ To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourpla
 
 ## CIS Benchmark hardening
 
-`playbooks/cis_hardening.yml` applies [ansible-lockdown's Windows-11-CIS role](https://github.com/ansible-lockdown/Windows-11-CIS) - CLI only, not exposed in the web GUI.
+`playbooks/cis_hardening.yml` applies one of [ansible-lockdown's](https://github.com/ansible-lockdown) CIS Benchmark roles - Windows 11, or Windows Server 2019/2022/2025 - to the selected host(s). Available both in the web GUI (its own "CIS Benchmark hardening" section) and on the CLI.
 
-> **This is a fundamentally different kind of operation from `install_software.yml`.** It changes real security settings on the target - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this whole toolkit depends on) or break older/legacy software. **Read the [role's own documentation](https://github.com/ansible-lockdown/Windows-11-CIS) first, and test against a non-critical PC before running it against anything you rely on.**
+> **This is a fundamentally different kind of operation from `install_software.yml`.** It changes real security settings on the target - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this whole toolkit depends on) or break older/legacy software. **Read the relevant role's own documentation first, and test against a non-critical PC before running it against anything you rely on.**
 
-The role picks what to apply via `--tags`, not a simple on/off variable - `run.sh` translates a level number for you:
+**Which OS to target, then level, then all-or-specific-sections** - the GUI cascades through these (fetching the real options from `/api/cis/options`, backed by `CIS_PROFILES` in `gui/app.py` - the single source of truth, verified against each role's actual installed source rather than assumed):
+
+- **Windows 11** levels: `1` (corporate/enterprise) or `2` (high security) - each also pulls in that level's separate BitLocker-tagged controls automatically.
+- **Server 2019/2022/2025** levels are split by machine role instead of a simple 1/2, since that's how the roles themselves are built: `1-dc`, `1-member`, `1-standalone`, `2-dc`, `2-standalone` (Domain Controller / Domain Member / Member Server; note there's no `2-member` upstream - a benchmark design choice, not an oversight here). These roles default to direct Ansible remediation (not their alternate GPO-generation mode), which needs no extra configuration.
+- **Sections** (all 4 roles use the same 7 numbers/names): 1 Account Policies, 2 Local Policies, 5 System Services, 9 Windows Defender Firewall, 17 Advanced Audit Policy Configuration, 18 Administrative Templates (Computer), 19 Administrative Templates (User). "All" applies the whole level; "Specific sections" toggles each one on/off via the role's own `win<x>cis_section<N>` variables (individual control IDs like `2.3.1.1` exist too but aren't exposed - ~200+ of them, impractical as a checkbox list).
+
+On the CLI, `run.sh` handles OS + level for you (section-level selection is GUI-only for now):
 
 ```bash
-./run.sh cis_hardening.yml --cis-level 1                # CIS Level 1 (corporate/enterprise) - less strict
-./run.sh cis_hardening.yml --cis-level 2                # CIS Level 2 (high security) - stricter, more likely to break something
-./run.sh cis_hardening.yml --cis-level 1 --cis-audit-only  # report what would change, without changing anything
+./run.sh cis_hardening.yml --cis-os windows11 --cis-level 1                  # Windows 11, Level 1
+./run.sh cis_hardening.yml --cis-os windows2022 --cis-level 1-standalone     # Server 2022, Level 1 Member Server
+./run.sh cis_hardening.yml --cis-os windows11 --cis-level 1 --cis-audit-only # report what would change, without changing anything
 ```
 
 | Flag | Effect |
 |---|---|
-| `--cis-level <1\|2>` | Which CIS level to apply (maps to the role's own tags) |
+| `--cis-os <windows11\|windows2019\|windows2022\|windows2025>` | Which role to apply (default `windows11`) |
+| `--cis-level <id>` | Which level for that OS (`1`/`2` for Windows 11; `1-dc`/`1-member`/`1-standalone`/`2-dc`/`2-standalone` for servers) |
 | `--cis-audit-only` | Report only - sets the role's own `audit_only`/`setup_audit`/`run_audit` vars, makes no changes |
 
-The role is installed from `requirements.yml` at image build time (`ansible-galaxy install -r requirements.yml`) - rebuild (`./run.sh --build`) after changing its pinned `version`.
+All 4 roles are installed from `requirements.yml` at image build time (`ansible-galaxy install -r requirements.yml`) - rebuild (`./run.sh --build` and, for the GUI, `./run.sh --gui` after a fresh build) after changing a pinned `version`. Which role actually runs is chosen dynamically via the `cis_role` variable (an `include_role: name: "{{ cis_role }}"` on a single generic playbook) - note that dynamic includes don't automatically inherit `--tags` filtering the way a static `roles:` list does, so the include step itself is tagged `always` and the real filtering happens on the tasks discovered inside, which already carry their own correct tags.
 
 ## Updating Ansible / collections
 
