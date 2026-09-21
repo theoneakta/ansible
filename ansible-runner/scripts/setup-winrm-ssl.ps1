@@ -107,13 +107,13 @@ if ($listener) {
     } else {
         Write-Host "    replacing existing HTTPS listener (was using cert $currentThumbprint)"
         $listener | Remove-Item -Recurse -Force
-        New-WSManInstance -ResourceURI winrm/config/Listener -SelectorSet @{Address='*'; Transport='HTTPS'} `
-            -ValueSet @{Hostname=$SubjectName; CertificateThumbprint=$cert.Thumbprint; Port=$Port} | Out-Null
+        New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * `
+            -Hostname $SubjectName -CertificateThumbPrint $cert.Thumbprint -Port $Port -Force | Out-Null
         Write-Ok "HTTPS listener recreated with new certificate on port $Port"
     }
 } else {
-    New-WSManInstance -ResourceURI winrm/config/Listener -SelectorSet @{Address='*'; Transport='HTTPS'} `
-        -ValueSet @{Hostname=$SubjectName; CertificateThumbprint=$cert.Thumbprint; Port=$Port} | Out-Null
+    New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * `
+        -Hostname $SubjectName -CertificateThumbPrint $cert.Thumbprint -Port $Port -Force | Out-Null
     Write-Ok "HTTPS listener created on port $Port"
 }
 
@@ -151,7 +151,7 @@ if ($current -eq 1) {
 # --- 7. Timeouts and shell quotas ------------------------------------------------
 Write-Step "Raising WinRM operation timeout and per-shell resource limits"
 $serviceSettings = @{
-    'WSMan:\localhost\Service\MaxTimeoutms'                = 1800000   # 30 min (matches playbook async ceiling)
+    'WSMan:\localhost\MaxTimeoutms'                         = 1800000   # 30 min (matches playbook async ceiling)
     'WSMan:\localhost\Shell\MaxMemoryPerShellMB'            = 2048
     'WSMan:\localhost\Shell\MaxProcessesPerShell'           = 50
     'WSMan:\localhost\Shell\MaxShellsPerUser'               = 10
@@ -160,7 +160,7 @@ $serviceSettings = @{
 foreach ($path in $serviceSettings.Keys) {
     $desired = $serviceSettings[$path]
     $currentValue = (Get-Item $path).Value
-    if ([int]$currentValue -ge $desired) {
+    if ([int64]$currentValue -ge $desired) {
         Write-Skip "$path already $currentValue"
     } else {
         Set-Item $path -Value $desired -Force
