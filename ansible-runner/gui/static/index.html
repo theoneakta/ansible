@@ -85,7 +85,7 @@
 
 <h2>3. Software</h2>
 <section id="packagesSection">
-  <div class="row"><label><input type="checkbox" id="allPackages" checked> All packages</label></div>
+  <div class="row"><label><input type="checkbox" id="allPackages"> All packages</label></div>
   <div id="packageList" class="params open" style="margin-left:1.5rem;"></div>
 
   <div class="row" style="margin-top:.75rem;">
@@ -300,6 +300,7 @@ const CATEGORY_ORDER = ['multimedia', 'dev', 'tools'];
 
 async function loadPackages() {
   const allChecked = $('allPackages').checked;
+  const isFirstLoad = knownPackageIds === null;
   const previouslyChecked = new Set([...document.querySelectorAll('.packageCheck:checked')].map(c => c.value));
   const packages = await fetch('/api/packages').then(r => r.json());
   const list = $('packageList');
@@ -324,7 +325,7 @@ async function loadPackages() {
     group.className = 'packageGroup';
     pkgs.forEach(p => {
       const wasKnown = knownPackageIds && knownPackageIds.has(p.name);
-      const isChecked = allChecked || !wasKnown || previouslyChecked.has(p.name);
+      const isChecked = allChecked || (!isFirstLoad && !wasKnown) || previouslyChecked.has(p.name);
       const row = document.createElement('div');
       row.className = 'row';
       row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" ${isChecked ? 'checked' : ''} ${allChecked ? 'disabled' : ''}> ${p.label}</label>`;
