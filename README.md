@@ -83,6 +83,7 @@ Examples:
 | `--git-email <email>` | Sets `git config --global user.email` |
 | `--wsl-distro <name>` | Install this WSL distro (repeatable for multiple; omit entirely to skip WSL) |
 | `--wsl-allow-reboot` | Let the run reboot the PC if needed to finish the WSL distro install(s) (see below) |
+| `--win11debloat` | Runs [Win11Debloat](https://github.com/Raphire/Win11Debloat) with its own recommended defaults (`-RunDefaults -Silent`), unattended (see below) |
 
 ```bash
 ./run.sh install_software.yml \
@@ -90,7 +91,7 @@ Examples:
   --git-name "Michel Mondor" --git-email michel.bernard.mondor@gmail.com
 ```
 
-**Tailscale auth key default:** so you don't have to pass `--tailscale-authkey` on every run, store it in the vault as `vault_tailscale_authkey` (new vaults created with `--vault-init` already include an empty placeholder for it; for an existing vault run `./run.sh --vault-edit` and add the line). `vars.yml` maps it to `tailscale_authkey`, which every host uses by default; `--tailscale-authkey` on the command line still overrides it for a one-off run (e.g. a different tailnet).
+**Tailscale is opt-in per run:** joining never happens just because a key is stored - pass `--tailscale-join` (or check "Join Tailscale tailnet" in the GUI) to join with the key stored in vault, or `--tailscale-authkey <key>` to join with a different key for that run (e.g. a different tailnet) without needing `--tailscale-join` too. To store the default key, add it to the vault as `vault_tailscale_authkey` (new vaults created with `--vault-init` already include an empty placeholder for it; for an existing vault run `./run.sh --vault-edit` and add the line) - `vars.yml` maps it to `tailscale_authkey`, used only once joining is explicitly requested.
 
 ## Web GUI
 
@@ -106,7 +107,7 @@ Open http://localhost:8080 (bound to localhost only). From there you can:
 - **Hosts** - pick specific hosts from `inventory/hosts.yml`, run against all of them, or add a new host (name/IP) straight into the inventory.
 - **Credentials** - set the Windows username/password (and default Tailscale key) for the group or a specific host. Submitting encrypts the values straight into the matching vault file (`group_vars/windows/vault.yml` or `host_vars/<host>/vault.yml`) using Ansible Vault; the GUI never displays them back.
 - **Software** - check "All packages" (default) or uncheck it to pick specific packages from the list in `install_software.yml` for this run.
-- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), and WSL - opt in, pick one or more distros to install, and whether the run may reboot the PC to finish - the same params as the [CLI flags](#install-time-parameters) above.
+- **Install parameters** - toggle Wazuh (manager, port, protocol, group, agent name, registration password), a one-off Tailscale key override, Git identity (name/email), WSL (opt in, pick one or more distros to install, and whether the run may reboot the PC to finish), and Win11Debloat - the same params as the [CLI flags](#install-time-parameters) above.
 - **History** - every run is logged (SQLite, persisted under `gui/data/`) with a per-host, per-package breakdown of what installed, what was already up to date, and what failed.
 
 Manage it with:
@@ -184,6 +185,7 @@ For Linux targets, uncomment the `~/.ssh` mount in `docker-compose.yml` and add 
 - The Wazuh agent only installs if you pass `-e wazuh_manager=<ip-or-fqdn>`.
 - **WSL is opt-in**: off by default, and skipped entirely unless you pass one or more `--wsl-distro <name>` flags (or `-e wsl_enabled=true -e 'wsl_distros_selected=["Ubuntu"]'`) - see `wsl_distros_available` in the playbook for the built-in list (Ubuntu variants, Debian, Kali Linux, openSUSE, Fedora, AlmaLinux, Oracle Linux); any name from `wsl --list --online` works even if not in that list. Already-installed distros are skipped. Requires Windows 10 2004+/Windows 11. Enabling the underlying Windows feature for the first distro on a machine can require a reboot to finish - by default the playbook just warns and leaves the PC running; pass `--wsl-allow-reboot` (or `-e wsl_allow_reboot=true`) to let it reboot and complete automatically. Note a distro's first launch still needs an interactive step to create the Linux user account (`wsl -d <name>`), which isn't automated here.
 - Some items are not installable via Chocolatey (Bitdefender, Punch! Software, Duplicate Cleaner Pro, DownloadHelper, Plantronics Hub / Poly Lens). The playbook prints them at the end as a manual-install reminder.
+- **Win11Debloat is opt-in**: off by default, pass `--win11debloat` (or `-e win11debloat_enabled=true`) to enable it. Downloads and runs the latest [Win11Debloat](https://github.com/Raphire/Win11Debloat) script straight from `debloat.raphi.re` on the target with its own maintainers' recommended defaults (`-RunDefaults -Silent`) - removes their default bloatware list and applies their default privacy/UI tweaks, unattended. There's no per-run customization of *which* apps/tweaks here on purpose; it's meant to be their standard profile as-is. Review the [project's own docs](https://github.com/Raphire/Win11Debloat/wiki/Command%E2%80%90line-Interface) if you want different behavior later.
 
 To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourplaybook.yml`.
 

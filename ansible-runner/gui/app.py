@@ -44,6 +44,7 @@ TASK_KIND = {
     "Join Tailscale tailnet with auth key": "single",
     "Configure Git global user.name": "single",
     "Configure Git global user.email": "single",
+    "Run Win11Debloat (basic defaults, silent)": "single",
 }
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -493,10 +494,12 @@ class RunIn(BaseModel):
     packages: list[str] = []  # empty = install every package in choco_packages (see install_packages)
     install_packages: bool = True  # false = skip the Chocolatey step entirely (e.g. a WSL/Wazuh-only run)
     wazuh: Optional[WazuhParams] = None
-    tailscale_authkey: Optional[str] = None
+    tailscale_join: bool = False  # explicit opt-in - a stored vault key alone must never be enough to join
+    tailscale_authkey: Optional[str] = None  # optional override of the vault-stored key
     git: Optional[GitParams] = None
     wsl_distros: list[str] = []  # empty = WSL step skipped entirely
     wsl_allow_reboot: bool = False
+    win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
 
 
 def build_extra_vars(body: RunIn) -> dict:
@@ -520,8 +523,10 @@ def build_extra_vars(body: RunIn) -> dict:
             extra_vars["wazuh_agent_name"] = body.wazuh.agent_name
         if body.wazuh.registration_password:
             extra_vars["wazuh_registration_password"] = body.wazuh.registration_password
-    if body.tailscale_authkey:
-        extra_vars["tailscale_authkey"] = body.tailscale_authkey
+    if body.tailscale_join:
+        extra_vars["tailscale_join_enabled"] = "true"
+        if body.tailscale_authkey:
+            extra_vars["tailscale_authkey"] = body.tailscale_authkey
     if body.git:
         if body.git.name:
             extra_vars["git_user_name"] = body.git.name
@@ -529,6 +534,8 @@ def build_extra_vars(body: RunIn) -> dict:
             extra_vars["git_user_email"] = body.git.email
     if body.wsl_allow_reboot:
         extra_vars["wsl_allow_reboot"] = "true"
+    if body.win11debloat:
+        extra_vars["win11debloat_enabled"] = "true"
     return extra_vars
 
 

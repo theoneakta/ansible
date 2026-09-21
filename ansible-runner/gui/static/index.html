@@ -111,10 +111,10 @@
   </fieldset>
 
   <fieldset>
-    <legend><label><input type="checkbox" id="tailscaleToggle"> Override Tailscale key for this run</label></legend>
+    <legend><label><input type="checkbox" id="tailscaleToggle"> Join Tailscale tailnet</label></legend>
     <div class="params" id="tailscaleParams">
-      <div class="row"><label for="tailscaleKey">Auth key</label><input type="text" id="tailscaleKey"></div>
-      <p class="muted">Leave unchecked to use the key stored in vault (recommended).</p>
+      <div class="row"><label for="tailscaleKey">Auth key (optional override)</label><input type="text" id="tailscaleKey"></div>
+      <p class="muted">Leave the key blank to use the one stored in vault. Unchecking this box entirely skips Tailscale for this run, even if a key is stored.</p>
     </div>
   </fieldset>
 
@@ -132,6 +132,13 @@
       <div id="wslDistroList" style="columns: 2; margin-bottom: .5rem;"></div>
       <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
       <p class="muted">Already-installed distros are skipped. Enabling the underlying Windows feature can require a reboot to finish; if not allowed, the run warns and you can re-run later.</p>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><label><input type="checkbox" id="win11debloatToggle"> Run Win11Debloat (basic defaults)</label></legend>
+    <div class="params" id="win11debloatParams">
+      <p class="muted">Runs <a href="https://github.com/Raphire/Win11Debloat" target="_blank" rel="noopener">Win11Debloat</a> with its standard recommended settings (<code>-RunDefaults -Silent</code>): removes the default list of bloatware/preinstalled apps and applies its default privacy/UI tweaks, unattended. Downloads and runs the latest script straight from debloat.raphi.re on the target PC - no extra options here, just the maintainers' own defaults.</p>
     </div>
   </fieldset>
 
@@ -157,6 +164,7 @@ toggleParams('wazuhToggle', 'wazuhParams');
 toggleParams('tailscaleToggle', 'tailscaleParams');
 toggleParams('gitToggle', 'gitParams');
 toggleParams('wslToggle', 'wslParams');
+toggleParams('win11debloatToggle', 'win11debloatParams');
 
 let hostsCache = [];
 
@@ -436,11 +444,12 @@ $('runBtn').addEventListener('click', async () => {
     delete body.packages;
   }
   const wantsWazuh = $('wazuhToggle').checked;
-  const wantsTailscale = $('tailscaleToggle').checked && $('tailscaleKey').value;
+  const wantsTailscale = $('tailscaleToggle').checked;
   const wantsGit = $('gitToggle').checked;
   const wantsWsl = $('wslToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git).');
+  const wantsWin11Debloat = $('win11debloatToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -454,8 +463,11 @@ $('runBtn').addEventListener('click', async () => {
       registration_password: $('wazuhRegPass').value || null,
     };
   }
-  if ($('tailscaleToggle').checked && $('tailscaleKey').value) {
-    body.tailscale_authkey = $('tailscaleKey').value;
+  if ($('tailscaleToggle').checked) {
+    body.tailscale_join = true;
+    if ($('tailscaleKey').value) {
+      body.tailscale_authkey = $('tailscaleKey').value;
+    }
   }
   if ($('gitToggle').checked) {
     body.git = { name: $('gitName').value || null, email: $('gitEmail').value || null };
@@ -465,6 +477,9 @@ $('runBtn').addEventListener('click', async () => {
     if (!distros.length) { alert('Select at least one WSL distro to install.'); return; }
     body.wsl_distros = distros;
     body.wsl_allow_reboot = $('wslRebootToggle').checked;
+  }
+  if ($('win11debloatToggle').checked) {
+    body.win11debloat = true;
   }
 
   $('runBtn').disabled = true;
