@@ -55,6 +55,10 @@
       - { name: AlmaLinux-9,           label: "AlmaLinux 9" }
       - { name: OracleLinux_9_5,       label: "Oracle Linux 9.5" }
 
+    # Set to false to skip the Chocolatey step entirely (e.g. a run that
+    # should only do WSL/Wazuh/Tailscale/Git and touch no packages at all).
+    install_packages: true
+
     # Which packages to install this run, by name (see choco_packages below).
     # Empty/unset = install everything in the list.
     choco_packages_selected: []
@@ -96,6 +100,7 @@
       chocolatey.chocolatey.win_chocolatey:
         name: chocolatey
         state: present
+      when: install_packages | bool
 
     - name: Install / upgrade packages to latest
       chocolatey.chocolatey.win_chocolatey:
@@ -105,6 +110,7 @@
       loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
       loop_control:
         label: "{{ item.label }}"
+      when: install_packages | bool
       # Large installers can take minutes to download; a synchronous WinRM
       # call that long risks hitting the connection's read/operation timeout
       # mid-download, which aborts the WHOLE loop (remaining packages never
@@ -166,14 +172,46 @@
       chocolatey.chocolatey.win_chocolatey:
         name: wazuh-agent
         state: latest
+        # win_chocolatey only reruns the MSI (and thus reapplies
+        # package_params) when it detects an actual version change - once
+        # installed, a later run with a different manager/params here would
+        # otherwise be a silent no-op ("already up to date") that never
+        # touches the existing config. Force it so a changed manager address
+        # always takes effect.
+        force: true
+        # Keys here are the wazuh-agent Chocolatey package's OWN parameter
+        # names (its chocolateyinstall.ps1 reads them via Get-PackageParameters
+        # and maps them to the real WAZUH_* MSI properties itself) - they are
+        # NOT the MSI property names directly. Get-PackageParameters expects
+        # `/Key:Value` (or `/Key=Value`), never a raw WAZUH_* flag.
         package_params: >-
-          /WAZUH_MANAGER={{ wazuh_manager }}
-          /WAZUH_MANAGER_PORT={{ wazuh_manager_port }}
-          /WAZUH_PROTOCOL={{ wazuh_protocol }}
-          {% if wazuh_registration_password %}/WAZUH_REGISTRATION_PASSWORD={{ wazuh_registration_password }}{% endif %}
-          {% if wazuh_group %}/WAZUH_GROUP={{ wazuh_group }}{% endif %}
-          {% if wazuh_agent_name %}/WAZUH_AGENT_NAME={{ wazuh_agent_name }}{% endif %}
+          /Manager:{{ wazuh_manager }}
+          /ManagerPort:{{ wazuh_manager_port }}
+          /Protocol:{{ wazuh_protocol }}
+          {% if wazuh_registration_password %}/RegistrationPassword:{{ wazuh_registration_password }}{% endif %}
+          {% if wazuh_group %}/AgentGroup:{{ wazuh_group }}{% endif %}
+          {% if wazuh_agent_name %}/AgentName:{{ wazuh_agent_name }}{% endif %}
       when: wazuh_manager | length > 0
+
+    - name: Ensure the Wazuh agent config points at the right manager
+      # win_chocolatey's `force` above reruns the MSI, but Windows Installer
+      # preserves an existing ossec.conf on a repair/upgrade rather than
+      # rewriting it - so on a host that already had wazuh-agent installed, a
+      # changed wazuh_manager can silently never take effect even though the
+      # MSI parameters were correct and the install reported success.
+      # Enforce the address directly instead of relying on the MSI for it.
+      community.windows.win_lineinfile:
+        path: 'C:\Program Files (x86)\ossec-agent\ossec.conf'
+        regexp: '<address>.*</address>'
+        line: "      <address>{{ wazuh_manager }}</address>"
+      when: wazuh_manager | length > 0
+      register: wazuh_config_fixed
+
+    - name: Restart the Wazuh agent service if its config changed
+      ansible.windows.win_service:
+        name: WazuhSvc
+        state: restarted
+      when: wazuh_manager | length > 0 and wazuh_config_fixed is changed
 
     - name: Warn about Wazuh agent being skipped
       ansible.builtin.debug:
