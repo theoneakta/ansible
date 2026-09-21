@@ -154,12 +154,32 @@
   </fieldset>
 
   <button id="runBtn">Install now</button>
+</section>
+
+<h2>5. CIS Benchmark hardening</h2>
+<section id="cisSection">
+  <div class="warning">
+    <strong>This changes real security settings</strong> on the selected host(s) - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this tool depends on) or break older software. Uses <a href="https://github.com/ansible-lockdown" target="_blank" rel="noopener">ansible-lockdown's</a> CIS roles - read the relevant role's own docs first, and test on a non-critical PC before applying for real.
+  </div>
+  <div class="row"><label for="cisOs">Target OS</label><select id="cisOs"></select></div>
+  <div class="row"><label>Level</label><span id="cisLevelOptions"></span></div>
+  <div class="row">
+    <label>Controls</label>
+    <label style="min-width:auto; margin-right:1.5rem;"><input type="radio" name="cisMode" value="all" checked> All</label>
+    <label style="min-width:auto;"><input type="radio" name="cisMode" value="sections"> Specific sections</label>
+  </div>
+  <div id="cisSectionsList" class="params" style="margin-left:1.5rem; columns: 2;"></div>
+  <div class="row"><label><input type="checkbox" id="cisAuditOnly" checked> Audit only - report what would change, make no changes</label></div>
+  <button id="cisRunBtn">Run CIS Hardening</button>
+</section>
+
+<section id="runOutputSection">
   <div id="runStatus"></div>
   <pre id="liveLog" style="display:none;"></pre>
   <div id="runResult"></div>
 </section>
 
-<h2>5. History</h2>
+<h2>6. History</h2>
 <section id="historySection"></section>
 
 <script>
@@ -469,6 +489,32 @@ function renderHostResults(container, hostsResults) {
   });
 }
 
+async function watchRun(runId) {
+  const log = $('liveLog');
+  log.textContent = '';
+  log.style.display = 'block';
+  $('runResult').innerHTML = '';
+  $('runStatus').innerHTML = `Run #${runId}: <span class="badge neutral">running</span>`;
+
+  while (true) {
+    const logData = await fetch(`/api/run/${runId}/log`).then(r => r.json());
+    log.textContent = logData.log;
+    log.scrollTop = log.scrollHeight;
+    if (logData.done) break;
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
+  const final = await fetch(`/api/run/${runId}`).then(r => r.json());
+  $('runStatus').innerHTML = `Run #${runId}: <span class="badge ${statusClass(final.status)}">${final.status}</span>`;
+  renderHostResults($('runResult'), final.hosts || {});
+  if (final.error) {
+    const pre = document.createElement('pre');
+    pre.textContent = final.error;
+    $('runResult').appendChild(pre);
+  }
+  loadHistory();
+}
+
 $('runBtn').addEventListener('click', async () => {
   const body = { hosts: selectedHosts(), packages: selectedPackages() };
   // "All packages" unchecked with nothing individually picked means the user
@@ -529,40 +575,82 @@ $('runBtn').addEventListener('click', async () => {
 
   $('runBtn').disabled = true;
   $('runStatus').innerHTML = 'Starting...';
-  $('runResult').innerHTML = '';
-  const log = $('liveLog');
-  log.textContent = '';
-  log.style.display = 'block';
   try {
     const res = await fetch('/api/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed to start run');
-    const runId = data.run_id;
-    $('runStatus').innerHTML = `Run #${runId}: <span class="badge neutral">running</span>`;
-
-    while (true) {
-      const logData = await fetch(`/api/run/${runId}/log`).then(r => r.json());
-      log.textContent = logData.log;
-      log.scrollTop = log.scrollHeight;
-      if (logData.done) break;
-      await new Promise(r => setTimeout(r, 1500));
-    }
-
-    const final = await fetch(`/api/run/${runId}`).then(r => r.json());
-    $('runStatus').innerHTML = `Run #${runId}: <span class="badge ${statusClass(final.status)}">${final.status}</span>`;
-    renderHostResults($('runResult'), final.hosts || {});
-    if (final.error) {
-      const pre = document.createElement('pre');
-      pre.textContent = final.error;
-      $('runResult').appendChild(pre);
-    }
-    loadHistory();
+    await watchRun(data.run_id);
   } catch (e) {
     $('runStatus').textContent = 'Error: ' + e.message;
   } finally {
     $('runBtn').disabled = false;
+  }
+});
+
+let cisProfiles = null;
+
+async function loadCisOptions() {
+  cisProfiles = await fetch('/api/cis/options').then(r => r.json());
+  const osSel = $('cisOs');
+  osSel.innerHTML = Object.entries(cisProfiles).map(([key, p]) => `<option value="${key}">${p.label}</option>`).join('');
+  renderCisLevelAndSections();
+}
+
+function renderCisLevelAndSections() {
+  const profile = cisProfiles[$('cisOs').value];
+  $('cisLevelOptions').innerHTML = profile.levels.map((l, i) =>
+    `<label style="min-width:auto; margin-right:1rem;"><input type="radio" name="cisLevel" value="${l.id}" ${i === 0 ? 'checked' : ''}> ${l.label}</label>`
+  ).join('');
+  $('cisSectionsList').innerHTML = profile.sections.map(s =>
+    `<div class="row"><label><input type="checkbox" class="cisSectionCheck" value="${s.id}" checked> ${s.id}. ${s.label}</label></div>`
+  ).join('');
+}
+
+$('cisOs').addEventListener('change', renderCisLevelAndSections);
+document.querySelectorAll('input[name="cisMode"]').forEach(r => r.addEventListener('change', () => {
+  $('cisSectionsList').classList.toggle('open', document.querySelector('input[name="cisMode"]:checked').value === 'sections');
+}));
+loadCisOptions();
+
+$('cisRunBtn').addEventListener('click', async () => {
+  const hosts = selectedHosts();
+  const os = $('cisOs').value;
+  const level = document.querySelector('input[name="cisLevel"]:checked').value;
+  const mode = document.querySelector('input[name="cisMode"]:checked').value;
+  const auditOnly = $('cisAuditOnly').checked;
+  const sections = mode === 'sections'
+    ? [...document.querySelectorAll('.cisSectionCheck:checked')].map(c => c.value)
+    : [];
+  if (mode === 'sections' && !sections.length) {
+    alert('Select at least one section, or switch to "All".');
+    return;
+  }
+  if (!auditOnly) {
+    const profile = cisProfiles[os];
+    const levelLabel = profile.levels.find(l => l.id === level).label;
+    const ok = confirm(
+      `This will apply REAL hardening changes (${profile.label}, ${levelLabel}) to the selected host(s) - ` +
+      `not a report. This can affect remote management and may break other software. Continue?`
+    );
+    if (!ok) return;
+  }
+  const body = { hosts, os, cis_level: level, mode, sections, audit_only: auditOnly };
+
+  $('cisRunBtn').disabled = true;
+  $('runStatus').innerHTML = 'Starting...';
+  try {
+    const res = await fetch('/api/cis/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start run');
+    await watchRun(data.run_id);
+  } catch (e) {
+    $('runStatus').textContent = 'Error: ' + e.message;
+  } finally {
+    $('cisRunBtn').disabled = false;
   }
 });
 

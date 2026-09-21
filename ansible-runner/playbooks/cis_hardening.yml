@@ -1,28 +1,56 @@
 ---
-# CIS Benchmark hardening for Windows 11, via ansible-lockdown's own role:
+# CIS Benchmark hardening, via ansible-lockdown's own roles:
 #   https://github.com/ansible-lockdown/Windows-11-CIS
+#   https://github.com/ansible-lockdown/Windows-2019-CIS
+#   https://github.com/ansible-lockdown/Windows-2022-CIS
+#   https://github.com/ansible-lockdown/Windows-2025-CIS
 #
 # WARNING: unlike install_software.yml, this changes real security settings
 # (password/lockout policy, auditing, services, network protocols, etc) on
 # the target. Level 2 is stricter and more likely to break something (older
 # apps, some remote-access tooling). Read the role's own docs before running
 # it against a machine you rely on, and test on a non-critical PC first.
-# skip_reboot defaults to true upstream, but some controls only take effect
-# after a reboot.
 #
-# The role selects what to apply via --tags, not a simple variable - use
-# run.sh's --cis-level flag (or pass --tags yourself):
-#   level1-corporate-enterprise-environment
-#   level2-high-security-sensitive-data-environment
+# Which role runs is picked via cis_role (a role name, e.g. "Windows-11-CIS")
+# - the GUI's CIS section sets this for you; on the CLI use run.sh's
+# --cis-os flag rather than setting cis_role directly.
 #
-# Run:  ./run.sh cis_hardening.yml --cis-level 1
-#       ./run.sh cis_hardening.yml --cis-level 1 --cis-audit-only   (report only, no changes)
+# Level/section selection differs by role - see the GUI's CIS section (it
+# fetches the real options from /api/cis/options) or each role's own docs:
+#   Windows-11-CIS: --tags level1-corporate-enterprise-environment (+ level1-bitlocker)
+#                    or level2-high-security-sensitive-data-environment (+ level2-bitlocker)
+#   2019/2022/2025:  --tags level1-domaincontroller / level1-domainmember /
+#                    level1-memberserver / level2-domaincontroller / level2-memberserver
+# All 4 roles use the same section numbers (1, 2, 5, 9, 17, 18, 19) gated by
+# a per-role boolean var, e.g. win11cis_section1 / win22cis_section01 (note
+# the zero-padding differs by role - Windows-11-CIS and Windows-2025-CIS tasks
+# use unpadded folder names but 2025's own *vars* are still zero-padded like
+# 2019/2022; see CIS_PROFILES in gui/app.py, the single source of truth for
+# exact var names, kept in sync with each role's actual defaults).
+#
+# Run:  ./run.sh cis_hardening.yml --cis-os windows11 --cis-level 1
+#       ./run.sh cis_hardening.yml --cis-os windows11 --cis-level 1 --cis-audit-only
 #
 # Requirements (control node): ansible-galaxy install -r requirements.yml
 # (done automatically at image build time)
 
-- name: Apply CIS Benchmark hardening (Windows 11)
+- name: Apply CIS Benchmark hardening
   hosts: windows
   gather_facts: true
-  roles:
-    - Windows-11-CIS
+  vars:
+    cis_role: Windows-11-CIS
+  tasks:
+    - name: "Include the {{ cis_role }} role"
+      # include_role is a DYNAMIC include - it does not automatically
+      # inherit/propagate the CLI's --tags filtering to the tasks discovered
+      # inside it the way a static `roles:` list does. Without tags: always
+      # here, the include step itself never matched any --tags filter and
+      # NOTHING from inside the role ran at all (confirmed live: a forced
+      # cis_role=Windows-2022-CIS --tags level1-memberserver run against the
+      # real target produced only "Gathering Facts", zero role tasks, not
+      # even always-tagged ones). tags: always makes the include itself run
+      # unconditionally, deferring the real filtering to each task inside
+      # the role, which already carries its own correct tags.
+      ansible.builtin.include_role:
+        name: "{{ cis_role }}"
+      tags: always
