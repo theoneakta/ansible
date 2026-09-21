@@ -92,7 +92,7 @@
     choco_packages_selected: []
 
     # state: latest -> installs if missing, upgrades if outdated
-    # category groups the GUI's package list (Multimedia / Dev / Tools).
+    # category groups the GUI's package list (Multimedia / Internet / Dev / Tools).
     choco_packages:
       # --- Confident package IDs ---
       - { name: 7zip,             label: 7zip,                            category: tools }
@@ -103,23 +103,23 @@
       - { name: bulkrenameutility, label: Bulk Rename Utility,            category: tools }
       - { name: filebot,          label: FileBot,                         category: multimedia }
       - { name: git,              label: Git,                             category: dev }
-      - { name: googlechrome,     label: Chrome,                          category: tools }
-      - { name: googledrive,      label: Google Drive,                    category: tools }
+      - { name: googlechrome,     label: Chrome,                          category: internet }
+      - { name: googledrive,      label: Google Drive,                    category: internet }
       - { name: handbrake,        label: HandBrake,                       category: multimedia }
       - { name: temurinjre,       label: Java Runtime (Eclipse Temurin JRE), category: tools }
-      - { name: jdownloader,      label: JDownloader,                     category: tools }
+      - { name: jdownloader,      label: JDownloader,                     category: internet }
       - { name: vscode,           label: VS Code,                         category: dev }
-      - { name: firefox,          label: Firefox,                         category: tools }
+      - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
       - { name: potplayer,        label: PotPlayer,                       category: multimedia }
       - { name: powershell-core,  label: PowerShell 7,                    category: dev }
       - { name: powertoys,        label: PowerToys,                       category: tools }
-      - { name: rambox,           label: Rambox,                          category: tools }
+      - { name: rambox,           label: Rambox,                          category: internet }
       - { name: rpi-imager,       label: Raspberry Pi Imager,             category: tools }
       - { name: rdm,              label: Remote Desktop Manager,          category: tools }
       - { name: screenpresso,     label: Screenpresso,                    category: tools }
       - { name: steam-client,     label: Steam,                           category: multimedia }
-      - { name: tailscale,        label: Tailscale,                       category: tools }
+      - { name: tailscale,        label: Tailscale,                       category: internet }
       - { name: windirstat,       label: WinDirStat,                      category: tools }
       - { name: winscp,           label: WinSCP,                          category: tools }
       # --- Verify these IDs with: choco search <name> ---
