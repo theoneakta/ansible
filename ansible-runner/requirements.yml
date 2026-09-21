@@ -6,3 +6,15 @@ roles:
     src: https://github.com/ansible-lockdown/Windows-11-CIS.git
     scm: git
     version: main
+  - name: Windows-2019-CIS
+    src: https://github.com/ansible-lockdown/Windows-2019-CIS.git
+    scm: git
+    version: main
+  - name: Windows-2022-CIS
+    src: https://github.com/ansible-lockdown/Windows-2022-CIS.git
+    scm: git
+    version: main
+  - name: Windows-2025-CIS
+    src: https://github.com/ansible-lockdown/Windows-2025-CIS.git
+    scm: git
+    version: main
