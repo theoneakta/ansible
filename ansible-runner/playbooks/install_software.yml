@@ -92,38 +92,39 @@
     choco_packages_selected: []
 
     # state: latest -> installs if missing, upgrades if outdated
+    # category groups the GUI's package list (Multimedia / Dev / Tools).
     choco_packages:
       # --- Confident package IDs ---
-      - { name: 7zip,             label: 7zip }
-      - { name: adobereader,      label: Acrobat (Reader) }
-      - { name: advanced-renamer, label: Advanced Renamer }
-      - { name: azure-cli,        label: Azure CLI }
-      - { name: etcher,           label: balenaEtcher }
-      - { name: bulkrenameutility, label: Bulk Rename Utility }
-      - { name: filebot,          label: FileBot }
-      - { name: git,              label: Git }
-      - { name: googlechrome,     label: Chrome }
-      - { name: googledrive,      label: Google Drive }
-      - { name: handbrake,        label: HandBrake }
-      - { name: temurin,          label: Java (Eclipse Temurin, latest) }
-      - { name: jdownloader,      label: JDownloader }
-      - { name: vscode,           label: VS Code }
-      - { name: firefox,          label: Firefox }
-      - { name: notepadplusplus,  label: Notepad++ }
-      - { name: potplayer,        label: PotPlayer }
-      - { name: powershell-core,  label: PowerShell 7 }
-      - { name: powertoys,        label: PowerToys }
-      - { name: rambox,           label: Rambox }
-      - { name: rpi-imager,       label: Raspberry Pi Imager }
-      - { name: rdm,              label: Remote Desktop Manager }
-      - { name: screenpresso,     label: Screenpresso }
-      - { name: steam-client,     label: Steam }
-      - { name: tailscale,        label: Tailscale }
-      - { name: windirstat,       label: WinDirStat }
-      - { name: winscp,           label: WinSCP }
+      - { name: 7zip,             label: 7zip,                            category: tools }
+      - { name: adobereader,      label: Acrobat (Reader),                category: tools }
+      - { name: advanced-renamer, label: Advanced Renamer,                category: tools }
+      - { name: azure-cli,        label: Azure CLI,                       category: dev }
+      - { name: etcher,           label: balenaEtcher,                    category: tools }
+      - { name: bulkrenameutility, label: Bulk Rename Utility,            category: tools }
+      - { name: filebot,          label: FileBot,                         category: multimedia }
+      - { name: git,              label: Git,                             category: dev }
+      - { name: googlechrome,     label: Chrome,                          category: tools }
+      - { name: googledrive,      label: Google Drive,                    category: tools }
+      - { name: handbrake,        label: HandBrake,                       category: multimedia }
+      - { name: temurin,          label: Java (Eclipse Temurin, latest),  category: dev }
+      - { name: jdownloader,      label: JDownloader,                     category: tools }
+      - { name: vscode,           label: VS Code,                         category: dev }
+      - { name: firefox,          label: Firefox,                         category: tools }
+      - { name: notepadplusplus,  label: Notepad++,                       category: dev }
+      - { name: potplayer,        label: PotPlayer,                       category: multimedia }
+      - { name: powershell-core,  label: PowerShell 7,                    category: dev }
+      - { name: powertoys,        label: PowerToys,                       category: tools }
+      - { name: rambox,           label: Rambox,                          category: tools }
+      - { name: rpi-imager,       label: Raspberry Pi Imager,             category: tools }
+      - { name: rdm,              label: Remote Desktop Manager,          category: tools }
+      - { name: screenpresso,     label: Screenpresso,                    category: tools }
+      - { name: steam-client,     label: Steam,                           category: multimedia }
+      - { name: tailscale,        label: Tailscale,                       category: tools }
+      - { name: windirstat,       label: WinDirStat,                      category: tools }
+      - { name: winscp,           label: WinSCP,                          category: tools }
       # --- Verify these IDs with: choco search <name> ---
-      - { name: pdfgear,          label: PDFgear }
-      - { name: battle.net,       label: Battle.net }
+      - { name: pdfgear,          label: PDFgear,                         category: tools }
+      - { name: battle.net,       label: Battle.net,                      category: multimedia }
 
   tasks:
     - name: Ensure Chocolatey is installed
