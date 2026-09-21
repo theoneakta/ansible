@@ -40,6 +40,7 @@ TASK_KIND = {
     "Install / upgrade packages to latest": "loop",
     "Install selected WSL distros": "loop",
     "Finish any WSL distro installs after reboot": "loop",
+    "Create per-user logon tasks to install WSL distro(s) for requested users": "loop",
     "Install Wazuh agent (needs manager address)": "single",
     "Join Tailscale tailnet with auth key": "single",
     "Configure Git global user.name": "single",
@@ -499,7 +500,7 @@ class RunIn(BaseModel):
     git: Optional[GitParams] = None
     wsl_distros: list[str] = []  # empty = WSL step skipped entirely
     wsl_allow_reboot: bool = False
-    wsl_all_users: bool = False  # also provision selected distro(s) for every other user, via logon script
+    wsl_target_users: list[str] = []  # also provision selected distro(s) for these specific Windows users
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
 
 
@@ -541,8 +542,8 @@ def build_extra_vars(body: RunIn) -> dict:
             extra_vars["git_user_email"] = body.git.email
     if body.wsl_allow_reboot:
         extra_vars["wsl_allow_reboot"] = True
-    if body.wsl_all_users:
-        extra_vars["wsl_all_users"] = True
+    if body.wsl_target_users:
+        extra_vars["wsl_target_users"] = body.wsl_target_users
     if body.win11debloat:
         extra_vars["win11debloat_enabled"] = True
     return extra_vars

@@ -46,10 +46,12 @@
 
     # WSL distros are registered per-Windows-user, not machine-wide - only
     # whichever account actually ran `wsl --install` (this playbook's WinRM
-    # user, by default) can see/use them. Set true to also provision the
-    # selected distro(s) for every OTHER user on the PC via an all-users
-    # Startup-folder logon script (see the task below).
-    wsl_all_users: false
+    # user, by default) can see/use them. List other Windows usernames here
+    # to also provision the selected distro(s) for them specifically, via a
+    # per-user logon Scheduled Task (see the tasks below) - no password
+    # needed, it just runs using that user's own session at their next
+    # logon. e.g. ["jsmith", "jdoe"]
+    wsl_target_users: []
 
     # Win11Debloat (https://github.com/Raphire/Win11Debloat): off by default.
     # When enabled, downloads and runs the latest script straight from
@@ -140,12 +142,16 @@
       ignore_errors: true   # one bad package ID shouldn't stop the rest
 
     - name: Check installed WSL distros
+      # Skipped entirely when wsl_target_users is set: that means "install
+      # for these specific other users only", not also for this run's own
+      # WinRM account (theoneakta, a pure automation account never used
+      # interactively - there's no point installing a distro for it).
       ansible.windows.win_shell: >-
         (wsl --list --quiet | Out-String) -replace '\x00', ''
       register: wsl_distros_before
       changed_when: false
       failed_when: false
-      when: wsl_enabled and (wsl_distros_selected | length > 0)
+      when: wsl_enabled and (wsl_distros_selected | length > 0) and (wsl_target_users | length == 0)
 
     - name: Install selected WSL distros
       # --no-launch: plain `wsl --install -d` also auto-launches the distro
@@ -159,7 +165,7 @@
       loop: "{{ wsl_distros_selected }}"
       register: wsl_install
       when: >-
-        wsl_enabled and (wsl_distros_selected | length > 0)
+        wsl_enabled and (wsl_distros_selected | length > 0) and (wsl_target_users | length == 0)
         and (item not in (wsl_distros_before.stdout | default('')))
       changed_when: wsl_install.rc == 0
       failed_when: wsl_install.rc is defined and wsl_install.rc != 0
@@ -193,22 +199,68 @@
           to let this run reboot the PC automatically.
       when: wsl_enabled and wsl_install is changed and not (wsl_allow_reboot | bool)
 
-    - name: Tell the operator how other users can get these WSL distro(s)
+    - name: Create per-user logon tasks to install WSL distro(s) for requested users
       # WSL distros are per-Windows-user; only the account that ran
-      # `wsl --install` (this run's WinRM user) can see/use them. Writing an
-      # auto-run script into the all-users Startup folder to provision it
-      # for every OTHER user was tried and abandoned - that folder is an
-      # autostart location security software actively protects, and it got
-      # silently blocked/quarantined (Bitdefender, in testing) regardless of
-      # the script's content. Rather than fight that, just surface the exact
-      # command here for a human to hand off to whoever else needs it.
+      # `wsl --install` (this run's WinRM user) can see/use them by default.
+      # A Scheduled Task with an "At log on" trigger scoped to a SPECIFIC
+      # named user, logon_type=interactive_token, runs using THAT user's own
+      # session the next time they log on - no password needed at all.
+      #
+      # This is a different mechanism than a Startup-folder script (which
+      # was tried first and abandoned: Bitdefender blocked the write
+      # outright, treating that folder as a protected autostart location,
+      # regardless of the script's content). Creating a Scheduled Task via
+      # the normal Task Scheduler API is a much more mundane, everyday admin
+      # operation and did not hit the same block in testing - but this is
+      # still new/unverified on a from-scratch machine, so check the actual
+      # run results here rather than assuming it always sails through.
+      community.windows.win_scheduled_task:
+        name: "WSL-Provision-{{ item[0] }}-{{ item[1] }}"
+        description: >-
+          Registers the {{ item[1] }} WSL distro for {{ item[0] }} at their
+          next logon (WSL distros are per-user). Managed by
+          install_software.yml (wsl_target_users) - safe to delete once
+          {{ item[0] }} has logged in and it's run.
+        actions:
+          - path: wsl.exe
+            arguments: "--install -d {{ item[1] }} --no-launch"
+        triggers:
+          - type: logon
+            user_id: "{{ item[0] }}"
+        username: "{{ item[0] }}"
+        logon_type: interactive_token
+        state: present
+        enabled: true
+      loop: "{{ wsl_target_users | product(wsl_distros_selected) | list }}"
+      loop_control:
+        label: "{{ item[0] }} / {{ item[1] }}"
+      when: wsl_enabled and (wsl_distros_selected | length > 0) and (wsl_target_users | length > 0)
+
+    - name: Try starting each provisioning task now, in case that user is already logged on
+      ansible.windows.win_shell: >-
+        Start-ScheduledTask -TaskName "WSL-Provision-{{ item[0] }}-{{ item[1] }}"
+      loop: "{{ wsl_target_users | product(wsl_distros_selected) | list }}"
+      loop_control:
+        label: "{{ item[0] }} / {{ item[1] }}"
+      when: wsl_enabled and (wsl_distros_selected | length > 0) and (wsl_target_users | length > 0)
+      failed_when: false
+      changed_when: false
+
+    - name: Tell the operator how other users can get these WSL distro(s)
+      # Always shown as a reference/fallback, including for anyone not
+      # listed in wsl_target_users above.
       ansible.builtin.debug:
         msg: >-
-          WSL distro(s) installed for this run's account only (WSL is
-          per-user). For any other Windows user on this PC to get them too,
-          have them open a terminal and run:
+          {% if wsl_target_users | length > 0 %}
+          WSL distro(s) installed only for: {{ wsl_target_users | join(', ') }}
+          (via a logon task each - not for this run's own WinRM account).
+          {% else %}
+          WSL distro(s) installed for this run's account only (WSL is per-user).
+          {% endif %}
+          For any other Windows user on this PC to get them too, have them
+          open a terminal and run:
           {% for distro in wsl_distros_selected %}`wsl --install -d {{ distro }} --no-launch`{{ ", " if not loop.last else "" }}{% endfor %}
-      when: wsl_enabled and (wsl_distros_selected | length > 0) and wsl_all_users | bool
+      when: wsl_enabled and (wsl_distros_selected | length > 0)
 
     - name: Install Wazuh agent (needs manager address)
       chocolatey.chocolatey.win_chocolatey:
