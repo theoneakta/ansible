@@ -499,6 +499,7 @@ class RunIn(BaseModel):
     git: Optional[GitParams] = None
     wsl_distros: list[str] = []  # empty = WSL step skipped entirely
     wsl_allow_reboot: bool = False
+    wsl_all_users: bool = False  # also provision selected distro(s) for every other user, via logon script
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
 
 
@@ -540,6 +541,8 @@ def build_extra_vars(body: RunIn) -> dict:
             extra_vars["git_user_email"] = body.git.email
     if body.wsl_allow_reboot:
         extra_vars["wsl_allow_reboot"] = True
+    if body.wsl_all_users:
+        extra_vars["wsl_all_users"] = True
     if body.win11debloat:
         extra_vars["win11debloat_enabled"] = True
     return extra_vars

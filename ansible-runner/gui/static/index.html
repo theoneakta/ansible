@@ -131,7 +131,8 @@
     <div class="params" id="wslParams">
       <div id="wslDistroList" style="columns: 2; margin-bottom: .5rem;"></div>
       <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
-      <p class="muted">Already-installed distros are skipped. Enabling the underlying Windows feature can require a reboot to finish; if not allowed, the run warns and you can re-run later.</p>
+      <div class="row"><label><input type="checkbox" id="wslAllUsersToggle"> Show instructions for other users too</label></div>
+      <p class="muted">Already-installed distros are skipped. Enabling the underlying Windows feature can require a reboot to finish; if not allowed, the run warns and you can re-run later. WSL distros are registered per-user, so by default only this run's account (the WinRM user) can use them - checking this prints the exact command to hand off to any other Windows user on the PC in the run log below (auto-installing it for them isn't possible: it would need writing an auto-run script into the Startup folder, which security software actively blocks as a protected autostart location).</p>
     </div>
   </fieldset>
 
@@ -477,6 +478,7 @@ $('runBtn').addEventListener('click', async () => {
     if (!distros.length) { alert('Select at least one WSL distro to install.'); return; }
     body.wsl_distros = distros;
     body.wsl_allow_reboot = $('wslRebootToggle').checked;
+    body.wsl_all_users = $('wslAllUsersToggle').checked;
   }
   if ($('win11debloatToggle').checked) {
     body.win11debloat = true;

@@ -24,6 +24,7 @@
 #   --git-email <email>                  git config --global user.email
 #   --wsl-distro <name>                  install this WSL distro (repeatable; omit to skip WSL entirely)
 #   --wsl-allow-reboot                   let the WSL distro install reboot the PC if needed
+#   --wsl-all-users                      also provision the WSL distro(s) for every other Windows user
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 # Any other args (e.g. --limit, --check, -e foo=bar) pass straight through.
 #
@@ -111,6 +112,7 @@ YML
         --git-email)                   EXTRA_VARS+=(-e "git_user_email=$2"); shift 2 ;;
         --wsl-distro)                  WSL_DISTROS+=("$2"); shift 2 ;;
         --wsl-allow-reboot)            EXTRA_VARS+=(-e "wsl_allow_reboot=true"); shift ;;
+        --wsl-all-users)               EXTRA_VARS+=(-e "wsl_all_users=true"); shift ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac

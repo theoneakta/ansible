@@ -44,6 +44,13 @@
     # reboot and finish automatically.
     wsl_allow_reboot: false
 
+    # WSL distros are registered per-Windows-user, not machine-wide - only
+    # whichever account actually ran `wsl --install` (this playbook's WinRM
+    # user, by default) can see/use them. Set true to also provision the
+    # selected distro(s) for every OTHER user on the PC via an all-users
+    # Startup-folder logon script (see the task below).
+    wsl_all_users: false
+
     # Win11Debloat (https://github.com/Raphire/Win11Debloat): off by default.
     # When enabled, downloads and runs the latest script straight from
     # debloat.raphi.re with its own recommended defaults, unattended -
@@ -185,6 +192,23 @@
           rebooting, or pass -e wsl_allow_reboot=true (--wsl-allow-reboot from run.sh)
           to let this run reboot the PC automatically.
       when: wsl_enabled and wsl_install is changed and not (wsl_allow_reboot | bool)
+
+    - name: Tell the operator how other users can get these WSL distro(s)
+      # WSL distros are per-Windows-user; only the account that ran
+      # `wsl --install` (this run's WinRM user) can see/use them. Writing an
+      # auto-run script into the all-users Startup folder to provision it
+      # for every OTHER user was tried and abandoned - that folder is an
+      # autostart location security software actively protects, and it got
+      # silently blocked/quarantined (Bitdefender, in testing) regardless of
+      # the script's content. Rather than fight that, just surface the exact
+      # command here for a human to hand off to whoever else needs it.
+      ansible.builtin.debug:
+        msg: >-
+          WSL distro(s) installed for this run's account only (WSL is
+          per-user). For any other Windows user on this PC to get them too,
+          have them open a terminal and run:
+          {% for distro in wsl_distros_selected %}`wsl --install -d {{ distro }} --no-launch`{{ ", " if not loop.last else "" }}{% endfor %}
+      when: wsl_enabled and (wsl_distros_selected | length > 0) and wsl_all_users | bool
 
     - name: Install Wazuh agent (needs manager address)
       chocolatey.chocolatey.win_chocolatey:
