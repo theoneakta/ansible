@@ -29,6 +29,9 @@
   summary { cursor: pointer; }
   #runStatus { margin-top: .5rem; }
   .muted { opacity: .7; font-size: .85rem; }
+  .packageCategory { font-weight: 600; font-size: .85rem; text-transform: uppercase; letter-spacing: .03em; opacity: .65; margin: .6rem 0 .25rem; }
+  .packageCategory:first-child { margin-top: 0; }
+  .packageGroup { columns: 2; margin-bottom: .25rem; }
   #liveLog {
     margin-top: .5rem; max-height: 16rem; overflow-y: auto; padding: .6rem;
     background: #0d1117; color: #c9d1d9; border-radius: 6px; font-size: .8rem;
@@ -83,7 +86,7 @@
 <h2>3. Software</h2>
 <section id="packagesSection">
   <div class="row"><label><input type="checkbox" id="allPackages" checked> All packages</label></div>
-  <div id="packageList" class="params open" style="margin-left:1.5rem; columns: 2;"></div>
+  <div id="packageList" class="params open" style="margin-left:1.5rem;"></div>
 
   <div class="row" style="margin-top:.75rem;">
     <label for="chocoSearch">Add a package (search Chocolatey)</label>
@@ -292,20 +295,44 @@ $('newHost').addEventListener('keydown', (e) => { if (e.key === 'Enter') addHost
 
 let knownPackageIds = null;
 
+const CATEGORY_LABELS = { multimedia: 'Multimedia', dev: 'Dev', tools: 'Tools' };
+const CATEGORY_ORDER = ['multimedia', 'dev', 'tools'];
+
 async function loadPackages() {
   const allChecked = $('allPackages').checked;
   const previouslyChecked = new Set([...document.querySelectorAll('.packageCheck:checked')].map(c => c.value));
   const packages = await fetch('/api/packages').then(r => r.json());
   const list = $('packageList');
   list.innerHTML = '';
+
+  const groups = {};
   packages.forEach(p => {
-    const wasKnown = knownPackageIds && knownPackageIds.has(p.name);
-    const isChecked = allChecked || !wasKnown || previouslyChecked.has(p.name);
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" ${isChecked ? 'checked' : ''} ${allChecked ? 'disabled' : ''}> ${p.label}</label>`;
-    list.appendChild(row);
+    const cat = p.category || 'tools';
+    (groups[cat] = groups[cat] || []).push(p);
   });
+  const order = [...CATEGORY_ORDER, ...Object.keys(groups).filter(c => !CATEGORY_ORDER.includes(c))];
+
+  order.forEach(cat => {
+    const pkgs = groups[cat];
+    if (!pkgs || !pkgs.length) return;
+    const heading = document.createElement('div');
+    heading.className = 'packageCategory';
+    heading.textContent = CATEGORY_LABELS[cat] || cat;
+    list.appendChild(heading);
+
+    const group = document.createElement('div');
+    group.className = 'packageGroup';
+    pkgs.forEach(p => {
+      const wasKnown = knownPackageIds && knownPackageIds.has(p.name);
+      const isChecked = allChecked || !wasKnown || previouslyChecked.has(p.name);
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<label><input type="checkbox" class="packageCheck" value="${p.name}" ${isChecked ? 'checked' : ''} ${allChecked ? 'disabled' : ''}> ${p.label}</label>`;
+      group.appendChild(row);
+    });
+    list.appendChild(group);
+  });
+
   knownPackageIds = new Set(packages.map(p => p.name));
   return packages;
 }

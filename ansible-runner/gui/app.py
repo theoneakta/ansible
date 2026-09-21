@@ -266,7 +266,7 @@ def add_package_to_playbook(name: str, label: str) -> None:
         raise HTTPException(500, "Could not find the 'tasks:' section in the playbook.")
 
     label_escaped = label.replace("\\", "\\\\").replace('"', '\\"')
-    new_line = f'      - {{ name: {name}, label: "{label_escaped}" }}\n'
+    new_line = f'      - {{ name: {name}, label: "{label_escaped}", category: tools }}\n'
     insert_at = match.start()
     path.write_text(text[:insert_at] + new_line + text[insert_at:])
 
