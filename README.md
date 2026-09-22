@@ -58,7 +58,7 @@ ansible-runner/
 | `./run.sh --ping` | `win_ping` against the `windows` group |
 | `./run.sh --shell` | Open a bash shell in the container |
 | `./run.sh --build` | Build or rebuild the image |
-| `./run.sh --gui` | Start the [web GUI](#web-gui) at `http://localhost:8080` |
+| `./run.sh --gui` | Start the [web GUI](#web-gui) at `http://<docker-host>:8090` |
 
 Examples:
 
@@ -106,7 +106,7 @@ A small web UI runs the playbook without touching a terminal. It runs entirely i
 ./run.sh --gui            # builds (first time) and starts it
 ```
 
-Open http://localhost:8080 (bound to localhost only). From there you can:
+Open `http://<docker-host>:8090` (reachable from your LAN, gated by GitHub sign-in - see below). From there you can:
 
 - **Hosts** - pick specific hosts from `inventory/hosts.yml`, run against all of them, or add a new host (name/IP) straight into the inventory.
 - **Credentials** - set the Windows username/password (and default Tailscale key) for the group or a specific host. Submitting encrypts the values straight into the matching vault file (`group_vars/windows/vault.yml` or `host_vars/<host>/vault.yml`) using Ansible Vault; the GUI never displays them back.
@@ -119,11 +119,38 @@ Manage it with:
 
 | Command | What it does |
 |---|---|
-| `./run.sh --gui` | Build (if needed) and start the GUI at `http://localhost:8080` |
+| `./run.sh --gui` | Build (if needed) and start the GUI at `http://<docker-host>:8090` |
 | `./run.sh --gui-stop` | Stop it |
 | `./run.sh --gui-logs` | Tail its logs |
 
-**Security note:** the GUI can trigger installs on real machines using the stored vault credentials, and lets anyone who can reach it write new credentials into the vault. The port is bound to `127.0.0.1` by default (see `docker-compose.yml`) - keep it that way unless you put a trusted reverse proxy with auth in front of it.
+**Security note:** the GUI can trigger installs on real machines using the stored vault credentials, and lets anyone who can reach it write new credentials into the vault. Two layers protect it:
+
+1. **Network:** bound to `0.0.0.0:8090` (see `docker-compose.yml`) - reachable from your LAN, which is only safe because of the sign-in gate below. Change it to `127.0.0.1:8080:8000` if you'd rather it only be reachable from the Docker host itself.
+2. **GitHub sign-in:** every page and `/api/*` route requires a signed-in, explicitly-allowed GitHub account. With nothing configured, the GUI refuses to serve anything (a 503 page, not a silent fallback to no-auth).
+
+### GitHub sign-in
+
+The GUI is gated behind GitHub OAuth. Nobody can view or use it - including `/api/*` - without signing in as an account on an explicit allow-list.
+
+**One-time setup, on GitHub:**
+
+1. GitHub -> Settings -> Developer settings -> [OAuth Apps](https://github.com/settings/developers) -> **New OAuth App**.
+2. **Homepage URL**: wherever the GUI will be reachable, e.g. `http://192.168.3.8:8090`.
+3. **Authorization callback URL**: the same host/port + `/auth/callback`, e.g. `http://192.168.3.8:8090/auth/callback` - this must match `GITHUB_OAUTH_REDIRECT_URI` below exactly (scheme, host, port, path).
+4. Register it, then generate a **Client secret**. You now have a Client ID and Client Secret.
+
+**One-time setup, on the Docker host:** create `ansible-runner/.env` (gitignored, same idea as `.vault_pass`):
+
+```bash
+GITHUB_OAUTH_CLIENT_ID=<from the OAuth App>
+GITHUB_OAUTH_CLIENT_SECRET=<from the OAuth App>
+GITHUB_OAUTH_REDIRECT_URI=http://192.168.3.8:8090/auth/callback
+GITHUB_ALLOWED_USERS=theoneakta        # comma-separated GitHub usernames, case-insensitive
+```
+
+Then `./run.sh --gui` (or rebuild if it's already running: `docker compose --profile gui build gui && docker compose --profile gui up -d gui`). Visiting the GUI now redirects to a sign-in page; only usernames in `GITHUB_ALLOWED_USERS` get past `/auth/callback` - anyone else authenticates fine with GitHub but is then explicitly rejected. `SESSION_SECRET_KEY` is optional - omit it and a random one is generated per container start (sessions just don't survive a restart, no secret to manage); set it to keep people signed in across redeploys.
+
+This only requires the OAuth App's Client ID/Secret and read-only `read:user` scope (just enough to read the authenticated username) - it never touches your repos or org data.
 
 ## Credentials (Ansible Vault)
 
@@ -161,10 +188,33 @@ Host-level values override the group default for that host.
 Before adding a PC to the inventory, enable WinRM/HTTPS on it. From an elevated PowerShell prompt **on that PC**:
 
 ```powershell
-.\scripts\setup-winrm-ssl.ps1
+.\scripts\setup-winrm-ssl.ps1 -ControllerAddress 192.168.3.8   # your Ansible control host's IP
 ```
 
 This enables WinRM, creates a self-signed certificate and HTTPS listener on port 5986, opens the firewall, enables NTLM (Negotiate) auth, and - importantly - sets `LocalAccountTokenFilterPolicy=1` so a local (non-domain) administrator account other than the built-in `Administrator` can authenticate over the network at all. Without that registry value, WinRM rejects an otherwise-correct username/password from any other local admin account with a plain "Access is denied", which looks identical to a wrong password. It also raises WinRM's default operation timeout and per-shell quotas, which are too tight for long-running tasks like installing a large package via Chocolatey. Safe to re-run - it only changes what isn't already set.
+
+**`-ControllerAddress` is strongly recommended.** Without it, the WinRM firewall rule(s) accept connections from any address on the network (`RemoteAddress: Any`) - anything that can route to the PC can attempt a WinRM connection, subject to real credentials. Passing your Ansible control host's IP scopes every enabled `*WinRM*` firewall rule to that address only. This is a separate, narrower door than the AV note below: it doesn't fix what that note is about, but it does mean the only thing that can reach WinRM at all is your own automation host.
+
+### Code signing
+
+`scripts/setup-winrm-ssl.ps1` is Authenticode-signed with a self-signed certificate (`scripts/ansible-runner-codesign.cer`, committed to the repo - just the public cert, no private key). This is preventive hygiene, not a fix for the Bitdefender note above - that block is on Ansible's own `-EncodedCommand` WinRM invocation, which never touches a `.ps1` file on disk, so no amount of signing reaches it. It also doesn't cover the CIS audit script or Win11Debloat's script - both are third-party content pulled fresh from their own sources on every run, not ours to sign.
+
+Being *signed* and being *trusted* are different things: a self-signed cert has no chain to a CA Windows already trusts, so until you import it, `Get-AuthenticodeSignature` (and Bitdefender/Windows' own heuristics) will show it as signed-but-unknown, not signed-and-trusted. To actually trust it on a machine:
+
+```powershell
+Import-Certificate -FilePath .\scripts\ansible-runner-codesign.cer -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath .\scripts\ansible-runner-codesign.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
+```
+
+(Both stores, since it's self-signed: `Root` because there's no other CA to chain to, `TrustedPublisher` because that's what code-signing trust checks actually look at.)
+
+The private key lives only in `Cert:\CurrentUser\My` on whichever machine generated it - it's never exported to a file, so it can't end up in git. After editing any script in `scripts/`, re-sign it with:
+
+```powershell
+.\scripts\sign-scripts.ps1
+```
+
+If you ever regenerate the certificate (new machine, lost store), see that script's header comment - you'll need to re-export and re-commit `ansible-runner-codesign.cer`, and anyone who'd trusted the old one needs to trust the new one too.
 
 ## Inventory and connection settings
 
@@ -239,4 +289,4 @@ Rebuild to pull newer versions:
 - **`Decryption failed`:** wrong or missing vault password; check `.vault_pass`.
 - **Authentication failures:** verify with `./run.sh --vault-view`; local accounts may need `.\username` or a host-specific override.
 - **Files in mounted folders owned by root:** `run.sh` runs the container as your host UID/GID to avoid this.
-- **CIS `--cis-audit-only` intermittently fails with `Access is denied` / `CreateProcessW() failed (Win32ErrorCode 5)`:** this is a third-party AV (e.g. Bitdefender) intermittently blocking the burst of `powershell.exe` child processes the audit step spawns (one per check) - not a WinRM auth or role-selection problem. Confirmed non-deterministic (the same read against the same file fails, then succeeds moments later) and unrelated to file identity, size, or WinRM transport (NTLM vs CredSSP make no difference). If it happens, just re-run; for a lasting fix, add a scan exclusion on the target for `C:\ProgramData\Windows-11-CIS-Audit\` (and/or `powershell.exe`) in your AV console - consumer Bitdefender has no scriptable exclusion API and has tamper protection, so this isn't something `cis_hardening.yml` can do for you automatically.
+- **CIS `--cis-audit-only` intermittently fails with `Access is denied` / `CreateProcessW() failed (Win32ErrorCode 5)`:** confirmed root cause - Bitdefender's Antivirus feature blocks the `powershell.exe -noninteractive -encodedcommand <base64>` invocation as a "malicious command line". This is **not specific to the CIS role or this file**: `-EncodedCommand` is how every Ansible Windows module executes remotely over WinRM (Ansible's own exec wrapper), and base64-encoded PowerShell is a classic heuristic signature third-party AV/EDR products flag - Bitdefender just doesn't fire on every invocation, only ones that cross its suspicion score (larger inline scripts, like the audit step's, apparently do more often), which is why it looked non-deterministic. NTLM vs CredSSP made no difference because the transport was never the issue. If it happens, just re-run; for a lasting fix, open Bitdefender's **Protection History**, find the blocked event, and use its **"Add to exceptions"** action (most precise - scoped to that exact detection) - or add a manual exception for `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` under Protection > Antivirus > Manage Exceptions if that option isn't offered. Consumer Bitdefender has no scriptable exclusion API and has tamper protection, so this isn't something `cis_hardening.yml` (or any Ansible task) can do for you automatically - it has to be done by hand in the Bitdefender UI on the target.

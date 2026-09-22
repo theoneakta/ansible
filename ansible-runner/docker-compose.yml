@@ -22,12 +22,24 @@ services:
     environment:
       HOME: /tmp
       ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
+      # GitHub OAuth login gate - see README.md ("GitHub sign-in"). Set these
+      # in a .env file next to this compose file (gitignored, like
+      # .vault_pass); the GUI refuses to serve unauthenticated if unset.
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-}
+      GITHUB_ALLOWED_USERS: ${GITHUB_ALLOWED_USERS:-theoneakta}
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:-}
     volumes:
       - ./playbooks:/ansible/playbooks
       - ./inventory:/ansible/inventory
       - ./gui/data:/ansible/gui-data
       - ./.vault_pass:/run/secrets/vault_pass:ro
     ports:
-      - "127.0.0.1:8080:8000"
+      # Reachable from the whole LAN, not just this Docker host - deliberate,
+      # since every request now requires GitHub sign-in (see README.md,
+      # "GitHub sign-in"). Revert to "127.0.0.1:8080:8000" for host-only
+      # access if that ever changes.
+      - "0.0.0.0:8090:8000"
     # Long-running web server, started/stopped via `./run.sh --gui` / `--gui-stop`.
     profiles: ["gui"]

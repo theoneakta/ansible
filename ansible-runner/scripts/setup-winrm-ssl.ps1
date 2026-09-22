@@ -15,7 +15,8 @@
       2. Create a self-signed certificate for the HTTPS listener (unless
          -CertificateThumbprint is given to use an existing one)
       3. Create/replace the WinRM HTTPS listener on port 5986
-      4. Open the Windows Firewall for that port
+      4. Open the Windows Firewall for that port (optionally restricted to
+         -ControllerAddress only - see below)
       5. Enable Negotiate (carries NTLM) auth on the WinRM service
       6. Set LocalAccountTokenFilterPolicy=1 - REQUIRED for any local
          (non-domain) administrator account other than the built-in
@@ -43,17 +44,36 @@
     WinRM HTTPS port. Defaults to 5986, matching
     inventory/group_vars/windows/vars.yml's ansible_port.
 
+.PARAMETER ControllerAddress
+    Restrict the WinRM firewall rule(s) to only accept connections from
+    this IP (or CIDR) - your Ansible control host, e.g. the box running
+    run.sh/the GUI container. Strongly recommended: without it, WinRM is
+    reachable from any address on the network that can route to this PC,
+    which widens the blast radius of anything that can locally invoke
+    powershell.exe with an encoded command (see README's Troubleshooting
+    section on the Bitdefender false-positive on Ansible's own WinRM exec
+    mechanism - this doesn't stop that detection being too broad, but it
+    does close off the main way something other than your own controller
+    could reach WinRM to exploit it). Applies to every enabled firewall
+    rule matching "*WinRM*", not just the one this script creates, since
+    Enable-PSRemoting can add its own. Omit to leave RemoteAddress as "Any".
+    Safe to re-run with a new value to change it later.
+
 .EXAMPLE
     .\setup-winrm-ssl.ps1
 
 .EXAMPLE
     .\setup-winrm-ssl.ps1 -CertificateThumbprint AB12CD34...
+
+.EXAMPLE
+    .\setup-winrm-ssl.ps1 -ControllerAddress 192.168.3.8
 #>
 [CmdletBinding()]
 param(
     [string]$CertificateThumbprint,
     [string]$SubjectName = $env:COMPUTERNAME,
-    [int]$Port = 5986
+    [int]$Port = 5986,
+    [string]$ControllerAddress
 )
 
 $ErrorActionPreference = 'Stop'
@@ -120,11 +140,30 @@ if ($listener) {
 # --- 4. Firewall ---------------------------------------------------------------
 Write-Step "Opening the firewall for TCP $Port"
 $ruleName = "WinRM over HTTPS ($Port)"
+$remoteAddress = if ($ControllerAddress) { $ControllerAddress } else { 'Any' }
 if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
     Write-Skip "firewall rule '$ruleName' already exists"
 } else {
-    New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow | Out-Null
-    Write-Ok "firewall rule '$ruleName' created"
+    New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $Port `
+        -RemoteAddress $remoteAddress -Action Allow | Out-Null
+    Write-Ok "firewall rule '$ruleName' created (RemoteAddress: $remoteAddress)"
+}
+
+if ($ControllerAddress) {
+    Write-Step "Restricting WinRM firewall rules to $ControllerAddress"
+    $winrmRules = Get-NetFirewallRule -DisplayName '*WinRM*' | Where-Object Enabled -eq $true
+    foreach ($rule in $winrmRules) {
+        $current = ($rule | Get-NetFirewallAddressFilter).RemoteAddress
+        if (($current -join ',') -eq $ControllerAddress) {
+            Write-Skip "'$($rule.DisplayName)' already restricted to $ControllerAddress"
+        } else {
+            $rule | Set-NetFirewallRule -RemoteAddress $ControllerAddress
+            Write-Ok "'$($rule.DisplayName)' restricted to $ControllerAddress (was $($current -join ','))"
+        }
+    }
+} else {
+    Write-Host "    NOTE: WinRM is reachable from ANY address on the network (RemoteAddress: Any)." -ForegroundColor Yellow
+    Write-Host "    Re-run with -ControllerAddress <your Ansible control host IP> to restrict it." -ForegroundColor Yellow
 }
 
 # --- 5. Auth (Negotiate carries NTLM) ------------------------------------------
@@ -183,6 +222,47 @@ Write-Host "  ansible_connection: winrm"
 Write-Host "  ansible_port: $Port"
 Write-Host "  ansible_winrm_transport: ntlm"
 Write-Host "  ansible_winrm_server_cert_validation: ignore   # self-signed cert"
+if ($ControllerAddress) {
+    Write-Host "  WinRM firewall restricted to: $ControllerAddress"
+} else {
+    Write-Host "  WinRM firewall: open to ANY address (re-run with -ControllerAddress to restrict)" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "Add this PC to inventory/hosts.yml under the 'windows' group and test with:" -ForegroundColor Yellow
 Write-Host "  ./run.sh --ping"
+
+# SIG # Begin signature block
+# MIIGIgYJKoZIhvcNAQcCoIIGEzCCBg8CAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCBX4vrSaE977fRt
+# /TtY8ZZb0Jfo4gg9cMH5XF/ntugFV6CCA2gwggNkMIICTKADAgECAhBP1f8n+3BX
+# kEkvCDFRRbjlMA0GCSqGSIb3DQEBCwUAMEoxIjAgBgNVBAoMGXRoZW9uZWFrdGEg
+# YW5zaWJsZS1ydW5uZXIxJDAiBgNVBAMMG0Fuc2libGUgUnVubmVyIENvZGUgU2ln
+# bmluZzAeFw0yNjA5MjIwMjEzMzJaFw0zNjA5MjIwMjIzMzJaMEoxIjAgBgNVBAoM
+# GXRoZW9uZWFrdGEgYW5zaWJsZS1ydW5uZXIxJDAiBgNVBAMMG0Fuc2libGUgUnVu
+# bmVyIENvZGUgU2lnbmluZzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+# AMnHL9o0LIFQOozky77khlfcVxL52+PS3LEveNlLTmscDiGbbAQ7cqhVeC2sCzHA
+# SWSGXVEZIP85lZCfxzievkagvf2FKhzNQp8GDKJ0sZupo57eq913xiAKGXjrNgnC
+# 6yZ0jHzN9yaHvMTretcuClx4JMwTgwecJK5kuPztazsQHAylEAoVqZq44HLr5I8A
+# WPhhr2mIh/OiCO9SLO1/EspQAz8MN4W7GO1PYyhiH2US1/vLTV8Lg3O9G6pR+iSs
+# C3YSyqIF1zNxhu8ApUV5AxKtZ8h+dGlKG7WKfFpEHLi4FzHYjPl0N7CDgUEL7K94
+# yBCLSzDqKI6WrrIzVTEqMqECAwEAAaNGMEQwDgYDVR0PAQH/BAQDAgeAMBMGA1Ud
+# JQQMMAoGCCsGAQUFBwMDMB0GA1UdDgQWBBSD3mbguJnjSh2RMr3fyCcOSs+KSzAN
+# BgkqhkiG9w0BAQsFAAOCAQEAXZKiSG9JY7ru4z+YeywM5HcToAsZ1xdJtMcmCPj3
+# MAtMerNrY09Qi/3LMSS6J2hVQPchfmkFR3sIZs3rGFJ0IdP8829z3HJrzAN0xeG/
+# FqkK3s//z+MOMovVrx3fmYcOFD2LxJ9JEu2TsfGnZksr945UjExNLpJJq95jO/m4
+# xOM3kP/yTbRT+u2QGADAqdNqSTeGaE+/2xa+4D6qqPueo5o+xfH3MH4NN3qNAUkp
+# cE3tXqM4GrfT4v5jO1Ymj3KQSNTfskuh7OXeuccouJrfg3XdrefZnS7WMJ9OXa5O
+# 5zL6ajMeA0SMahzArqoXiXWZ9COcPthJQk32Yd7lTy3mbzGCAhAwggIMAgEBMF4w
+# SjEiMCAGA1UECgwZdGhlb25lYWt0YSBhbnNpYmxlLXJ1bm5lcjEkMCIGA1UEAwwb
+# QW5zaWJsZSBSdW5uZXIgQ29kZSBTaWduaW5nAhBP1f8n+3BXkEkvCDFRRbjlMA0G
+# CWCGSAFlAwQCAQUAoIGEMBgGCisGAQQBgjcCAQwxCjAIoAKAAKECgAAwGQYJKoZI
+# hvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisGAQQBgjcC
+# ARUwLwYJKoZIhvcNAQkEMSIEIMRqnFCP3LiJB2A/lDxjMDYXj2n+EEFugndsjxui
+# pk/eMA0GCSqGSIb3DQEBAQUABIIBAFOT2uNwRmmZRN6KrvNqhM/M8sZ87joo3+xF
+# POrt8vLm+3wcJy/b8+SLfFBayzubeCHKU0AQ1tIshmeNpWyhRw/er/FULVQOgVYH
+# 3kRQQcAZJvJScG72UNiWeyhurEVDM5b9dD63CMn2OqHa3upbmritlk2ifgwQ7IJn
+# 0/wDgMccUI5/m8zqJuAF2rHUZsMsF4E8gAehFZnqMUvL+fqNyqNgWTqEtZs5JmSg
+# /dXap55DCi3cfeu6mepimk7UEg1NZ4lMPwK841LWcLosOcw5YpEcjS6QBSoCrm/5
+# 3eorpki73CLr7/HUPlcWDUQVG8YPEIS0TTPMf6LnMD9onwwPoBQ=
+# SIG # End signature block
