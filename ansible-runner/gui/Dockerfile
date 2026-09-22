@@ -18,7 +18,9 @@ RUN pip install --no-cache-dir \
         passlib \
         fastapi \
         "uvicorn[standard]" \
-        pyyaml
+        pyyaml \
+        requests \
+        itsdangerous
 
 RUN ansible-galaxy collection install \
         ansible.windows \

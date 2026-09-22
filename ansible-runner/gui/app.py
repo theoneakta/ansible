@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import socket
 import sqlite3
 import subprocess
@@ -19,11 +20,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Optional
 
+import requests
 import yaml
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 BASE = pathlib.Path("/ansible")
 INVENTORY_DIR = BASE / "inventory"
@@ -54,6 +57,187 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 run_lock = threading.Lock()
 
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# GitHub OAuth login gate. This GUI can trigger real installs and CIS
+# hardening using stored vault credentials, so nothing below is served
+# without a signed-in, explicitly-allowed GitHub account - see README.md
+# ("GitHub sign-in") for how to register the OAuth App and set these.
+# ---------------------------------------------------------------------------
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
+GITHUB_REDIRECT_URI = os.environ.get("GITHUB_OAUTH_REDIRECT_URI", "")
+GITHUB_ALLOWED_USERS = {
+    u.strip().lower() for u in os.environ.get("GITHUB_ALLOWED_USERS", "").split(",") if u.strip()
+}
+AUTH_CONFIGURED = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI and GITHUB_ALLOWED_USERS)
+# No SESSION_SECRET_KEY set -> a fresh one is generated per container start,
+# which simply means everyone has to sign in again after a restart/redeploy;
+# that's a fine default for a small internal tool and needs no extra secret
+# to manage. Set it explicitly to keep sessions alive across restarts.
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY") or secrets.token_urlsafe(32)
+
+_AUTH_PUBLIC_PATHS = {"/login", "/auth/start", "/auth/callback"}
+
+
+def _auth_page(title: str, message: str, show_signin: bool = False) -> HTMLResponse:
+    button = (
+        '<a class="btn" href="/auth/start">Sign in with GitHub</a>' if show_signin
+        else '<a class="btn" href="/login">Try again</a>'
+    )
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} - Ansible Runner</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0b0f16; color: #e6edf3; font-family: -apple-system,"Segoe UI",system-ui,Roboto,sans-serif;
+  }}
+  .card {{
+    background: #131a24; border: 1px solid #262f3d; border-radius: 14px; padding: 2.2rem 2.4rem;
+    max-width: 26rem; text-align: center; box-shadow: 0 8px 32px #0008;
+  }}
+  .logo {{
+    width: 44px; height: 44px; border-radius: 11px; margin: 0 auto 1rem;
+    background: linear-gradient(135deg, #ff5c4d, #ffb454);
+  }}
+  h1 {{ font-size: 1.15rem; margin: 0 0 .5rem; }}
+  p {{ color: #8b96a5; font-size: .88rem; line-height: 1.5; }}
+  .btn {{
+    display: inline-block; margin-top: 1.1rem; padding: .6rem 1.3rem; border-radius: 7px; text-decoration: none;
+    font-weight: 700; font-size: .85rem; color: #1a0d0d;
+    background: linear-gradient(120deg, #ff5c4d, #ffb454);
+  }}
+</style></head><body>
+<div class="card">
+  <div class="logo"></div>
+  <h1>{title}</h1>
+  <p>{message}</p>
+  {button}
+</div>
+</body></html>""", status_code=200 if show_signin else 403)
+
+
+@app.middleware("http")
+async def require_github_login(request: Request, call_next):
+    path = request.url.path
+    if path in _AUTH_PUBLIC_PATHS:
+        return await call_next(request)
+    if not AUTH_CONFIGURED:
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "GitHub OAuth is not configured on the server. See README.md."}, status_code=503)
+        return _auth_page(
+            "Not configured",
+            "GitHub OAuth environment variables are missing (GITHUB_OAUTH_CLIENT_ID, "
+            "GITHUB_OAUTH_CLIENT_SECRET, GITHUB_OAUTH_REDIRECT_URI, GITHUB_ALLOWED_USERS). "
+            "This GUI refuses to serve unauthenticated - see README.md.",
+        )
+    user = request.session.get("github_user")
+    if not user or user.lower() not in GITHUB_ALLOWED_USERS:
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return RedirectResponse("/login")
+    return await call_next(request)
+
+
+# Registered after require_github_login on purpose: Starlette's middleware
+# stack makes whichever is added last the outermost layer, and
+# request.session must exist before require_github_login runs.
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="lax", max_age=14 * 24 * 3600)
+
+
+@app.get("/login")
+def login():
+    if not AUTH_CONFIGURED:
+        return _auth_page(
+            "Not configured",
+            "GitHub OAuth environment variables are missing on the server. See README.md.",
+        )
+    return _auth_page(
+        "Ansible Runner",
+        "Sign in with GitHub to continue. This tool can trigger real installs and CIS hardening "
+        "on the configured hosts, so access is limited to specific GitHub accounts.",
+        show_signin=True,
+    )
+
+
+@app.get("/auth/start")
+def auth_start(request: Request):
+    if not AUTH_CONFIGURED:
+        return _auth_page(
+            "Not configured",
+            "GitHub OAuth environment variables are missing on the server. See README.md.",
+        )
+    state = secrets.token_urlsafe(24)
+    request.session["oauth_state"] = state
+    params = urllib.parse.urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": GITHUB_REDIRECT_URI,
+        "scope": "read:user",
+        "state": state,
+        "allow_signup": "false",
+    })
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}")
+
+
+@app.get("/auth/callback")
+def auth_callback(request: Request, code: str = "", state: str = ""):
+    if not AUTH_CONFIGURED:
+        return _auth_page("Not configured", "GitHub OAuth environment variables are missing on the server.")
+    if not code or not state or state != request.session.pop("oauth_state", None):
+        return _auth_page(
+            "Login failed",
+            "Invalid or expired login attempt (state mismatch). This can happen if the login link "
+            "was reused or took too long. Please try again.",
+            show_signin=True,
+        )
+    try:
+        token_resp = requests.post(
+            "https://github.com/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": GITHUB_REDIRECT_URI,
+            },
+            timeout=15,
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json().get("access_token")
+        if not access_token:
+            raise ValueError(token_resp.text)
+        user_resp = requests.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"token {access_token}", "Accept": "application/vnd.github+json"},
+            timeout=15,
+        )
+        user_resp.raise_for_status()
+        login_name = (user_resp.json().get("login") or "").strip()
+    except Exception as e:
+        return _auth_page("Login failed", f"Could not complete GitHub sign-in: {e}", show_signin=True)
+
+    if not login_name or login_name.lower() not in GITHUB_ALLOWED_USERS:
+        request.session.clear()
+        return _auth_page(
+            "Not authorized",
+            f"Signed in to GitHub as '{login_name}', but this account is not on the allowed list "
+            "for this tool. Ask whoever runs it to add you to GITHUB_ALLOWED_USERS.",
+        )
+
+    request.session["github_user"] = login_name
+    return RedirectResponse("/")
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login")
+
+
+@app.get("/api/whoami")
+def api_whoami(request: Request):
+    return {"user": request.session.get("github_user")}
 
 
 def has_vault_pass() -> bool:
