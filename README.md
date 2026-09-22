@@ -135,8 +135,8 @@ The GUI is gated behind GitHub OAuth. Nobody can view or use it - including `/ap
 **One-time setup, on GitHub:**
 
 1. GitHub -> Settings -> Developer settings -> [OAuth Apps](https://github.com/settings/developers) -> **New OAuth App**.
-2. **Homepage URL**: wherever the GUI will be reachable, e.g. `http://192.168.3.8:8090`.
-3. **Authorization callback URL**: the same host/port + `/auth/callback`, e.g. `http://192.168.3.8:8090/auth/callback` - this must match `GITHUB_OAUTH_REDIRECT_URI` below exactly (scheme, host, port, path).
+2. **Homepage URL**: wherever the GUI will be reachable - either the plain LAN address (e.g. `http://192.168.3.8:8090`) or a real domain if it's behind a reverse proxy (e.g. `https://ansible.example.com`, via Tailscale Serve/Funnel or similar).
+3. **Authorization callback URL**: the same host + `/auth/callback` (e.g. `https://ansible.example.com/auth/callback`) - this must match `GITHUB_OAUTH_REDIRECT_URI` below exactly (scheme, host, port if non-default, path). Changing which URL the GUI is reached through later (new domain, adding a reverse proxy, etc.) means updating both this GitHub setting and `.env` together - they have to keep matching.
 4. Register it, then generate a **Client secret**. You now have a Client ID and Client Secret.
 
 **One-time setup, on the Docker host:** create `ansible-runner/.env` (gitignored, same idea as `.vault_pass`):
@@ -144,7 +144,7 @@ The GUI is gated behind GitHub OAuth. Nobody can view or use it - including `/ap
 ```bash
 GITHUB_OAUTH_CLIENT_ID=<from the OAuth App>
 GITHUB_OAUTH_CLIENT_SECRET=<from the OAuth App>
-GITHUB_OAUTH_REDIRECT_URI=http://192.168.3.8:8090/auth/callback
+GITHUB_OAUTH_REDIRECT_URI=https://ansible.example.com/auth/callback
 GITHUB_ALLOWED_USERS=theoneakta        # comma-separated GitHub usernames, case-insensitive
 ```
 
@@ -221,13 +221,14 @@ If you ever regenerate the certificate (new machine, lost store), see that scrip
 Add hosts to `inventory/hosts.yml` under the `windows` group. Connection defaults are in `inventory/group_vars/windows/vars.yml`:
 
 ```yaml
-ansible_connection: winrm
+ansible_connection: psrp
 ansible_port: 5986
-ansible_winrm_transport: ntlm        # or credssp / kerberos
-ansible_winrm_server_cert_validation: ignore
+ansible_psrp_protocol: https
+ansible_psrp_auth: ntlm              # or credssp / kerberos / certificate
+ansible_psrp_cert_validation: ignore
 ```
 
-`server_cert_validation: ignore` is convenient for self-signed certificates; switch to `validate` once your hosts have trusted certs.
+`psrp` (PowerShell Remoting Protocol), not the more commonly-seen `winrm` connection plugin - see the Troubleshooting entry below on why. Both still talk to the same WinRM/WS-Man HTTPS listener `setup-winrm-ssl.ps1` sets up; this only changes which client protocol the controller uses. `cert_validation: ignore` is convenient for self-signed certificates; switch to `validate` once your hosts have trusted certs.
 
 For Linux targets, uncomment the `~/.ssh` mount in `docker-compose.yml` and add a matching inventory group.
 
@@ -252,6 +253,8 @@ To add your own playbooks, drop them into `playbooks/` and run `./run.sh yourpla
 
 > **This is a fundamentally different kind of operation from `install_software.yml`.** It changes real security settings on the target - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this whole toolkit depends on) or break older/legacy software. **Read the relevant role's own documentation first, and test against a non-critical PC before running it against anything you rely on.**
 
+**Self-lockout protection is on by default.** `cis_hardening.yml` sets `win_skip_for_test: true` - the role's own maintainer-documented safety switch, off by default upstream. Without it, control 1.2.2 (Account lockout threshold) locks out the very account WinRM/psrp uses to manage the host after 5 failed authentications - a previously-reported upstream incident, and one we hit ourselves: a real run applied it, WinRM started rejecting the account shortly after, and recovery needed local/console access to re-run `setup-winrm-ssl.ps1`. `true` also skips every other control that can similarly strand the connection - `2.2.16`/`2.2.20` (breaks local admin connection), `5.39`/`18.10.88.x`/`18.10.89.1` (disable WinRM itself or its auth methods) - plus a few unrelated ones (`5.21`/`18.10.56.3.2.1` disable RDP, `9.3.4` breaks reboot). Trade-off: those specific controls then never get applied, so a run won't be 100% benchmark-complete. Override with `-e win_skip_for_test=false` for a specific run only if you have real console/IPMI access as a fallback in case it strands the connection.
+
 **Which OS to target, then level, then all-or-specific-sections** - the GUI cascades through these (fetching the real options from `/api/cis/options`, backed by `CIS_PROFILES` in `gui/app.py` - the single source of truth, verified against each role's actual installed source rather than assumed):
 
 - **Windows 11** levels: `1` (corporate/enterprise) or `2` (high security) - each also pulls in that level's separate BitLocker-tagged controls automatically.
@@ -275,6 +278,8 @@ On the CLI, `run.sh` handles OS + level for you (section-level selection is GUI-
 
 All 4 roles are installed from `requirements.yml` at image build time (`ansible-galaxy install -r requirements.yml`) - rebuild (`./run.sh --build` and, for the GUI, `./run.sh --gui` after a fresh build) after changing a pinned `version`. Which role actually runs is chosen dynamically via the `cis_role` variable (an `include_role: name: "{{ cis_role }}"` on a single generic playbook) - note that dynamic includes don't automatically inherit `--tags` filtering the way a static `roles:` list does, so the include step itself is tagged `always` and the real filtering happens on the tasks discovered inside, which already carry their own correct tags.
 
+**Service-dependency ordering.** The vendored roles disable services in control-number order, not dependency order - e.g. Windows-11-CIS stops `SSDPSRV` (control 5.30) before `upnphost` (5.31), which depends on it. Windows refuses to stop a service while a running dependent needs it ("has dependent services"), and since the role has no `ignore_errors`, Ansible then aborts *every remaining task for that host* - one ordering conflict silently skips hundreds of otherwise-fine controls, not just the one that failed. This isn't something we can fix in the role itself (overwritten from GitHub on every `--build`), so `cis_hardening.yml` works around it with a `pre_tasks` step: `playbooks/files/discover_cis_services.py` scans whichever role is selected for every service any `win_service`/`win_service_info` task references (no hardcoded list - same "read it from the role's actual source" approach as the section/control discovery in the GUI), then the playbook checks each one's currently-running dependents and stops (not disables) them before the role runs. `WinRM` is explicitly never touched by this, even if discovered, since stopping it would sever the very connection running the playbook. Skipped entirely when `audit_only` is set, which must make zero real changes.
+
 ## Updating Ansible / collections
 
 Rebuild to pull newer versions:
@@ -285,8 +290,12 @@ Rebuild to pull newer versions:
 
 ## Troubleshooting
 
-- **`winrm` connection errors / timeouts:** confirm WinRM is enabled on the target (`winrm quickconfig`), the port is open, and the transport matches the host's configuration.
+- **`psrp`/WinRM connection errors or timeouts:** confirm WinRM is enabled on the target (`winrm quickconfig`), the port is open, and `ansible_psrp_auth` matches what the host's WinRM service actually has enabled (see `setup-winrm-ssl.ps1`).
 - **`Decryption failed`:** wrong or missing vault password; check `.vault_pass`.
 - **Authentication failures:** verify with `./run.sh --vault-view`; local accounts may need `.\username` or a host-specific override.
 - **Files in mounted folders owned by root:** `run.sh` runs the container as your host UID/GID to avoid this.
-- **CIS `--cis-audit-only` intermittently fails with `Access is denied` / `CreateProcessW() failed (Win32ErrorCode 5)`:** confirmed root cause - Bitdefender's Antivirus feature blocks the `powershell.exe -noninteractive -encodedcommand <base64>` invocation as a "malicious command line". This is **not specific to the CIS role or this file**: `-EncodedCommand` is how every Ansible Windows module executes remotely over WinRM (Ansible's own exec wrapper), and base64-encoded PowerShell is a classic heuristic signature third-party AV/EDR products flag - Bitdefender just doesn't fire on every invocation, only ones that cross its suspicion score (larger inline scripts, like the audit step's, apparently do more often), which is why it looked non-deterministic. NTLM vs CredSSP made no difference because the transport was never the issue. If it happens, just re-run; for a lasting fix, open Bitdefender's **Protection History**, find the blocked event, and use its **"Add to exceptions"** action (most precise - scoped to that exact detection) - or add a manual exception for `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` under Protection > Antivirus > Manage Exceptions if that option isn't offered. Consumer Bitdefender has no scriptable exclusion API and has tamper protection, so this isn't something `cis_hardening.yml` (or any Ansible task) can do for you automatically - it has to be done by hand in the Bitdefender UI on the target.
+- **CIS `--cis-audit-only`/`audit_only` fails with `Access is denied` / `CreateProcessW() failed (Win32ErrorCode 5)`, specifically on the `Pre Audit | Run pre_remediation audit` task:** Bitdefender blocking `C:\Program Files\syver\syver.exe` from running. `run_audit.ps1` (part of the CIS role's audit setup) shells out to `syver.exe` - a small third-party binary freshly downloaded from `github.com/krameff/syver` on every audit run - to actually perform the scan. A fresh, unsigned, just-downloaded executable about to run for the first time is a mainstream AV trigger, and this reproduces identically regardless of connection plugin (`psrp` or `winrm`) or WinRM auth method (NTLM/CredSSP made no difference either), since the block happens *inside* `run_audit.ps1` when it launches `syver.exe` - it was never about how Ansible itself reaches the host for this specific step. Fix: a Bitdefender exception scoped to `C:\Program Files\syver\syver.exe` (or its folder) - open **Protection History**, find the blocked `syver.exe` event, and use its **"Add to exceptions"** action, or add a manual exception under Protection > Antivirus > Manage Exceptions. Much narrower than exempting `powershell.exe` itself - this is one specific known third-party tool. Consumer Bitdefender has no scriptable exclusion API and has tamper protection, so this has to be done by hand on the target; nothing here can do it for you automatically. Per-host: this exception (and the failure) is specific to whichever PC hasn't had it added yet, not fleet-wide.
+
+- **CIS `audit_only` fails with `PSSecurityException: ... running scripts is disabled on this system` on that same task, once the Bitdefender issue above is cleared:** a second, independent problem underneath the first one - `& 'run_audit.ps1' @auditArgs` runs a saved script *file*, which PowerShell's execution policy governs (unlike this toolkit's other downloaded-script usage, e.g. Win11Debloat, which runs an in-memory scriptblock and is immune to it). The role's own execution-policy check only looks at GPO-enforced `MachinePolicy`/`UserPolicy` - it misses a plain `LocalMachine`-scope `Restricted` policy, the common case on a PC never explicitly configured for scripting, so it reports "OK" even when this blocks. `cis_hardening.yml` now fixes this itself (a `pre_tasks` step, only when `run_audit`/`audit_only` is set): sets `LocalMachine` to `RemoteSigned` if it's currently `Restricted` or `AllSigned`, nothing stronger - `RemoteSigned` only requires signing for scripts marked as downloaded from the internet (a `Zone.Identifier` stream), and Ansible's own download/unarchive mechanism doesn't set that marker the way a browser would, so the unsigned audit script still runs fine under it. Confirmed working end-to-end on 192.168.3.17 (full audit completed: "Count: 1309, Failed: 319, Skipped: 540") once both this and the Bitdefender exception were in place.
+
+  Separately, and why the default connection plugin above is `psrp` rather than `winrm`: the `winrm` connection plugin executes *every other* module by spawning a fresh `powershell.exe -noninteractive -encodedcommand <base64>` process per task, which is its own distinct false-positive pattern Bitdefender was directly observed blocking (confirmed from Bitdefender's own notification for an earlier, unrelated task). `psrp` runs module code inside a persistent remote runspace instead (the same protocol `Invoke-Command`/`Enter-PSSession` use), with no new process spawned per task - this held up in practice: every other task in a full CIS run succeeded cleanly under `psrp`, with only the `syver.exe` launch (a genuinely different problem) still failing.

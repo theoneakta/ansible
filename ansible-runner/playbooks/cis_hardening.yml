@@ -39,7 +39,123 @@
   gather_facts: true
   vars:
     cis_role: Windows-11-CIS
-  tasks:
+    # Safe by default. The role itself defaults this to false (see its
+    # defaults/main/main.yml) - with it false, control 1.2.2 (Account
+    # lockout threshold) locks out the very account WinRM/psrp uses to
+    # manage the host after 5 failed authentications, something the role's
+    # own maintainers document as a previously-reported incident ("a
+    # converge with win_skip_for_test: true still locked the operator out
+    # of a WinRM-managed host after five failed authentications - reported
+    # from a live run where the host was lost mid-play and never
+    # recovered"). Confirmed live on 192.168.3.17: a real run applied 1.2.2,
+    # WinRM auth started rejecting the account shortly after, and recovery
+    # needed local/console access to re-run setup-winrm-ssl.ps1 - exactly
+    # the failure mode this variable exists to prevent. true also skips
+    # every other control that can strand a WinRM/psrp-managed run:
+    # 2.2.16/2.2.20 (breaks local admin connection), 5.39/18.10.88.x/
+    # 18.10.89.1 (disable WinRM itself or its auth methods), plus a few
+    # unrelated ones (5.21/18.10.56.3.2.1 disable RDP, 9.3.4 breaks reboot).
+    # Trade-off: those specific controls then never get applied, so a run
+    # won't be 100% benchmark-complete unless overridden with
+    # -e win_skip_for_test=false for a specific run - only sensible with a
+    # real console/IPMI fallback in case that run strands the connection.
+    win_skip_for_test: true
+  pre_tasks:
+    # The vendored roles (overwritten from GitHub on every `--build`, so not
+    # ours to patch) disable services in control-number order, not dependency
+    # order - e.g. Windows-11-CIS stops SSDPSRV (5.30) before upnphost
+    # (5.31), which depends on it, and Windows refuses ("has dependent
+    # services"). Ansible then aborts ALL remaining tasks for that host (no
+    # ignore_errors in the role), so one ordering conflict can silently skip
+    # hundreds of otherwise-fine controls. Fix: discover every service any
+    # win_service(_info) task in the selected role touches, and stop
+    # (not disable - that's the role's own job if it's itself a tracked
+    # control) whichever of THEIR dependents are currently running, before
+    # the role gets a chance to hit the same conflict. Skipped entirely in
+    # audit_only mode, which must make zero real changes.
+    #
+    # tags: always on the block (not just the include_role step below) -
+    # without it, a --tags-filtered run (which is every real invocation;
+    # see CIS_PROFILES in gui/app.py) silently drops these untagged tasks
+    # entirely, the same dynamic-include tag gotcha documented below, just
+    # for a plain block instead of include_role. Confirmed live: without
+    # this, the log jumped straight from "Gathering Facts" to the role
+    # include with no trace of these tasks at all, not even "skipping".
+    - block:
+        - name: Discover every service {{ cis_role }}'s own tasks reference
+          # delegate_to localhost = runs on the controller, once per target
+          # host in the play (no run_once - that would leave the registered
+          # result undefined on every host but the first when targeting more
+          # than one). Cheap (a local file scan, no WinRM round-trip), so
+          # per-host repeats cost nothing worth avoiding.
+          ansible.builtin.command:
+            cmd: "python3 {{ playbook_dir }}/files/discover_cis_services.py {{ cis_role }}"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          register: cis_service_discovery
+
+        - name: Find currently-running dependents of each discovered service
+          ansible.windows.win_shell: |
+            $svc = Get-Service -Name '{{ item }}' -ErrorAction SilentlyContinue
+            if ($svc) { $svc.DependentServices | Where-Object Status -eq 'Running' | Select-Object -ExpandProperty Name }
+          loop: "{{ (cis_service_discovery.stdout | default('[]', true)) | from_json }}"
+          loop_control:
+            label: "{{ item }}"
+          changed_when: false
+          failed_when: false
+          register: cis_dependent_check
+
+        - name: Stop running dependents that would block the role's own service changes
+          ansible.windows.win_service:
+            name: "{{ item }}"
+            state: stopped
+          # Never WinRM - stopping it would sever this very connection
+          # mid-run. Everything else is safe to stop (not disable): if a
+          # dependent is itself a tracked CIS control, the role's own task
+          # still sets its real start_mode when its turn comes; if it isn't,
+          # we're only touching its current running state, not its config.
+          loop: >-
+            {{ (cis_dependent_check.results | default([], true) | map(attribute='stdout_lines')
+                | list | sum(start=[]) | unique | reject('equalto', 'WinRM') | list) }}
+          loop_control:
+            label: "{{ item }}"
+      when: not (audit_only | default(false) | bool)
+      tags: always
+
+    # run_audit.ps1 (invoked by the role's own "Pre Audit | Run pre_remediation
+    # audit" task via `& 'run_audit.ps1' @auditArgs`) is a saved script FILE,
+    # which IS subject to PowerShell's execution policy - unlike most of this
+    # toolkit's other downloaded-script usage (e.g. Win11Debloat's install_software.yml
+    # task, which runs an in-memory scriptblock via [scriptblock]::Create and is
+    # immune to it). The role's own execution-policy check
+    # (pre_remediation_audit.yml) only looks at MachinePolicy/UserPolicy
+    # (GPO-enforced) - it misses a plain LocalMachine-scope Restricted policy,
+    # the common case on a non-domain-joined PC never explicitly configured
+    # for scripting, which DOES block this. Confirmed live: LocalMachine was
+    # Restricted, the role's own check still reported "OK", and the audit
+    # step failed with PSSecurityException: UnauthorizedAccess ("running
+    # scripts is disabled on this system"). Fix: RemoteSigned (not the far
+    # more permissive Bypass/Unrestricted) is enough - it only requires
+    # signing for scripts marked as downloaded from the internet (a
+    # Zone.Identifier stream), and Ansible's own download/unarchive
+    # mechanism doesn't set that marker the way a browser would (confirmed:
+    # no Zone.Identifier stream on the extracted audit files). Only touches
+    # LocalMachine if it's actually blocking (Restricted or AllSigned) -
+    # never loosens an intentionally stricter policy beyond what's needed to
+    # let this specific script run.
+    - block:
+        - name: Check LocalMachine execution policy allows the audit script to run
+          ansible.windows.win_shell: (Get-ExecutionPolicy -Scope LocalMachine).ToString()
+          changed_when: false
+          register: cis_local_machine_execution_policy
+
+        - name: Allow local scripts to run (RemoteSigned) if LocalMachine policy currently blocks them
+          ansible.windows.win_shell: Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+          when: (cis_local_machine_execution_policy.stdout | trim) in ['Restricted', 'AllSigned']
+      when: (run_audit | default(false) | bool) or (audit_only | default(false) | bool)
+      tags: always
+
     - name: "Include the {{ cis_role }} role"
       # include_role is a DYNAMIC include - it does not automatically
       # inherit/propagate the CLI's --tags filtering to the tasks discovered

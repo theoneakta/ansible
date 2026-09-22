@@ -273,6 +273,20 @@ def init_db():
             run_id INTEGER, host TEXT, package TEXT, status TEXT
         )"""
     )
+    # A run's background thread lives only as long as this process - if the
+    # container restarts (redeploy, crash, `docker compose up` for an
+    # unrelated change) while one is mid-run, its DB row is orphaned at
+    # status='running' forever, since nothing ever runs the code that would
+    # mark it finished. A fresh process starting up means nothing from a
+    # prior process could still genuinely be running, so any such row here
+    # is unconditionally stale - reconcile it to a terminal state now,
+    # rather than leaving the GUI showing a run that will never complete.
+    conn.execute(
+        """UPDATE runs SET status = 'failed', finished_at = ?,
+           error = 'Interrupted: the GUI restarted while this run was in progress (its own process, not the target host, was interrupted). Re-run if needed.'
+           WHERE status = 'running'""",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
     conn.commit()
     conn.close()
 

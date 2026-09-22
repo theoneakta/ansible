@@ -7,12 +7,26 @@ ansible_password: "{{ vault_win_password }}"
 # --tailscale-authkey overrides it for a run. Set vault_tailscale_authkey via
 # `./run.sh --vault-edit`; leave unset/empty to skip auto-join by default.
 tailscale_authkey: "{{ vault_tailscale_authkey | default('') }}"
-ansible_connection: winrm
-ansible_port: 5986
-ansible_winrm_transport: ntlm          # or credssp / kerberos
-ansible_winrm_server_cert_validation: ignore
 
-# pywinrm's defaults (~20s operation / ~30s read) are too short for
-# longer-running non-async tasks (e.g. WSL installs, reboots) over WinRM.
-ansible_winrm_operation_timeout_sec: 60
-ansible_winrm_read_timeout_sec: 70
+# psrp (PowerShell Remoting Protocol), not winrm: the winrm connection
+# plugin executes every module by spawning a fresh
+# `powershell.exe -noninteractive -encodedcommand <base64>` process per
+# task - the exact pattern Bitdefender flagged as a malicious command line
+# (see Troubleshooting below). psrp speaks the actual PowerShell Remoting
+# Protocol instead (what Invoke-Command/Enter-PSSession use) - module code
+# runs inside a persistent remote runspace hosted by the already-running
+# WinRM service process, with no new process spawned per task for AV to
+# catch. Same underlying WinRM/WS-Man listener and HTTPS port/cert as
+# before - scripts/setup-winrm-ssl.ps1 still applies unchanged, this only
+# changes which client protocol the controller speaks to it.
+ansible_connection: psrp
+ansible_port: 5986
+ansible_psrp_protocol: https
+ansible_psrp_auth: ntlm          # or credssp / kerberos / certificate
+ansible_psrp_cert_validation: ignore
+
+# pypsrp's defaults are also too short for longer-running non-async tasks
+# (e.g. WSL installs, reboots) - same reasoning as the old winrm timeouts.
+ansible_psrp_operation_timeout: 60
+ansible_psrp_read_timeout: 70
+ansible_psrp_connection_timeout: 30
