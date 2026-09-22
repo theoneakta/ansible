@@ -118,8 +118,16 @@
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 1rem 1.1rem; margin-bottom: .9rem;
   }
-  fieldset.card { margin-bottom: .75rem; }
-  legend { padding: 0 .4rem; font-size: .92rem; }
+  .toggleCard {
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+    margin-bottom: .6rem; overflow: hidden;
+  }
+  .toggleCard > .toggleHead {
+    display: flex; align-items: center; margin: 0; padding: .7rem .9rem; font-size: .92rem; cursor: pointer;
+  }
+  .toggleCard > .toggleHead:hover { background: var(--surface2); }
+  .toggleCard > .params { margin: 0; padding: 0 .9rem; max-height: 0; overflow: hidden; transition: max-height .15s ease; }
+  .toggleCard > .params.open { display: block; max-height: 40rem; padding-bottom: .9rem; }
 
   label { color: var(--text); font-size: .9rem; }
   input[type=text], input[type=password], select {
@@ -314,8 +322,8 @@
     <section class="tabPanel" id="tab-params">
       <div class="panelHead"><h2>Install Parameters</h2><p>Extra provisioning steps, each optional and independently toggled.</p></div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="wazuhToggle"> Install Wazuh agent</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="wazuhToggle"> Install Wazuh agent</label>
         <div class="params" id="wazuhParams">
           <div class="row"><label for="wazuhManager">Manager IP/FQDN *</label><input type="text" id="wazuhManager"></div>
           <div class="row"><label for="wazuhPort">Port</label><input type="text" id="wazuhPort" placeholder="1514"></div>
@@ -326,47 +334,47 @@
           <div class="row"><label for="wazuhAgentName">Agent name</label><input type="text" id="wazuhAgentName"></div>
           <div class="row"><label for="wazuhRegPass">Registration password</label><input type="password" id="wazuhRegPass"></div>
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="tailscaleToggle"> Join Tailscale tailnet</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="tailscaleToggle"> Join Tailscale tailnet</label>
         <div class="params" id="tailscaleParams">
           <div class="row"><label for="tailscaleKey">Auth key (optional override)</label><input type="text" id="tailscaleKey"></div>
           <p class="muted">Leave the key blank to use the one stored in vault. Unchecking this box entirely skips Tailscale for this run, even if a key is stored.</p>
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="gitToggle"> Set Git global identity</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="gitToggle"> Set Git global identity</label>
         <div class="params" id="gitParams">
           <div class="row"><label for="gitName">Name</label><input type="text" id="gitName"></div>
           <div class="row"><label for="gitEmail">Email</label><input type="text" id="gitEmail"></div>
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="wslToggle"> Install WSL distro(s)</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="wslToggle"> Install WSL distro(s)</label>
         <div class="params" id="wslParams">
           <div id="wslDistroList" class="checkGrid" style="margin-bottom: .5rem;"></div>
           <div class="row"><label><input type="checkbox" id="wslRebootToggle"> Allow this run to reboot the PC if needed to finish it</label></div>
           <div class="row"><label for="wslTargetUsers">Install for these Windows users instead</label><input type="text" id="wslTargetUsers" placeholder="e.g. jsmith, jdoe"></div>
           <p class="muted">Already-installed distros are skipped. Enabling the underlying Windows feature can require a reboot to finish; if not allowed, the run warns and you can re-run later. WSL distros are registered per-user - leave the field above blank to install for this run's own account (the WinRM user, a pure automation account not used interactively), or list specific Windows usernames (comma-separated) to install ONLY for them instead, via a logon task each that runs at their next login, no password needed. The exact manual command is always shown in the run log too, for anyone else not listed.</p>
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="win11debloatToggle"> Run Win11Debloat (basic defaults)</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="win11debloatToggle"> Run Win11Debloat (basic defaults)</label>
         <div class="params" id="win11debloatParams">
           <p class="muted">Runs <a href="https://github.com/Raphire/Win11Debloat" target="_blank" rel="noopener">Win11Debloat</a> with its standard recommended settings (<code>-RunDefaults -Silent</code>): removes the default list of bloatware/preinstalled apps and applies its default privacy/UI tweaks, unattended. Downloads and runs the latest script straight from debloat.raphi.re on the target PC - no extra options here, just the maintainers' own defaults.</p>
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset class="card">
-        <legend><label><input type="checkbox" id="rsatToggle"> Install RSAT tools (all)</label></legend>
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="rsatToggle"> Install RSAT tools (all)</label>
         <div class="params" id="rsatParams">
           <p class="muted">Installs every available RSAT (Remote Server Administration Tools) capability - AD DS, DNS, DHCP, Group Policy, Hyper-V, and the rest - via Windows's own Add-WindowsCapability, not Chocolatey. No per-tool picker; this is all of them. Each missing capability downloads from Windows Update, so this can take a while on a fresh machine.</p>
         </div>
-      </fieldset>
+      </div>
 
       <div class="actionBar">
         <button class="primary runInstallBtn" id="runBtnParams">Run install actions</button>
