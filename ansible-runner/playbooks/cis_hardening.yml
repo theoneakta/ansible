@@ -60,6 +60,45 @@
     # -e win_skip_for_test=false for a specific run - only sensible with a
     # real console/IPMI fallback in case that run strands the connection.
     win_skip_for_test: true
+    # A second, separate self-lockout mechanism win_skip_for_test does NOT
+    # cover. Control 18.4.1 ("Apply UAC restrictions to local accounts on
+    # network logons") sets LocalAccountTokenFilterPolicy=0 - the exact
+    # opposite of what setup-winrm-ssl.ps1 sets it to (=1). That value is
+    # what lets a local admin account OTHER than the built-in "Administrator"
+    # (RID 500) - i.e. the account this toolkit actually authenticates as -
+    # get a full, unfiltered token over a network logon; the built-in
+    # Administrator is exempt from this filtering regardless of the policy
+    # value, but a named account like this one is not. The moment 18.4.1
+    # applies, every subsequent WinRM/psrp authentication from that account
+    # is rejected. Confirmed live: a real run applied 18.4.1, and the very
+    # next task failed with "credentials were rejected by the server",
+    # stranding the connection the same way 1.2.2 did (recap: ok=198
+    # changed=16 unreachable=1 skipped=173 - the run got much further than
+    # the 1.2.2 incident, but died the same way). This is a genuine,
+    # unavoidable conflict between this control and automating over WinRM as
+    # a non-built-in local admin - not a bug to fix, a trade-off to make
+    # deliberately. All 4 roles have their own copy of this control under
+    # their own rule variable; excluded here by default the same way
+    # win_skip_for_test's list is, overridable per-run with
+    # -e win11cis_rule_18_4_1=true (or the win19/win22/win25 equivalent) if
+    # the automation account is ever changed to the actual built-in
+    # Administrator, or you accept re-running setup-winrm-ssl.ps1 afterward.
+    win11cis_rule_18_4_1: false
+    win19cis_rule_18_4_1: false
+    win22cis_rule_18_4_1: false
+    win25cis_rule_18_4_1: false
+    # 2.3.1.1 ("Block Microsoft accounts") sets NoConnectedUser=3 under
+    # HKLM:\Software\Microsoft\Windows\Currentversion\Policies\System -
+    # Microsoft's documented value for "Users can't add or log on with
+    # Microsoft accounts". This control is written for domain-joined
+    # enterprise environments where users sign in with domain credentials;
+    # applied to a non-domain personal PC where a Microsoft account is the
+    # only way to sign in at all, it locks the person out of their own
+    # desktop, not just some hypothetical newly-added account. Confirmed
+    # live. Windows-11-CIS only - not excluded on the server roles, where
+    # blocking personal Microsoft accounts on a domain-joined member
+    # server/DC is the actually-intended, appropriate use of this control.
+    win11cis_rule_2_3_1_1: false
   pre_tasks:
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
