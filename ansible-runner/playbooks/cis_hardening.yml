@@ -132,6 +132,19 @@
     # Outlook sign in. Windows-11-CIS only, same domain-vs-personal-PC
     # reasoning as 2.3.1.1.
     win11cis_rule_18_10_41_1: false
+    # 2.3.11.7 ("Network security: LAN Manager authentication level") set to
+    # "Send NTLMv2 response only. Refuse LM & NTLM" sets LmCompatibilityLevel=5,
+    # the strictest of the six levels - and a classic, well-known cause of a
+    # hardened Windows client failing to authenticate to a workgroup/non-domain
+    # NAS or other legacy-SMB device, even a fully up-to-date one, since it
+    # outright refuses to fall back if the server's own auth negotiation
+    # doesn't line up perfectly with strict NTLMv2-only. Confirmed live: this
+    # was why a TrueNAS share worked from one host but not from this one -
+    # the only difference was this control having been applied here. A real,
+    # legitimate hardening control in general (unlike the others on this
+    # list, which are bugs/scoping gaps), but not a fit for a home PC that
+    # needs to talk to home-network devices like a NAS. Windows-11-CIS only.
+    win11cis_rule_2_3_11_7: false
   pre_tasks:
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
