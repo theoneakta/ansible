@@ -99,6 +99,39 @@
     # blocking personal Microsoft accounts on a domain-joined member
     # server/DC is the actually-intended, appropriate use of this control.
     win11cis_rule_2_3_1_1: false
+    # A related cluster, same root cause as 2.3.1.1: these three are all
+    # named "on domain-joined computers" but have NO discovered_domain_joined
+    # guard in their tasks (unlike their siblings 18.9.28.5/6/7, which do),
+    # so they apply unconditionally even on a non-domain PC.
+    # 18.9.28.1 sets BlockUserFromShowingAccountDetailsOnSignin=1 - Microsoft's
+    # own documented behavior for this policy is that it doesn't just hide
+    # account details on the lock screen, it also disables Microsoft-account
+    # -backed connected experiences: OneDrive sync, Mail/Calendar (Outlook),
+    # Store sign-in, and anything else needing that account. Confirmed live:
+    # this, not 2.3.1.1/NoConnectedUser, was what broke OneDrive/Outlook
+    # sign-in specifically (NoConnectedUser only blocks the raw "sign in with
+    # a Microsoft account" OS dialog - this one is broader).
+    # 18.9.28.3 (DontEnumerateConnectedUsers) and 18.9.28.4 (EnumerateLocalUsers)
+    # are the same domain-only-in-name pattern, directly adjacent, and
+    # plausibly compounding the same class of account-visibility issue -
+    # excluded together rather than waiting to hit each one individually.
+    win11cis_rule_18_9_28_1: false
+    win11cis_rule_18_9_28_3: false
+    win11cis_rule_18_9_28_4: false
+    # The actual, comprehensive cause of the persistent "Can't sign in with
+    # a Microsoft account - This program is blocked by group policy
+    # (0x800704ec)" dialog, which survived clearing all of the above.
+    # 18.10.41.1's own name says exactly what it does: "Block all consumer
+    # Microsoft account user authentication" - it sets
+    # HKLM:\Software\Policies\Microsoft\MicrosoftAccount\DisableUserAuth=1,
+    # a dedicated, system-wide kill switch for consumer MSA auth, separate
+    # from and more comprehensive than NoConnectedUser (2.3.1.1) or the
+    # 18.9.28.x cluster above - it's what was still blocking Outlook even
+    # after every other Microsoft-account-related exclusion was in place.
+    # Confirmed live: clearing this (and only this, at that point) let
+    # Outlook sign in. Windows-11-CIS only, same domain-vs-personal-PC
+    # reasoning as 2.3.1.1.
+    win11cis_rule_18_10_41_1: false
   pre_tasks:
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
