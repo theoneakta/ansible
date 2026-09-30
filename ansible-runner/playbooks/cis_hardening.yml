@@ -145,6 +145,15 @@
     # list, which are bugs/scoping gaps), but not a fit for a home PC that
     # needs to talk to home-network devices like a NAS. Windows-11-CIS only.
     win11cis_rule_2_3_11_7: false
+    # 18.10.50.1 ("Prevent the usage of OneDrive for file storage") sets
+    # HKLM:\Software\Policies\Microsoft\Windows\OneDrive\DisableFileSyncNGSC=1,
+    # which disables the OneDrive sync client outright - the app won't open,
+    # regardless of whether Microsoft-account sign-in works (that's the
+    # separate 2.3.1.1/18.9.28.x/18.10.41.1 cluster above). Meant for
+    # enterprises that forbid personal cloud storage; on a personal PC it just
+    # removes OneDrive. Confirmed live: OneDrive failed to open after a CIS
+    # run with DisableFileSyncNGSC=1 set. Windows-11-CIS only.
+    win11cis_rule_18_10_50_1: false
   pre_tasks:
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
