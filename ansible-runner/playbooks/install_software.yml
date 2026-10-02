@@ -127,6 +127,27 @@
       - { name: battle.net,       label: Battle.net,                      category: multimedia }
 
   tasks:
+    # win_chocolatey's bootstrap writes chocolateyInstall.ps1 to a temp FILE
+    # and runs it with `&`, so it's subject to the execution policy. A fresh
+    # Windows 11 client has every scope Undefined, which means effectively
+    # Restricted - and the bootstrap fails with PSSecurityException
+    # ("running scripts is disabled on this system"), reported only as the
+    # generic "Chocolatey bootstrap installation failed." Confirmed live on
+    # 192.168.3.181. Hosts that already have Chocolatey never hit this (no
+    # bootstrap). Same fix as cis_hardening.yml's audit-script step:
+    # RemoteSigned, only when LocalMachine actually blocks local scripts.
+    - name: Check LocalMachine execution policy allows the Chocolatey bootstrap to run
+      ansible.windows.win_shell: (Get-ExecutionPolicy -Scope LocalMachine).ToString()
+      changed_when: false
+      register: local_machine_execution_policy
+      when: install_packages | bool
+
+    - name: Allow local scripts to run (RemoteSigned) if LocalMachine policy currently blocks them
+      ansible.windows.win_shell: Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+      when:
+        - install_packages | bool
+        - (local_machine_execution_policy.stdout | trim) in ['Undefined', 'Restricted', 'AllSigned']
+
     - name: Ensure Chocolatey is installed
       chocolatey.chocolatey.win_chocolatey:
         name: chocolatey
@@ -323,9 +344,77 @@
         msg: "wazuh_manager not set - Wazuh agent skipped."
       when: wazuh_manager | length == 0
 
-    - name: Join Tailscale tailnet with auth key
-      ansible.windows.win_command: >-
-        "C:\Program Files\Tailscale\tailscale.exe" up --authkey={{ tailscale_authkey | default('') }} --accept-routes
+    # Tailscale is joined as the MACHINE, not as whichever Windows user happens
+    # to be logged on. The Chocolatey package already installs it machine-wide
+    # (MSI, "Tailscale" service as LocalSystem) - installed here too, so a join
+    # works even when this run skips the package list.
+    - name: Ensure Tailscale is installed (machine-wide service)
+      chocolatey.chocolatey.win_chocolatey:
+        name: tailscale
+        state: present
+      when: tailscale_join_enabled | bool and (tailscale_authkey | default('')) | length > 0
+
+    # Joined as the MACHINE, not as whichever Windows user is logged on.
+    # tailscaled only accepts commands from the user that owns it (normally
+    # the logged-on desktop user, via the tray app) - this toolkit's WinRM
+    # account gets "401 Unauthorized: Tailscale already in use by <PC>\<user>"
+    # (confirmed live on 192.168.3.181, where the old plain `tailscale up`
+    # failed with a bare "non-zero return code"). LocalSystem, however, is
+    # always allowed (also confirmed live), so `up --unattended` runs as SYSTEM
+    # via a one-off scheduled task, deleted right after - the node then belongs
+    # to the machine and stays connected whoever logs on or off. Machine-wide
+    # system policies (HKLM\SOFTWARE\Policies\Tailscale) pin that down:
+    #   UnattendedMode=always   - a user can't switch it back to per-user
+    #   AlwaysOn.Enabled=1      - (1.84+) always connected; users can't
+    #                             disconnect it from the tray
+    #   UseTailscaleSubnets     - =always is --accept-routes
+    # Not the AuthKey policy: a fresh/logged-out service never acts on it by
+    # itself (confirmed live: "want=true loggedout=true", no login attempt).
+    # "Joined" = a 100.x address on the Tailscale adapter, since `tailscale
+    # status` itself 401s for a non-owner.
+    - name: Join Tailscale tailnet as the machine (unattended, always on)
+      ansible.windows.win_powershell:
+        parameters:
+          AuthKey: "{{ tailscale_authkey }}"
+        script: |
+          param([string]$AuthKey)
+          $pol = 'HKLM:\SOFTWARE\Policies\Tailscale'
+          $exe = 'C:\Program Files\Tailscale\tailscale.exe'
+          function Get-TailnetIP {
+            Get-NetIPAddress -InterfaceAlias 'Tailscale*' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object IPAddress -like '100.*' | Select-Object -First 1 -ExpandProperty IPAddress
+          }
+          function Set-Policy($Name, $Value, $Type) {
+            if ((Get-ItemProperty $pol -Name $Name -ErrorAction SilentlyContinue).$Name -ne $Value) {
+              New-ItemProperty $pol -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
+              $Ansible.Changed = $true
+            }
+          }
+
+          $Ansible.Changed = $false
+          New-Item $pol -Force -ErrorAction SilentlyContinue | Out-Null
+          Set-Policy UnattendedMode 'always' String
+          Set-Policy 'AlwaysOn.Enabled' 1 DWord
+          Set-Policy UseTailscaleSubnets 'always' String
+
+          if ($ip = Get-TailnetIP) { "Already joined: $ip"; return }
+
+          $Ansible.Changed = $true
+          $outFile = "$env:ProgramData\Tailscale\ansible-up.txt"
+          $task = 'Ansible-TailscaleUp'
+          $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"`"$exe`" up --authkey=$AuthKey --unattended --accept-routes --timeout=90s > `"$outFile`" 2>&1`""
+          Register-ScheduledTask $task -Action $action -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+          try {
+            Start-ScheduledTask $task
+            $deadline = (Get-Date).AddSeconds(120)
+            do { Start-Sleep 3 } while (-not ($ip = Get-TailnetIP) -and (Get-Date) -lt $deadline)
+          } finally {
+            Unregister-ScheduledTask $task -Confirm:$false
+          }
+          $out = if (Test-Path $outFile) { (Get-Content $outFile -Raw) -replace 'tskey-[A-Za-z0-9-]+', 'tskey-REDACTED'; Remove-Item $outFile -Force }
+          if (-not $ip) { throw "Tailscale did not join within 120s: $out Check the auth key is valid, unexpired, and reusable if already used." }
+          "Joined: $ip"
+      no_log: true
       when: tailscale_join_enabled | bool and (tailscale_authkey | default('')) | length > 0
 
     - name: Configure Git global user.name

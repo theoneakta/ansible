@@ -246,7 +246,10 @@
 
         - name: Allow local scripts to run (RemoteSigned) if LocalMachine policy currently blocks them
           ansible.windows.win_shell: Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
-          when: (cis_local_machine_execution_policy.stdout | trim) in ['Restricted', 'AllSigned']
+          # Undefined too: with every scope Undefined (a fresh Windows 11
+          # client), the effective policy is Restricted - confirmed live on
+          # 192.168.3.181, see install_software.yml's Chocolatey bootstrap.
+          when: (cis_local_machine_execution_policy.stdout | trim) in ['Undefined', 'Restricted', 'AllSigned']
       when: (run_audit | default(false) | bool) or (audit_only | default(false) | bool)
       tags: always
 
