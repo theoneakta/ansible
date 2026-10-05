@@ -312,7 +312,7 @@ What the image contains is deliberately minimal - Windows, updates, Chocolatey, 
 
 ### One-time setup
 
-1. **Proxmox API token** - Datacenter → Permissions → API Tokens, e.g. `root@pam!packer` with *Privilege Separation* unchecked (or give the token a role with `VM.*`, `Datastore.*`, `Sys.Modify` and `SDN.Use`).
+1. **Proxmox API token `ansible@pam!ansible`** - the `pam` realm needs a Linux user `ansible` on the node (`useradd -M -s /usr/sbin/nologin ansible`), then in the web UI: Datacenter → Permissions → Users → add `ansible@pam`; Permissions → Add → User Permission: path `/`, user `ansible@pam`, role `PVEAdmin`; API Tokens → add token ID `ansible` for `ansible@pam` with *Privilege Separation* unchecked (so it inherits the user's permissions). Copy the secret into the Windows Image tab.
 2. **Windows 11 ISO** - upload it to a Proxmox ISO storage, *and* copy the same ISO to `pxe/data/iso/` on the Docker host. The first capture extracts WinPE from that copy (~1 GB); delete the copy afterwards if disk is tight.
 3. **PXE server** - add to `ansible-runner/.env`:
    ```
