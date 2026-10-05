@@ -8,7 +8,7 @@ variable "proxmox_url" {
 }
 variable "proxmox_token_id" {
   type    = string
-  default = "root@pam!packer"
+  default = "ansible@pam!ansible"
 }
 variable "proxmox_token_secret" {
   type      = string

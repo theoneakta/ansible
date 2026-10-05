@@ -4,11 +4,12 @@
 # The Proxmox API token SECRET is not here - it's vault_proxmox_token_secret
 # in group_vars/windows/vault.yml (also set from that tab).
 
-# Proxmox API. Token: Datacenter -> Permissions -> API Tokens, e.g.
-# root@pam!packer with "Privilege Separation" off (or a role with VM.*,
-# Datastore.*, Sys.Modify and SDN.Use on the node/storage/bridge below).
+# Proxmox API token ansible@pam!ansible: user "ansible" in the pam realm
+# (a Linux user of that name must exist on the node) with the PVEAdmin role
+# on "/", and its token "ansible" with "Privilege Separation" unchecked so
+# the token inherits those permissions.
 proxmox_api_url: https://192.168.3.236:8006/api2/json
-proxmox_token_id: root@pam!packer
+proxmox_token_id: ansible@pam!ansible
 proxmox_validate_certs: false
 proxmox_node: pve5
 
