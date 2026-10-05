@@ -11,6 +11,11 @@
 #   ./run.sh --gui-stop                  stop it
 #   ./run.sh --gui-logs                  tail its logs
 #
+# PXE server for deploying the Windows 11 image (see README.md):
+#   ./run.sh --pxe                       build (if needed) and start the pxe container
+#   ./run.sh --pxe-stop                  stop it
+#   ./run.sh --pxe-logs                  tail its logs (DHCP/TFTP/SMB)
+#
 # Convenience install params (translated to `-e key=value` for you):
 #   --wazuh-manager <ip|fqdn>            Wazuh manager address (installs the agent)
 #   --wazuh-port <port>                  default: 1514
@@ -87,12 +92,20 @@ YML
 
   --gui)
     [[ -f "$PASSFILE" ]] || { echo "No $PASSFILE found. Run ./run.sh --vault-init first (the GUI needs it to reach hosts)."; exit 1; }
-    mkdir -p gui/data
+    mkdir -p gui/data pxe/data/images pxe/data/iso pxe/data/winpe pxe/data/hosts
     docker compose --profile gui up -d --build gui
     echo "GUI running at http://localhost:8080"
     ;;
   --gui-stop) docker compose --profile gui stop gui ;;
   --gui-logs) docker compose --profile gui logs -f gui ;;
+
+  --pxe)
+    grep -qs '^PXE_SMB_PASSWORD=.' .env || { echo "Set PXE_SERVER_IP, PXE_SUBNET and PXE_SMB_PASSWORD in .env first (see README.md)."; exit 1; }
+    mkdir -p pxe/data/images pxe/data/iso pxe/data/winpe pxe/data/hosts
+    docker compose --profile pxe up -d --build pxe
+    ;;
+  --pxe-stop) docker compose --profile pxe stop pxe ;;
+  --pxe-logs) docker compose --profile pxe logs -f pxe ;;
 
   --vault-edit)   vault edit   "${2:-$DEFAULT_VAULT}" ;;
   --vault-view)   vault view   "${2:-$DEFAULT_VAULT}" ;;

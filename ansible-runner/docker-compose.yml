@@ -35,6 +35,11 @@ services:
       - ./inventory:/ansible/inventory
       - ./gui/data:/ansible/gui-data
       - ./.vault_pass:/run/secrets/vault_pass:ro
+      # Windows image build/capture (playbooks/image_*.yml): Packer uploads
+      # setup-winrm-ssl.ps1 into the image, and capture writes the PXE
+      # server's files (WinPE, per-MAC boot overrides) - shared with `pxe`.
+      - ./scripts:/ansible/scripts:ro
+      - ./pxe/data:/ansible/pxe
     ports:
       # Reachable from the whole LAN, not just this Docker host - deliberate,
       # since every request now requires GitHub sign-in (see README.md,
@@ -43,3 +48,27 @@ services:
       - "0.0.0.0:8090:8000"
     # Long-running web server, started/stopped via `./run.sh --gui` / `--gui-stop`.
     profiles: ["gui"]
+
+  # PXE server for deploying the Windows 11 image - see README.md
+  # ("Windows 11 image + PXE deployment"). Proxy-DHCP only (the router keeps
+  # handing out addresses), TFTP, HTTP on PXE_HTTP_PORT, SMB on 445.
+  pxe:
+    build:
+      context: ./pxe
+      args:
+        PXE_SERVER_IP: ${PXE_SERVER_IP:-}
+        PXE_HTTP_PORT: ${PXE_HTTP_PORT:-8092}
+    image: ansible-pxe:latest
+    # DHCP is broadcast - it only works on the host's own network stack.
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    environment:
+      PXE_SERVER_IP: ${PXE_SERVER_IP:-}
+      PXE_SUBNET: ${PXE_SUBNET:-}
+      PXE_HTTP_PORT: ${PXE_HTTP_PORT:-8092}
+      PXE_SMB_PASSWORD: ${PXE_SMB_PASSWORD:-}
+    volumes:
+      - ./pxe/data:/data
+    restart: unless-stopped
+    # Started/stopped via `./run.sh --pxe` / `--pxe-stop`.
+    profiles: ["pxe"]

@@ -1,0 +1,32 @@
+---
+# Stops (if running) and deletes a Proxmox VM, disks included.
+# Expects: vmid, vm_running, node_api, proxmox_headers, proxmox_validate_certs.
+- name: Stop VM {{ vmid }}
+  ansible.builtin.uri:
+    url: "{{ node_api }}/qemu/{{ vmid }}/status/stop"
+    method: POST
+    headers: "{{ proxmox_headers }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: stop_task
+  when: vm_running | bool
+  no_log: true
+
+- name: Wait for VM {{ vmid }} to stop
+  ansible.builtin.include_tasks: proxmox_wait_task.yml
+  vars:
+    upid: "{{ stop_task.json.data }}"
+  when: vm_running | bool
+
+- name: Delete VM {{ vmid }}
+  ansible.builtin.uri:
+    url: "{{ node_api }}/qemu/{{ vmid }}?purge=1&destroy-unreferenced-disks=1"
+    method: DELETE
+    headers: "{{ proxmox_headers }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: delete_task
+  no_log: true
+
+- name: Wait for VM {{ vmid }} to be deleted
+  ansible.builtin.include_tasks: proxmox_wait_task.yml
+  vars:
+    upid: "{{ delete_task.json.data }}"

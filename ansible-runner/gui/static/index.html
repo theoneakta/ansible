@@ -118,6 +118,7 @@
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 1rem 1.1rem; margin-bottom: .9rem;
   }
+  .card .cardTitle { margin: 0 0 .7rem; font-size: .95rem; }
   .toggleCard {
     border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
     margin-bottom: .6rem; overflow: hidden;
@@ -250,6 +251,10 @@
     <button class="navItem" data-tab="cis">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"></path></svg>
       CIS Benchmarks
+    </button>
+    <button class="navItem" data-tab="image">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"></rect><path d="M8 20h8M12 16v4"></path><path d="M12 7v5m0 0-2-2m2 2 2-2"></path></svg>
+      Windows Image
     </button>
     <div class="navDivider"></div>
     <button class="navItem" data-tab="activity">
@@ -401,6 +406,61 @@
       </div>
       <div class="actionBar">
         <button class="primary" id="cisRunBtn">Run CIS hardening</button>
+      </div>
+    </section>
+
+    <!-- ============ WINDOWS IMAGE ============ -->
+    <section class="tabPanel" id="tab-image">
+      <div class="panelHead"><h2>Windows 11 Image</h2><p>Build a Windows 11 Pro image on Proxmox with Packer, capture it, and deploy it to PCs over PXE.</p></div>
+
+      <div class="card">
+        <div class="row"><label>Status</label><span id="imgStatus" class="muted">Loading...</span></div>
+        <p class="muted">Steps: <strong>1.</strong> Fill in the settings and save. <strong>2.</strong> Build (1-2 h: installs Windows, updates, sysprep, leaves a Proxmox template). <strong>3.</strong> Capture (turns the template into the .wim the PXE server deploys). <strong>4.</strong> On a PC: PXE-boot, pick "Deploy Windows 11 Pro". The deployed PC gets the local admin from the Credentials tab and WinRM for this GUI automatically - add its IP on the Hosts tab once it's up.</p>
+      </div>
+
+      <div class="card">
+        <h3 class="cardTitle">Proxmox</h3>
+        <div class="row"><label for="img_proxmox_api_url">API URL</label><input type="text" id="img_proxmox_api_url" placeholder="https://192.168.3.236:8006/api2/json"></div>
+        <div class="row"><label for="img_proxmox_token_id">API token ID</label><input type="text" id="img_proxmox_token_id" placeholder="root@pam!packer"></div>
+        <div class="row"><label for="imgTokenSecret">API token secret</label><input type="password" id="imgTokenSecret" placeholder="(unchanged)"></div>
+        <div class="row"><label><input type="checkbox" id="img_proxmox_validate_certs"> Validate Proxmox TLS certificate</label></div>
+        <div class="row"><label for="img_proxmox_node">Node</label><input type="text" id="img_proxmox_node" list="imgNodes"><datalist id="imgNodes"></datalist></div>
+        <div class="row"><label for="img_proxmox_storage_pool">VM disk storage</label><input type="text" id="img_proxmox_storage_pool" list="imgStorages"><datalist id="imgStorages"></datalist></div>
+        <div class="row"><label for="img_proxmox_iso_storage">ISO storage</label><input type="text" id="img_proxmox_iso_storage" list="imgStorages"></div>
+        <div class="row"><label for="img_proxmox_bridge">Network bridge</label><input type="text" id="img_proxmox_bridge" list="imgBridges"><datalist id="imgBridges"></datalist></div>
+        <div class="row"><label for="img_image_win_iso">Windows 11 ISO</label><input type="text" id="img_image_win_iso" list="imgIsos" placeholder="local:iso/Win11_English_x64.iso"><datalist id="imgIsos"></datalist></div>
+        <div class="actionBar">
+          <button id="imgTestBtn">Test connection &amp; load choices</button>
+          <span id="imgTestStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="cardTitle">Image</h3>
+        <div class="row"><label for="img_image_edition">Edition</label><input type="text" id="img_image_edition" placeholder="Windows 11 Pro"></div>
+        <div class="row"><label for="img_image_template_vmid">Template VM ID</label><input type="text" id="img_image_template_vmid"></div>
+        <div class="row"><label for="img_image_template_name">Template name</label><input type="text" id="img_image_template_name"></div>
+        <div class="row"><label for="img_image_capture_vmid">Capture clone VM ID</label><input type="text" id="img_image_capture_vmid"></div>
+        <div class="row"><label><input type="checkbox" id="img_image_capture_full_clone"> Full clone for capture (only if the storage can't do linked clones)</label></div>
+        <div class="row"><label for="img_image_cores">Build VM cores</label><input type="text" id="img_image_cores"></div>
+        <div class="row"><label for="img_image_memory">Build VM memory (MB)</label><input type="text" id="img_image_memory"></div>
+        <div class="row"><label for="img_image_disk_size">Disk size</label><input type="text" id="img_image_disk_size" placeholder="64G"></div>
+        <div class="row"><label for="img_image_timezone">Time zone</label><input type="text" id="img_image_timezone" placeholder="Eastern Standard Time"></div>
+        <div class="row"><label for="img_image_locale">Locale</label><input type="text" id="img_image_locale" placeholder="en-US"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="cardTitle">PXE server</h3>
+        <div class="row"><label for="img_pxe_server_ip">Server IP</label><input type="text" id="img_pxe_server_ip" placeholder="192.168.3.8"></div>
+        <div class="row"><label for="img_pxe_http_port">HTTP port</label><input type="text" id="img_pxe_http_port" placeholder="8092"></div>
+        <p class="muted">Runs as the separate <code>pxe</code> container (<code>./run.sh --pxe</code>). PCs need UEFI network boot with Secure Boot <em>off</em> to PXE (iPXE isn't Microsoft-signed) - turn it back on after deployment.</p>
+      </div>
+
+      <div class="actionBar">
+        <button id="imgSaveBtn">Save settings</button>
+        <button class="primary" id="imgBuildBtn">Build image</button>
+        <button class="primary" id="imgCaptureBtn">Capture to WIM</button>
+        <span id="imgSaveStatus" class="muted"></span>
       </div>
     </section>
 
@@ -957,6 +1017,108 @@ $('cisRunBtn').addEventListener('click', async () => {
     $('cisRunBtn').disabled = false;
   }
 });
+
+/* ---------- Windows image ---------- */
+const IMG_FIELDS = [
+  'proxmox_api_url', 'proxmox_token_id', 'proxmox_validate_certs', 'proxmox_node', 'proxmox_storage_pool',
+  'proxmox_iso_storage', 'proxmox_bridge', 'image_win_iso', 'image_edition', 'image_template_vmid',
+  'image_template_name', 'image_capture_vmid', 'image_capture_full_clone', 'image_cores', 'image_memory',
+  'image_disk_size', 'image_timezone', 'image_locale', 'pxe_server_ip', 'pxe_http_port',
+];
+
+function fillDatalist(id, values) {
+  $(id).innerHTML = values.map(v => `<option value="${escapeHtml(String(v))}">`).join('');
+}
+
+async function loadImageStatus() {
+  const s = await fetch('/api/image/status').then(r => r.json());
+  IMG_FIELDS.forEach(k => {
+    const el = $('img_' + k);
+    if (!el || s.settings[k] === undefined) return;
+    if (el.type === 'checkbox') el.checked = !!s.settings[k]; else el.value = s.settings[k];
+  });
+  $('imgTokenSecret').placeholder = s.token_set ? '(saved - leave blank to keep)' : '(not set)';
+  const badge = (ok, yes, no) => `<span class="badge ${ok ? 'ok' : 'neutral'}">${ok ? yes : no}</span>`;
+  $('imgStatus').innerHTML = [
+    badge(s.token_set, 'Proxmox token saved', 'no Proxmox token'),
+    badge(s.pxe_running, 'PXE server up', 'PXE server not reachable'),
+    badge(s.winpe_ready, 'WinPE ready', s.iso_copies.length ? 'WinPE: extracted on first capture' : 'WinPE: copy the ISO to pxe/data/iso/'),
+    badge(s.wim.exists, `image ${s.wim.size_gb} GB, ${s.wim.modified ? new Date(s.wim.modified).toLocaleString() : ''}`, 'no image captured yet'),
+  ].join(' ');
+}
+
+function imageSettingsFromForm() {
+  const settings = {};
+  IMG_FIELDS.forEach(k => {
+    const el = $('img_' + k);
+    if (!el) return;
+    if (el.type === 'checkbox') settings[k] = el.checked;
+    else if (el.value.trim() !== '') settings[k] = el.value.trim();
+  });
+  return settings;
+}
+
+async function saveImageSettings() {
+  const body = { settings: imageSettingsFromForm() };
+  if ($('imgTokenSecret').value) body.proxmox_token_secret = $('imgTokenSecret').value;
+  const res = await fetch('/api/image/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || 'Failed to save');
+  $('imgTokenSecret').value = '';
+  await loadImageStatus();
+}
+
+$('imgSaveBtn').addEventListener('click', async () => {
+  $('imgSaveStatus').textContent = 'Saving...';
+  try { await saveImageSettings(); $('imgSaveStatus').textContent = 'Saved.'; }
+  catch (e) { $('imgSaveStatus').textContent = 'Error: ' + e.message; }
+});
+
+$('imgTestBtn').addEventListener('click', async () => {
+  $('imgTestStatus').textContent = 'Saving and connecting...';
+  try {
+    await saveImageSettings();
+    const res = await fetch('/api/image/proxmox');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Connection failed');
+    fillDatalist('imgNodes', data.nodes);
+    fillDatalist('imgStorages', data.storages.map(s => s.name));
+    fillDatalist('imgBridges', data.bridges);
+    fillDatalist('imgIsos', data.isos);
+    $('imgTestStatus').textContent = data.warning ||
+      `Connected - nodes: ${data.nodes.join(', ')}; storage: ${data.storages.map(s => `${s.name} (${s.content})`).join(', ')}; ${data.isos.length} ISO(s). Pick from the fields' suggestions.`;
+  } catch (e) {
+    $('imgTestStatus').textContent = 'Error: ' + e.message;
+  }
+});
+
+async function startImageRun(kind, confirmText) {
+  if (!confirm(confirmText)) return;
+  const btns = [$('imgBuildBtn'), $('imgCaptureBtn')];
+  btns.forEach(b => b.disabled = true);
+  try {
+    await saveImageSettings();
+    const res = await fetch(`/api/image/${kind}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start');
+    await watchRun(data.run_id);
+  } catch (e) {
+    $('runStatus').textContent = 'Error: ' + e.message;
+    setHeaderRunning(false, 'Idle');
+  } finally {
+    btns.forEach(b => b.disabled = false);
+    loadImageStatus();
+  }
+}
+
+$('imgBuildBtn').addEventListener('click', () => startImageRun('build',
+  'Build the Windows 11 image on Proxmox? Takes 1-2 hours and replaces the existing template (if any). No other runs can start meanwhile.'));
+$('imgCaptureBtn').addEventListener('click', () => startImageRun('capture',
+  'Capture the template to win11-pro.wim? Clones the template, network-boots the clone into WinPE, and replaces the current image. Takes 20-60 minutes.'));
+
+loadImageStatus();
 
 async function loadHistory() {
   const runs = await fetch('/api/history').then(r => r.json());

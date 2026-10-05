@@ -1,3 +1,4 @@
 .vault_pass
 .env
 gui/data/
+pxe/data/

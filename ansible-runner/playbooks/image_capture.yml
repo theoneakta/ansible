@@ -1,0 +1,235 @@
+---
+# Turns the sysprepped template from image_build.yml into
+# pxe/data/images/win11-pro.wim - the image the PXE server deploys.
+#
+# How: clone the template on Proxmox, point the clone's MAC at a capture-mode
+# iPXE script (pxe/data/hosts/<mac>.ipxe), network-boot it. WinPE (from the
+# Windows ISO, via wimboot) runs capture.cmd: DISM-captures the clone's
+# Windows volume straight onto the \\<server>\images share, writes
+# capture-result.txt and powers off. The clone is always deleted afterwards.
+# The template itself is never booted, so it stays generalized for the next
+# capture.
+#
+# First run also extracts WinPE (boot.wim, BCD, boot.sdi) from the ISO copy
+# in pxe/data/iso/ - deploy needs the same files.
+
+- name: Capture the Windows 11 image to WIM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    pxe_data: /ansible/pxe
+    node_api: "{{ proxmox_api_url }}/nodes/{{ proxmox_node }}"
+    proxmox_headers:
+      Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
+
+  tasks:
+    - name: Check the Proxmox token is set
+      ansible.builtin.assert:
+        that: (vault_proxmox_token_secret | default('')) | length > 0
+        fail_msg: Set the Proxmox API token secret on the Windows Image tab first.
+        quiet: true
+
+    # ---------------------------------------------------------------- WinPE
+    - name: Check whether WinPE has been extracted already
+      ansible.builtin.stat:
+        path: "{{ pxe_data }}/winpe/sources/boot.wim"
+      register: winpe_wim
+
+    - name: Extract WinPE from the Windows ISO
+      when: not winpe_wim.stat.exists
+      block:
+        - name: Find the Windows ISO copy in pxe/data/iso/
+          ansible.builtin.find:
+            paths: "{{ pxe_data }}/iso"
+            patterns: "*.iso,*.ISO"
+          register: iso_found
+
+        - name: Fail if there's no ISO to extract from
+          ansible.builtin.fail:
+            msg: >-
+              No WinPE yet and no ISO to take it from: copy the same Windows 11
+              ISO that's on Proxmox into pxe/data/iso/ on the Docker host.
+          when: iso_found.files | length == 0
+
+        - name: Extract boot.wim, BCD and boot.sdi (case-insensitive; names normalized to lower case)
+          ansible.builtin.shell:
+            cmd: |
+              set -e
+              out="{{ pxe_data }}/winpe"
+              tmp="$(mktemp -d)"
+              7z x -y -ssc- -o"$tmp" "{{ (iso_found.files | first).path }}" boot/bcd boot/boot.sdi sources/boot.wim >/dev/null
+              mkdir -p "$out/boot" "$out/sources"
+              mv "$(find "$tmp" -ipath '*/boot/bcd')"         "$out/boot/bcd"
+              mv "$(find "$tmp" -ipath '*/boot/boot.sdi')"    "$out/boot/boot.sdi"
+              mv "$(find "$tmp" -ipath '*/sources/boot.wim')" "$out/sources/boot.wim"
+              rm -rf "$tmp"
+          args:
+            creates: "{{ pxe_data }}/winpe/sources/boot.wim"
+
+    # ------------------------------------------------------------- template
+    - name: Check the template exists
+      ansible.builtin.uri:
+        url: "{{ node_api }}/qemu/{{ image_template_vmid }}/config"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+        status_code: [200, 500]
+      register: template_cfg
+      no_log: true
+
+    - name: Fail if there's no template to capture
+      ansible.builtin.fail:
+        msg: "No template at VM {{ image_template_vmid }} on {{ proxmox_node }} - run Build first."
+      when: template_cfg.status != 200 or (template_cfg.json.data.template | default(0) | int) != 1
+
+    # ------------------------------------------------- leftover capture VM
+    - name: Look for a leftover capture VM
+      ansible.builtin.uri:
+        url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/current"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+        status_code: [200, 500]
+      register: leftover
+      no_log: true
+
+    - name: Remove the leftover capture VM
+      ansible.builtin.include_tasks: tasks/proxmox_destroy_vm.yml
+      vars:
+        vmid: "{{ image_capture_vmid }}"
+        vm_running: "{{ leftover.json.data.status | default('') == 'running' }}"
+      when: leftover.status == 200
+
+    # ---------------------------------------------------------------- clone
+    - name: Clone the template
+      ansible.builtin.uri:
+        url: "{{ node_api }}/qemu/{{ image_template_vmid }}/clone"
+        method: POST
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+        body_format: form-urlencoded
+        body:
+          newid: "{{ image_capture_vmid }}"
+          name: "{{ image_template_name }}-capture"
+          full: "{{ 1 if image_capture_full_clone | bool else 0 }}"
+      register: clone_task
+      no_log: true
+
+    - name: Wait for the clone to finish
+      ansible.builtin.include_tasks: tasks/proxmox_wait_task.yml
+      vars:
+        upid: "{{ clone_task.json.data }}"
+
+    - name: Capture
+      block:
+        - name: Network-boot the clone
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/config"
+            method: POST
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+            body_format: form-urlencoded
+            body:
+              boot: order=net0
+          no_log: true
+
+        - name: Read the clone's MAC address
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/config"
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+          register: clone_cfg
+          no_log: true
+
+        - name: Remember the MAC in iPXE's ${mac:hexhyp} form
+          ansible.builtin.set_fact:
+            capture_mac: "{{ clone_cfg.json.data.net0 | regex_search('([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | lower | replace(':', '-') }}"
+
+        - name: Point that MAC at capture mode on the PXE server
+          ansible.builtin.copy:
+            dest: "{{ pxe_data }}/hosts/{{ capture_mac }}.ipxe"
+            mode: "0644"
+            content: |
+              #!ipxe
+              # Written by image_capture.yml for the capture clone; removed when it finishes.
+              set base http://{{ pxe_server_ip }}:{{ pxe_http_port }}
+              kernel ${base}/wimboot index=2
+              initrd ${base}/winpe/boot/bcd           BCD
+              initrd ${base}/winpe/boot/boot.sdi      boot.sdi
+              initrd ${base}/scripts/winpeshl.ini     winpeshl.ini
+              initrd ${base}/scripts/capture.cmd      action.cmd
+              initrd ${base}/winpe/sources/boot.wim   boot.wim
+              boot
+
+        - name: Clear the previous capture result
+          ansible.builtin.file:
+            path: "{{ pxe_data }}/images/capture-result.txt"
+            state: absent
+
+        - name: Start the clone
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/start"
+            method: POST
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+          no_log: true
+
+        - name: Wait for WinPE to capture and power off (up to 2 hours)
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/current"
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+          register: clone_state
+          until: clone_state.json.data.status == 'stopped'
+          retries: 360
+          delay: 20
+          no_log: true
+
+        - name: Read the capture result
+          ansible.builtin.slurp:
+            src: "{{ pxe_data }}/images/capture-result.txt"
+          register: capture_result
+          failed_when: false
+
+        - name: Fail if WinPE didn't report success
+          ansible.builtin.fail:
+            msg: >-
+              Capture failed (capture-result.txt:
+              {{ (capture_result.content | default('') | b64decode | trim) or 'missing - WinPE never reached the share' }}).
+              Open the clone's console in Proxmox and re-run with the clone kept to see why.
+          when: (capture_result.content | default('') | b64decode | trim) != 'OK'
+
+        - name: Check the image file
+          ansible.builtin.stat:
+            path: "{{ pxe_data }}/images/win11-pro.wim"
+          register: wim
+
+        - name: Report
+          ansible.builtin.debug:
+            msg: >-
+              Captured win11-pro.wim ({{ (wim.stat.size / 1073741824) | round(1) }} GB).
+              PCs can now PXE-boot and pick "Deploy Windows 11 Pro".
+      always:
+        - name: Remove the capture-mode iPXE override
+          ansible.builtin.file:
+            path: "{{ pxe_data }}/hosts/{{ capture_mac }}.ipxe"
+            state: absent
+          when: capture_mac is defined
+
+        - name: Check the clone's state
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/current"
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+            status_code: [200, 500]
+          register: final_state
+          no_log: true
+
+        - name: Delete the clone
+          ansible.builtin.include_tasks: tasks/proxmox_destroy_vm.yml
+          vars:
+            vmid: "{{ image_capture_vmid }}"
+            vm_running: "{{ final_state.json.data.status | default('') == 'running' }}"
+          when: final_state.status == 200

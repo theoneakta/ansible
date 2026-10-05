@@ -46,11 +46,16 @@ TASK_KIND = {
     "Finish any WSL distro installs after reboot": "loop",
     "Create per-user logon tasks to install WSL distro(s) for requested users": "loop",
     "Install Wazuh agent (needs manager address)": "single",
-    "Join Tailscale tailnet with auth key": "single",
+    "Ensure Tailscale is installed (machine-wide service)": "single",
+    "Join Tailscale tailnet as the machine (unattended, always on)": "single",
     "Configure Git global user.name": "single",
     "Configure Git global user.email": "single",
     "Run Win11Debloat (basic defaults, silent)": "single",
     "Install all RSAT (Remote Server Administration Tools) capabilities": "single",
+    # Windows image (image_build.yml / image_capture.yml, run against localhost)
+    "Build the image (Windows install + updates + sysprep - 1-2 hours)": "single",
+    "Extract boot.wim, BCD and boot.sdi (case-insensitive; names normalized to lower case)": "single",
+    "Wait for WinPE to capture and power off (up to 2 hours)": "single",
 }
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -637,15 +642,7 @@ def api_set_credentials(body: CredentialsIn):
         raise HTTPException(400, "No vault password file on the server. Run ./run.sh --vault-init on the host first.")
 
     path = vault_file_for_target(body.target)
-    existing: dict = {}
-    if path.exists():
-        proc = subprocess.run(
-            ["ansible-vault", "view", str(path)] + vault_password_args(),
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise HTTPException(500, f"Failed to decrypt existing vault file: {proc.stderr.strip()}")
-        existing = yaml.safe_load(proc.stdout) or {}
+    existing = read_vault(path)
 
     if body.username:
         existing["vault_win_user"] = body.username
@@ -657,11 +654,28 @@ def api_set_credentials(body: CredentialsIn):
     if not existing:
         raise HTTPException(400, "Nothing to save - provide at least one field.")
 
+    write_vault(path, existing)
+    return {"ok": True, "file": str(path.relative_to(BASE))}
+
+
+def read_vault(path: pathlib.Path) -> dict:
+    if not path.exists():
+        return {}
+    proc = subprocess.run(
+        ["ansible-vault", "view", str(path)] + vault_password_args(),
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise HTTPException(500, f"Failed to decrypt existing vault file: {proc.stderr.strip()}")
+    return yaml.safe_load(proc.stdout) or {}
+
+
+def write_vault(path: pathlib.Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(suffix=".yml", dir=str(DATA_DIR))
     try:
         with os.fdopen(fd, "w") as tmp:
-            yaml.safe_dump(existing, tmp)
+            yaml.safe_dump(data, tmp)
         # --output writes fresh; overwrite the real file only if encryption succeeds.
         proc = subprocess.run(
             ["ansible-vault", "encrypt", tmp_path, "--output", str(path)] + vault_password_args(),
@@ -672,8 +686,6 @@ def api_set_credentials(body: CredentialsIn):
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-
-    return {"ok": True, "file": str(path.relative_to(BASE))}
 
 
 class WazuhParams(BaseModel):
@@ -760,7 +772,7 @@ def run_result_path(run_id: int) -> pathlib.Path:
     return DATA_DIR / f"run-{run_id}.result.json"
 
 
-def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
+def _execute_run(run_id: int, cmd: list[str], env: dict, timeout: int) -> None:
     try:
         try:
             # gui_stream writes everything useful (log + result JSON) straight
@@ -773,11 +785,11 @@ def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
             subprocess.run(
                 cmd, cwd=str(BASE), env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=1800,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired:
             finished = datetime.now(timezone.utc).isoformat()
-            finalize_run(run_id, finished, "timeout", "Run exceeded 30 minute timeout", {}, {})
+            finalize_run(run_id, finished, "timeout", f"Run exceeded {timeout // 60} minute timeout", {}, {})
             return
 
         finished = datetime.now(timezone.utc).isoformat()
@@ -800,7 +812,7 @@ def _execute_run(run_id: int, cmd: list[str], env: dict) -> None:
         run_lock.release()
 
 
-def _start_run(cmd: list[str], hosts: list[str], extra_vars: dict) -> int:
+def _start_run(cmd: list[str], hosts: list[str], extra_vars: dict, timeout: int = 1800) -> int:
     """Common run-launching machinery, shared by every playbook the GUI can
     trigger: acquire the single run_lock, record the run, wire up gui_stream,
     and kick it off in a background thread. Releases the lock itself on
@@ -823,7 +835,7 @@ def _start_run(cmd: list[str], hosts: list[str], extra_vars: dict) -> int:
         env.setdefault("HOME", "/tmp")
         env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
 
-        threading.Thread(target=_execute_run, args=(run_id, cmd, env), daemon=True).start()
+        threading.Thread(target=_execute_run, args=(run_id, cmd, env, timeout), daemon=True).start()
         return run_id
     except Exception:
         run_lock.release()
@@ -1060,6 +1072,164 @@ def api_history(limit: int = 20):
         })
     conn.close()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Windows 11 image: Packer build on Proxmox (image_build.yml), capture to WIM
+# (image_capture.yml), deployed by the pxe container. Settings live in
+# inventory/image.yml (plain) + vault_proxmox_token_secret (group vault).
+# ---------------------------------------------------------------------------
+IMAGE_SETTINGS = INVENTORY_DIR / "image.yml"
+PXE_DATA = pathlib.Path("/ansible/pxe")
+IMAGE_BUILD_PLAYBOOK = "playbooks/image_build.yml"
+IMAGE_CAPTURE_PLAYBOOK = "playbooks/image_capture.yml"
+
+# Keys the GUI may edit, with their type. Anything else in image.yml is
+# left alone (and editable by hand).
+IMAGE_SETTING_TYPES = {
+    "proxmox_api_url": str, "proxmox_token_id": str, "proxmox_validate_certs": bool,
+    "proxmox_node": str, "proxmox_storage_pool": str, "proxmox_iso_storage": str,
+    "proxmox_bridge": str, "image_win_iso": str, "image_edition": str,
+    "image_template_vmid": int, "image_template_name": str, "image_capture_vmid": int,
+    "image_capture_full_clone": bool, "image_cores": int, "image_memory": int,
+    "image_disk_size": str, "image_timezone": str, "image_locale": str,
+    "pxe_server_ip": str, "pxe_http_port": int,
+}
+
+
+def load_image_settings() -> dict:
+    if not IMAGE_SETTINGS.exists():
+        return {}
+    return yaml.safe_load(IMAGE_SETTINGS.read_text()) or {}
+
+
+def save_image_settings(updates: dict) -> None:
+    """Rewrites only the changed `key: value` lines, so the explanatory
+    comments in image.yml survive GUI edits."""
+    text = IMAGE_SETTINGS.read_text() if IMAGE_SETTINGS.exists() else "---\n"
+    for key, value in updates.items():
+        line = yaml.safe_dump({key: value}, default_flow_style=False, width=1000).strip()
+        pattern = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
+        if pattern.search(text):
+            text = pattern.sub(lambda _m: line, text, count=1)
+        else:
+            text = text.rstrip("\n") + "\n" + line + "\n"
+    IMAGE_SETTINGS.write_text(text)
+
+
+def proxmox_get(settings: dict, secret: str, path: str):
+    resp = requests.get(
+        f"{settings['proxmox_api_url'].rstrip('/')}{path}",
+        headers={"Authorization": f"PVEAPIToken={settings['proxmox_token_id']}={secret}"},
+        verify=bool(settings.get("proxmox_validate_certs", False)),
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["data"]
+
+
+def proxmox_secret() -> str:
+    return (read_vault(GROUP_VAULT).get("vault_proxmox_token_secret") or "") if has_vault_pass() else ""
+
+
+@app.get("/api/image/status")
+def api_image_status():
+    settings = load_image_settings()
+    wim = PXE_DATA / "images" / "win11-pro.wim"
+    pxe_up = False
+    try:
+        pxe_up = requests.get(
+            f"http://{settings.get('pxe_server_ip')}:{settings.get('pxe_http_port', 8092)}/boot.ipxe", timeout=2
+        ).ok
+    except requests.RequestException:
+        pass
+    return {
+        "settings": settings,
+        "token_set": bool(proxmox_secret()),
+        "iso_copies": sorted(p.name for p in (PXE_DATA / "iso").glob("*.[iI][sS][oO]")) if (PXE_DATA / "iso").exists() else [],
+        "winpe_ready": (PXE_DATA / "winpe" / "sources" / "boot.wim").exists(),
+        "wim": {
+            "exists": wim.exists(),
+            "size_gb": round(wim.stat().st_size / 1073741824, 1) if wim.exists() else None,
+            "modified": datetime.fromtimestamp(wim.stat().st_mtime, timezone.utc).isoformat() if wim.exists() else None,
+        },
+        "pxe_running": pxe_up,
+    }
+
+
+class ImageSettingsIn(BaseModel):
+    settings: dict = {}
+    proxmox_token_secret: Optional[str] = None
+
+
+@app.post("/api/image/settings")
+def api_image_settings(body: ImageSettingsIn):
+    updates = {}
+    for key, value in body.settings.items():
+        kind = IMAGE_SETTING_TYPES.get(key)
+        if kind is None:
+            raise HTTPException(400, f"Unknown setting '{key}'.")
+        try:
+            updates[key] = (str(value).lower() in ("1", "true", "yes", "on")) if kind is bool else kind(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Invalid value for {key}.")
+    if updates:
+        save_image_settings(updates)
+    if body.proxmox_token_secret:
+        if not has_vault_pass():
+            raise HTTPException(400, "No vault password file on the server.")
+        data = read_vault(GROUP_VAULT)
+        data["vault_proxmox_token_secret"] = body.proxmox_token_secret
+        write_vault(GROUP_VAULT, data)
+    return {"ok": True}
+
+
+@app.get("/api/image/proxmox")
+def api_image_proxmox():
+    """Connection test + the choices for the settings form: nodes, and on the
+    configured node its storages, bridges and ISOs."""
+    settings = load_image_settings()
+    secret = proxmox_secret()
+    if not secret:
+        raise HTTPException(400, "Save the Proxmox API token secret first.")
+    try:
+        nodes = [n["node"] for n in proxmox_get(settings, secret, "/nodes")]
+        node = settings.get("proxmox_node")
+        if node not in nodes:
+            return {"nodes": nodes, "storages": [], "bridges": [], "isos": [],
+                    "warning": f"Node '{node}' not found - pick one and save."}
+        storages = proxmox_get(settings, secret, f"/nodes/{node}/storage?enabled=1")
+        bridges = [n["iface"] for n in proxmox_get(settings, secret, f"/nodes/{node}/network?type=any_bridge")]
+        isos = []
+        for s in storages:
+            if "iso" in s.get("content", ""):
+                isos += [c["volid"] for c in proxmox_get(settings, secret, f"/nodes/{node}/storage/{s['storage']}/content?content=iso")]
+        return {
+            "nodes": nodes,
+            "storages": [{"name": s["storage"], "content": s.get("content", "")} for s in storages],
+            "bridges": sorted(bridges),
+            "isos": sorted(isos),
+        }
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Proxmox API error: {e}")
+
+
+@app.post("/api/image/build")
+def api_image_build():
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server.")
+    cmd = ["ansible-playbook", IMAGE_BUILD_PLAYBOOK] + vault_password_args()
+    run_id = _start_run(cmd, ["localhost"], {"image": "build"}, timeout=5 * 3600)
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.post("/api/image/capture")
+def api_image_capture():
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server.")
+    cmd = ["ansible-playbook", IMAGE_CAPTURE_PLAYBOOK] + vault_password_args()
+    run_id = _start_run(cmd, ["localhost"], {"image": "capture"}, timeout=3 * 3600)
+    return {"run_id": run_id, "status": "running"}
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

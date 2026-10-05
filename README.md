@@ -25,16 +25,22 @@ ansible-runner/
 │   ├── group_vars/windows/
 │   │   ├── vars.yml            # connection settings (plain text)
 │   │   └── vault.yml           # encrypted credentials (created by --vault-init)
-│   └── host_vars/<host>/       # optional per-host overrides
+│   ├── host_vars/<host>/       # optional per-host overrides
+│   └── image.yml               # Windows image build/PXE settings (GUI: Windows Image tab)
 ├── playbooks/
 │   ├── install_software.yml
-│   └── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
+│   ├── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
+│   ├── image_build.yml         # Packer build of the Windows 11 Pro image on Proxmox
+│   ├── image_capture.yml       # template -> win11-pro.wim for PXE deployment
+│   └── packer/win11/           # the Packer template, answer files, build scripts
 ├── scripts/
 │   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
-└── gui/                        # web GUI (own Dockerfile, started via --gui)
-    ├── app.py
-    ├── static/index.html
-    └── data/                   # run history SQLite db, gitignored
+├── gui/                        # web GUI (own Dockerfile, started via --gui)
+│   ├── app.py
+│   ├── static/index.html
+│   └── data/                   # run history SQLite db, gitignored
+└── pxe/                        # PXE server container (started via --pxe)
+    └── data/                   # images, WinPE, Windows ISO copy - gitignored
 ```
 
 `playbooks/` and `inventory/` are mounted into the container, so edits take effect immediately without rebuilding.
@@ -289,6 +295,48 @@ On the CLI, `run.sh` handles OS + level for you (section-level selection is GUI-
 All 4 roles are installed from `requirements.yml` at image build time (`ansible-galaxy install -r requirements.yml`) - rebuild (`./run.sh --build` and, for the GUI, `./run.sh --gui` after a fresh build) after changing a pinned `version`. Which role actually runs is chosen dynamically via the `cis_role` variable (an `include_role: name: "{{ cis_role }}"` on a single generic playbook) - note that dynamic includes don't automatically inherit `--tags` filtering the way a static `roles:` list does, so the include step itself is tagged `always` and the real filtering happens on the tasks discovered inside, which already carry their own correct tags.
 
 **Service-dependency ordering.** The vendored roles disable services in control-number order, not dependency order - e.g. Windows-11-CIS stops `SSDPSRV` (control 5.30) before `upnphost` (5.31), which depends on it. Windows refuses to stop a service while a running dependent needs it ("has dependent services"), and since the role has no `ignore_errors`, Ansible then aborts *every remaining task for that host* - one ordering conflict silently skips hundreds of otherwise-fine controls, not just the one that failed. This isn't something we can fix in the role itself (overwritten from GitHub on every `--build`), so `cis_hardening.yml` works around it with a `pre_tasks` step: `playbooks/files/discover_cis_services.py` scans whichever role is selected for every service any `win_service`/`win_service_info` task references (no hardcoded list - same "read it from the role's actual source" approach as the section/control discovery in the GUI), then the playbook checks each one's currently-running dependents and stops (not disables) them before the role runs. `WinRM` is explicitly never touched by this, even if discovered, since stopping it would sever the very connection running the playbook. Skipped entirely when `audit_only` is set, which must make zero real changes.
+
+## Windows 11 image + PXE deployment
+
+Builds a Windows 11 Pro image with Packer on Proxmox, captures it to a `.wim`, and deploys it to physical PCs over the network. Everything is driven from the GUI's **Windows Image** tab (or the two playbooks directly).
+
+| Step | What happens | Time |
+|---|---|---|
+| **Build** (`image_build.yml`) | Packer creates a VM on Proxmox from the Windows 11 ISO, installs Pro unattended, installs all updates and Chocolatey, then sysprep-generalizes it and converts it to a template. | 1-2 h |
+| **Capture** (`image_capture.yml`) | Clones the template, network-boots the clone into WinPE in "capture" mode, which DISM-captures it to `pxe/data/images/win11-pro.wim`. The clone is deleted afterwards. | 20-60 min |
+| **Deploy** | A PC PXE-boots, picks **Deploy Windows 11 Pro** from the menu, confirms with `y`. WinPE wipes disk 0, applies the image, reboots into Windows. | ~10 min |
+
+What the image contains is deliberately minimal - Windows, updates, Chocolatey, and first-boot WinRM setup. Packages, CIS hardening, Tailscale etc. come from the usual playbooks afterwards, so the image rarely needs rebuilding.
+
+**A deployed PC** gets a random computer name, the local administrator from the Credentials tab (`vault_win_user`/`vault_win_password`), and - without anyone logging on - `setup-winrm-ssl.ps1 -ControllerAddress <pxe_server_ip>` via a SYSTEM scheduled task (`firstboot.ps1`). Add its IP on the Hosts tab and it's manageable straight away. No product key is in the image: PCs that shipped with a Windows 10/11 **Pro** key in firmware activate on their own (a firmware *Home* key won't activate Pro).
+
+### One-time setup
+
+1. **Proxmox API token** - Datacenter → Permissions → API Tokens, e.g. `root@pam!packer` with *Privilege Separation* unchecked (or give the token a role with `VM.*`, `Datastore.*`, `Sys.Modify` and `SDN.Use`).
+2. **Windows 11 ISO** - upload it to a Proxmox ISO storage, *and* copy the same ISO to `pxe/data/iso/` on the Docker host. The first capture extracts WinPE from that copy (~1 GB); delete the copy afterwards if disk is tight.
+3. **PXE server** - add to `ansible-runner/.env`:
+   ```
+   PXE_SERVER_IP=192.168.3.8      # this Docker host
+   PXE_SUBNET=192.168.3.0         # the LAN the PCs PXE-boot on
+   PXE_SMB_PASSWORD=<random>      # password of the image share's "pxe" user
+   ```
+   then `./run.sh --pxe`. It's proxy-DHCP only (the router keeps handing out addresses), plus TFTP, HTTP on 8092 and SMB on 445, using the host's network.
+4. **GUI** - rebuild (`./run.sh --gui`, which now also installs Packer), then fill in the Windows Image tab: *Test connection & load choices* lists your nodes, storages, bridges and ISOs. Save.
+
+### PXE-booting PCs
+
+- UEFI only (Windows 11), with **Secure Boot off** while network-booting - iPXE isn't Microsoft-signed. Turn it back on after deployment.
+- The menu defaults to *Boot from local disk* after 20 s, so leaving PXE first in the boot order is harmless.
+- WinPE comes from the Windows ISO itself, so it has Microsoft's inbox drivers only - common Intel/Realtek NICs and NVMe/AHCI disks work; disks behind Intel RST/VMD may need VMD switched off in firmware.
+
+### Design notes
+
+- **Plain virtual hardware** (SATA disk, e1000e NIC) instead of VirtIO, so WinPE needs no extra drivers to capture the build VM, and the image carries no VirtIO baggage onto physical PCs.
+- **Secure Boot keys aren't enrolled** in the template (`pre_enrolled_keys = false`) so its clone can network-boot iPXE for capture. Windows 11 setup's TPM/Secure Boot checks are bypassed in `autounattend.xml`; a vTPM is still attached.
+- **iPXE is compiled with an embedded script** that chains to `http://<PXE_SERVER_IP>:8092/boot.ipxe` - avoids the classic proxy-DHCP loop without DHCP option tricks. A per-MAC override (`pxe/data/hosts/<mac>.ipxe`) is how the capture clone boots straight into capture mode.
+- **First-boot WinRM via a scheduled task, not `SetupComplete.cmd`**: Windows skips `SetupComplete.cmd` on PCs with an OEM firmware key - exactly the PCs this targets.
+- **Security trade-off**: the image (and so the deploy share) contains the deployed admin's password in the cached answer file, and the share password is in the WinPE scripts served over plain HTTP. Anything on the LAN that can reach the PXE server can read them. Fine for a home LAN; on anything less trusted, use a separate deploy-time admin account and rotate it after deployment.
+- Logs: Packer's full output is in `gui/data/packer-build.log`; the deployed PC's first-boot WinRM setup logs to `C:\Windows\Setup\Scripts\firstboot.log`.
 
 ## Updating Ansible / collections
 
