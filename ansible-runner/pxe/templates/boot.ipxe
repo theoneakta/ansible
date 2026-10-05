@@ -1,0 +1,53 @@
+#!ipxe
+# Boot menu, served over HTTP by the pxe container (rendered at start-up:
+# only $PXE_* variables are substituted, everything else is iPXE syntax).
+set base http://${PXE_SERVER_IP}:${PXE_HTTP_PORT}
+
+# Per-machine override first: image_capture.yml drops hosts/<mac>.ipxe for
+# the Proxmox clone it's capturing, so that clone boots straight into
+# capture mode with no menu. A 404 here is normal for every other machine.
+chain --autofree ${base}/hosts/${mac:hexhyp}.ipxe ||
+
+iseq ${platform} efi || goto bios
+
+:menu
+menu PXE - ${PXE_SERVER_IP}
+item local   Boot from local disk
+item --gap
+item deploy  Deploy Windows 11 Pro  (ERASES disk 0)
+item --gap
+item shell   iPXE shell
+choose --default local --timeout 20000 target || goto local
+goto ${target}
+
+:deploy
+echo
+echo This ERASES disk 0 on this PC and installs Windows 11 Pro.
+prompt --key y --timeout 30000 Press 'y' within 30 seconds to continue, anything else to go back... || goto menu
+set action deploy.cmd
+goto winpe
+
+:winpe
+kernel ${base}/wimboot index=2
+initrd ${base}/winpe/boot/bcd           BCD
+initrd ${base}/winpe/boot/boot.sdi      boot.sdi
+initrd ${base}/scripts/winpeshl.ini     winpeshl.ini
+initrd ${base}/scripts/${action}        action.cmd
+initrd ${base}/winpe/sources/boot.wim   boot.wim
+boot || goto failed
+
+:failed
+echo Boot failed. Are the WinPE files extracted (run "Capture" once from the GUI)?
+prompt Press any key for the menu... ||
+goto menu
+
+:local
+exit
+
+:shell
+shell
+
+:bios
+echo Windows 11 deployment needs UEFI boot - switch this PC's firmware to UEFI mode.
+sleep 10
+exit

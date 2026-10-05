@@ -1,0 +1,116 @@
+---
+# Builds the Windows 11 Pro base image on Proxmox with Packer
+# (playbooks/packer/win11/) and leaves it as a sysprepped Proxmox template.
+# Then run image_capture.yml to turn that template into the .wim the PXE
+# server deploys. See README.md ("Windows 11 image + PXE deployment").
+#
+# Runs on the controller itself (the gui container) - Packer drives Proxmox
+# through its API; nothing here connects to a Windows host directly. Takes
+# 1-2 hours, mostly Windows Update.
+#
+# Run:  from the GUI's "Windows Image" tab, or
+#       ansible-playbook playbooks/image_build.yml --vault-password-file ...
+
+- name: Build Windows 11 Pro image with Packer
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    packer_dir: "{{ playbook_dir }}/packer/win11"
+    packer_log: /ansible/gui-data/packer-build.log
+    # The local admin every deployed PC gets - the same account the rest of
+    # this toolkit connects as, so a freshly deployed PC is manageable from
+    # the GUI straight away. Override per build if wanted.
+    image_admin_user: "{{ vault_win_user }}"
+    image_admin_password: "{{ vault_win_password }}"
+    proxmox_headers:
+      Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
+
+  tasks:
+    - name: Check the image settings are complete
+      ansible.builtin.assert:
+        that:
+          - (vault_proxmox_token_secret | default('')) | length > 0
+          - image_win_iso | length > 0
+          - image_admin_user | length > 0
+          - image_admin_password | length > 0
+        fail_msg: >-
+          Missing settings: the Proxmox API token secret (Windows Image tab),
+          the Windows ISO name, or Windows credentials (Credentials tab).
+        quiet: true
+
+    - name: Check Proxmox is reachable and the Windows ISO is on it
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ proxmox_node }}/storage/{{ image_win_iso.split(':')[0] }}/content?content=iso"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: iso_list
+      no_log: true
+
+    - name: Fail if the ISO isn't on Proxmox
+      ansible.builtin.fail:
+        msg: >-
+          {{ image_win_iso }} not found on {{ proxmox_node }}. ISOs there:
+          {{ iso_list.json.data | map(attribute='volid') | join(', ') }}
+      when: image_win_iso not in (iso_list.json.data | map(attribute='volid') | list)
+
+    - name: Install Packer plugins (no-op if already in the image)
+      ansible.builtin.command:
+        cmd: packer init {{ packer_dir }}
+      changed_when: false
+
+    - name: Build
+      block:
+        - name: Build the image (Windows install + updates + sysprep - 1-2 hours)
+          ansible.builtin.shell:
+            cmd: >-
+              packer build -force -color=false -timestamp-ui {{ packer_dir }}
+              > {{ packer_log }} 2>&1
+          environment:
+            PKR_VAR_proxmox_url: "{{ proxmox_api_url }}"
+            PKR_VAR_proxmox_token_id: "{{ proxmox_token_id }}"
+            PKR_VAR_proxmox_token_secret: "{{ vault_proxmox_token_secret }}"
+            PKR_VAR_proxmox_insecure: "{{ (not (proxmox_validate_certs | bool)) | string | lower }}"
+            PKR_VAR_proxmox_node: "{{ proxmox_node }}"
+            PKR_VAR_storage_pool: "{{ proxmox_storage_pool }}"
+            PKR_VAR_iso_storage: "{{ proxmox_iso_storage }}"
+            PKR_VAR_bridge: "{{ proxmox_bridge }}"
+            PKR_VAR_win_iso: "{{ image_win_iso }}"
+            PKR_VAR_image_name: "{{ image_edition }}"
+            PKR_VAR_vm_id: "{{ image_template_vmid }}"
+            PKR_VAR_template_name: "{{ image_template_name }}"
+            PKR_VAR_cores: "{{ image_cores }}"
+            PKR_VAR_memory: "{{ image_memory }}"
+            PKR_VAR_disk_size: "{{ image_disk_size }}"
+            # Fresh random password per build, only valid on the build VM.
+            PKR_VAR_build_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+            PKR_VAR_admin_user: "{{ image_admin_user }}"
+            PKR_VAR_admin_password: "{{ image_admin_password }}"
+            PKR_VAR_timezone: "{{ image_timezone }}"
+            PKR_VAR_locale: "{{ image_locale }}"
+            PKR_VAR_controller_address: "{{ pxe_server_ip }}"
+          # Far past the WinRM-style timeouts elsewhere: Windows Update alone
+          # can take an hour on a fresh install.
+          async: 14400
+          poll: 30
+          no_log: true
+      rescue:
+        - name: Read the end of the Packer log
+          ansible.builtin.command:
+            cmd: tail -n 40 {{ packer_log }}
+          register: packer_tail
+          changed_when: false
+          failed_when: false
+
+        - name: Fail with Packer's own output
+          ansible.builtin.fail:
+            msg: "{{ ['Packer build failed (full log: gui/data/packer-build.log):'] + (packer_tail.stdout_lines | default([])) }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Template {{ image_template_name }} (VM {{ image_template_vmid }}) built on
+          {{ proxmox_node }}. Next: "Capture" to produce the deployable .wim.

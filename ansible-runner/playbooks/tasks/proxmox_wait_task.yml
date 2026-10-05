@@ -1,0 +1,18 @@
+---
+# Waits for a Proxmox task (by UPID) to finish and fails if it didn't end OK.
+# Expects: upid, node_api, proxmox_headers, proxmox_validate_certs.
+- name: Wait for Proxmox task to finish
+  ansible.builtin.uri:
+    url: "{{ node_api }}/tasks/{{ upid | urlencode }}/status"
+    headers: "{{ proxmox_headers }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: pve_task
+  until: pve_task.json.data.status == 'stopped'
+  retries: 180
+  delay: 10
+  no_log: true
+
+- name: Fail if the Proxmox task failed
+  ansible.builtin.fail:
+    msg: "Proxmox task failed: {{ pve_task.json.data.exitstatus }}"
+  when: pve_task.json.data.exitstatus != 'OK'
