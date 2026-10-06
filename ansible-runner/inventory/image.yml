@@ -1,44 +1,44 @@
 ---
-# Settings for the Windows 11 image build/capture (playbooks/image_build.yml,
-# playbooks/image_capture.yml). Edited from the GUI's "Windows Image" tab.
-# The Proxmox API token SECRET is not here - it's vault_proxmox_token_secret
+# Windows image build/capture settings (playbooks/image_build.yml,
+# playbooks/image_capture.yml). Managed by the GUI's "Windows Image" tab,
+# which rewrites this file - comments other than this header aren't kept.
+# The Proxmox API token SECRET is not here: it's vault_proxmox_token_secret
 # in group_vars/windows/vault.yml (also set from that tab).
-
-# Proxmox API token ansible@pam!ansible: user "ansible" in the pam realm
-# (a Linux user of that name must exist on the node) with the PVEAdmin role
-# on "/", and its token "ansible" with "Privilege Separation" unchecked so
-# the token inherits those permissions.
-proxmox_api_url: https://192.168.3.236:8006/api2/json
+#
+# Proxmox token ansible@pam!ansible: user "ansible" in the pam realm (a Linux
+# user of that name must exist on the node), Administrator role on "/", and
+# its token "ansible" with Privilege Separation unchecked so it inherits that.
+proxmox_api_url: https://192.168.3.237:8006/api2/json
 proxmox_token_id: ansible@pam!ansible
 proxmox_validate_certs: false
-proxmox_node: pve5
-
-# Where the build VM's disks go, where the small autounattend ISO is
-# uploaded, and which bridge it joins (must be the LAN the PXE server is on).
+proxmox_node: pve6
 proxmox_storage_pool: local-lvm
 proxmox_iso_storage: local
 proxmox_bridge: vmbr0
-
-# The Windows 11 ISO, already uploaded to Proxmox ISO storage. A copy of the
-# same ISO also goes in pxe/data/iso/ on the Docker host - WinPE for
-# capture/deploy is taken from it (only ~1 GB extracted; delete the ISO
-# copy afterwards if disk is tight).
-image_win_iso: local:iso/Win11_English_x64.iso
-image_edition: Windows 11 Pro
-
-# VM IDs: the template Packer builds, and the throw-away clone captured.
-image_template_vmid: 9011
-image_template_name: win11-pro-base
 image_capture_vmid: 9012
 image_capture_full_clone: false
-
-image_cores: 4
+image_cores: 8
 image_memory: 8192
-image_disk_size: 64G
 image_timezone: Eastern Standard Time
 image_locale: en-US
-
-# PXE server (the pxe container on the Docker host). Deployed PCs only
-# accept WinRM from this address, too.
 pxe_server_ip: 192.168.3.8
 pxe_http_port: 8092
+images:
+  win11:
+    label: Windows 11 Pro
+    iso: local:iso/Windows11.iso
+    edition: Windows 11 Pro
+    # Microsoft's public generic install key - selects the edition, never activates.
+    product_key: VK7JG-NPHTM-C97JM-9MPGT-3V66T
+    template_vmid: 9011
+    template_name: win11-pro-base
+    disk_size: 64G
+  win2025:
+    label: Windows Server 2025
+    iso: local:iso/WindowsServer2025.iso
+    edition: Windows Server 2025 Standard Evaluation (Desktop Experience)
+    # Evaluation media takes no key (180-day evaluation, convertible later).
+    product_key: ''
+    template_vmid: 9025
+    template_name: win2025-base
+    disk_size: 64G

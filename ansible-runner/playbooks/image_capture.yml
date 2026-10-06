@@ -1,6 +1,7 @@
 ---
-# Turns the sysprepped template from image_build.yml into
-# pxe/data/images/win11-pro.wim - the image the PXE server deploys.
+# Turns the sysprepped template from image_build.yml (same image_id - a key
+# under `images:` in inventory/image.yml) into pxe/data/images/<image_id>.wim,
+# the image the PXE server deploys.
 #
 # How: clone the template on Proxmox, point the clone's MAC at a capture-mode
 # iPXE script (pxe/data/hosts/<mac>.ipxe), network-boot it. WinPE (from the
@@ -13,7 +14,7 @@
 # First run also extracts WinPE (boot.wim, BCD, boot.sdi) from the ISO copy
 # in pxe/data/iso/ - deploy needs the same files.
 
-- name: Capture the Windows 11 image to WIM
+- name: Capture a Windows image to WIM
   hosts: localhost
   connection: local
   gather_facts: false
@@ -21,16 +22,20 @@
     - "{{ playbook_dir }}/../inventory/image.yml"
     - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
   vars:
+    image_id: win11
+    img: "{{ images[image_id] }}"
     pxe_data: /ansible/pxe
     node_api: "{{ proxmox_api_url }}/nodes/{{ proxmox_node }}"
     proxmox_headers:
       Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
 
   tasks:
-    - name: Check the Proxmox token is set
+    - name: Check the image and the Proxmox token
       ansible.builtin.assert:
-        that: (vault_proxmox_token_secret | default('')) | length > 0
-        fail_msg: Set the Proxmox API token secret on the Windows Image tab first.
+        that:
+          - image_id in images
+          - (vault_proxmox_token_secret | default('')) | length > 0
+        fail_msg: Unknown image_id, or no Proxmox API token secret (set it on the Windows Image tab).
         quiet: true
 
     # ---------------------------------------------------------------- WinPE
@@ -73,7 +78,7 @@
     # ------------------------------------------------------------- template
     - name: Check the template exists
       ansible.builtin.uri:
-        url: "{{ node_api }}/qemu/{{ image_template_vmid }}/config"
+        url: "{{ node_api }}/qemu/{{ img.template_vmid }}/config"
         headers: "{{ proxmox_headers }}"
         validate_certs: "{{ proxmox_validate_certs }}"
         status_code: [200, 500]
@@ -82,7 +87,7 @@
 
     - name: Fail if there's no template to capture
       ansible.builtin.fail:
-        msg: "No template at VM {{ image_template_vmid }} on {{ proxmox_node }} - run Build first."
+        msg: "No template at VM {{ img.template_vmid }} on {{ proxmox_node }} - run Build first."
       when: template_cfg.status != 200 or (template_cfg.json.data.template | default(0) | int) != 1
 
     # ------------------------------------------------- leftover capture VM
@@ -105,14 +110,14 @@
     # ---------------------------------------------------------------- clone
     - name: Clone the template
       ansible.builtin.uri:
-        url: "{{ node_api }}/qemu/{{ image_template_vmid }}/clone"
+        url: "{{ node_api }}/qemu/{{ img.template_vmid }}/clone"
         method: POST
         headers: "{{ proxmox_headers }}"
         validate_certs: "{{ proxmox_validate_certs }}"
         body_format: form-urlencoded
         body:
           newid: "{{ image_capture_vmid }}"
-          name: "{{ image_template_name }}-capture"
+          name: "{{ img.template_name }}-capture"
           full: "{{ 1 if image_capture_full_clone | bool else 0 }}"
       register: clone_task
       no_log: true
@@ -201,16 +206,22 @@
               Open the clone's console in Proxmox and re-run with the clone kept to see why.
           when: (capture_result.content | default('') | b64decode | trim) != 'OK'
 
+        # WinPE always writes capture.wim (capture.cmd is the same for every
+        # image); name it after the image only once it's known good.
+        - name: Store the capture as {{ image_id }}.wim
+          ansible.builtin.command:
+            cmd: mv -f {{ pxe_data }}/images/capture.wim {{ pxe_data }}/images/{{ image_id }}.wim
+
         - name: Check the image file
           ansible.builtin.stat:
-            path: "{{ pxe_data }}/images/win11-pro.wim"
+            path: "{{ pxe_data }}/images/{{ image_id }}.wim"
           register: wim
 
         - name: Report
           ansible.builtin.debug:
             msg: >-
-              Captured win11-pro.wim ({{ (wim.stat.size / 1073741824) | round(1) }} GB).
-              PCs can now PXE-boot and pick "Deploy Windows 11 Pro".
+              Captured {{ image_id }}.wim ({{ (wim.stat.size / 1073741824) | round(1) }} GB).
+              PCs can now PXE-boot and pick "Deploy {{ img.label }}".
       always:
         - name: Remove the capture-mode iPXE override
           ansible.builtin.file:

@@ -411,16 +411,34 @@
 
     <!-- ============ WINDOWS IMAGE ============ -->
     <section class="tabPanel" id="tab-image">
-      <div class="panelHead"><h2>Windows 11 Image</h2><p>Build a Windows 11 Pro image on Proxmox with Packer, capture it, and deploy it to PCs over PXE.</p></div>
+      <div class="panelHead"><h2>Windows Images</h2><p>Build Windows images (Windows 11 Pro, Windows Server 2025, ...) on Proxmox with Packer, capture them, and deploy them to PCs over PXE.</p></div>
 
       <div class="card">
         <div class="row"><label>Status</label><span id="imgStatus" class="muted">Loading...</span></div>
-        <p class="muted">Steps: <strong>1.</strong> Fill in the settings and save. <strong>2.</strong> Build (1-2 h: installs Windows, updates, sysprep, leaves a Proxmox template). <strong>3.</strong> Capture (turns the template into the .wim the PXE server deploys). <strong>4.</strong> On a PC: PXE-boot, pick "Deploy Windows 11 Pro". The deployed PC gets the local admin from the Credentials tab and WinRM for this GUI automatically - add its IP on the Hosts tab once it's up.</p>
+        <p class="muted">Steps: <strong>1.</strong> Fill in the settings and save. <strong>2.</strong> Pick an image and Build it (1-2 h: installs Windows, updates, sysprep, leaves a Proxmox template). <strong>3.</strong> Capture it (turns the template into the .wim the PXE server deploys). <strong>4.</strong> On a PC: PXE-boot, pick "Deploy ..." for that image. The deployed PC gets the local admin from the Credentials tab and WinRM for this GUI automatically - add its IP on the Hosts tab once it's up.</p>
+      </div>
+
+      <div class="card">
+        <h3 class="cardTitle">Image</h3>
+        <div class="row"><label for="imgSelect">Image</label><select id="imgSelect"></select><span id="imgWimStatus" class="muted"></span></div>
+        <div class="row"><label for="imgp_label">Name (PXE menu)</label><input type="text" id="imgp_label"></div>
+        <div class="row"><label for="imgp_iso">ISO on Proxmox</label><input type="text" id="imgp_iso" list="imgIsos" placeholder="local:iso/Windows11.iso"><datalist id="imgIsos"></datalist></div>
+        <div class="row"><label for="imgp_edition">Edition (name inside the ISO)</label><input type="text" id="imgp_edition" placeholder="Windows 11 Pro"></div>
+        <div class="row"><label for="imgp_product_key">Install key (blank for evaluation media)</label><input type="text" id="imgp_product_key"></div>
+        <div class="row"><label for="imgp_template_vmid">Template VM ID</label><input type="text" id="imgp_template_vmid"></div>
+        <div class="row"><label for="imgp_template_name">Template name</label><input type="text" id="imgp_template_name"></div>
+        <div class="row"><label for="imgp_disk_size">Disk size</label><input type="text" id="imgp_disk_size" placeholder="64G"></div>
+        <div class="actionBar">
+          <button id="imgSaveBtn">Save settings</button>
+          <button class="primary" id="imgBuildBtn">Build image</button>
+          <button class="primary" id="imgCaptureBtn">Capture to WIM</button>
+          <span id="imgSaveStatus" class="muted"></span>
+        </div>
       </div>
 
       <div class="card">
         <h3 class="cardTitle">Proxmox</h3>
-        <div class="row"><label for="img_proxmox_api_url">API URL</label><input type="text" id="img_proxmox_api_url" placeholder="https://192.168.3.236:8006/api2/json"></div>
+        <div class="row"><label for="img_proxmox_api_url">API URL</label><input type="text" id="img_proxmox_api_url" placeholder="https://192.168.3.237:8006/api2/json"></div>
         <div class="row"><label for="img_proxmox_token_id">API token ID</label><input type="text" id="img_proxmox_token_id" placeholder="ansible@pam!ansible"></div>
         <div class="row"><label for="imgTokenSecret">API token secret</label><input type="password" id="imgTokenSecret" placeholder="(unchanged)"></div>
         <div class="row"><label><input type="checkbox" id="img_proxmox_validate_certs"> Validate Proxmox TLS certificate</label></div>
@@ -428,7 +446,6 @@
         <div class="row"><label for="img_proxmox_storage_pool">VM disk storage</label><input type="text" id="img_proxmox_storage_pool" list="imgStorages"><datalist id="imgStorages"></datalist></div>
         <div class="row"><label for="img_proxmox_iso_storage">ISO storage</label><input type="text" id="img_proxmox_iso_storage" list="imgStorages"></div>
         <div class="row"><label for="img_proxmox_bridge">Network bridge</label><input type="text" id="img_proxmox_bridge" list="imgBridges"><datalist id="imgBridges"></datalist></div>
-        <div class="row"><label for="img_image_win_iso">Windows 11 ISO</label><input type="text" id="img_image_win_iso" list="imgIsos" placeholder="local:iso/Win11_English_x64.iso"><datalist id="imgIsos"></datalist></div>
         <div class="actionBar">
           <button id="imgTestBtn">Test connection &amp; load choices</button>
           <span id="imgTestStatus" class="muted"></span>
@@ -436,15 +453,11 @@
       </div>
 
       <div class="card">
-        <h3 class="cardTitle">Image</h3>
-        <div class="row"><label for="img_image_edition">Edition</label><input type="text" id="img_image_edition" placeholder="Windows 11 Pro"></div>
-        <div class="row"><label for="img_image_template_vmid">Template VM ID</label><input type="text" id="img_image_template_vmid"></div>
-        <div class="row"><label for="img_image_template_name">Template name</label><input type="text" id="img_image_template_name"></div>
+        <h3 class="cardTitle">Build VM (all images)</h3>
+        <div class="row"><label for="img_image_cores">Cores</label><input type="text" id="img_image_cores"></div>
+        <div class="row"><label for="img_image_memory">Memory (MB)</label><input type="text" id="img_image_memory"></div>
         <div class="row"><label for="img_image_capture_vmid">Capture clone VM ID</label><input type="text" id="img_image_capture_vmid"></div>
         <div class="row"><label><input type="checkbox" id="img_image_capture_full_clone"> Full clone for capture (only if the storage can't do linked clones)</label></div>
-        <div class="row"><label for="img_image_cores">Build VM cores</label><input type="text" id="img_image_cores"></div>
-        <div class="row"><label for="img_image_memory">Build VM memory (MB)</label><input type="text" id="img_image_memory"></div>
-        <div class="row"><label for="img_image_disk_size">Disk size</label><input type="text" id="img_image_disk_size" placeholder="64G"></div>
         <div class="row"><label for="img_image_timezone">Time zone</label><input type="text" id="img_image_timezone" placeholder="Eastern Standard Time"></div>
         <div class="row"><label for="img_image_locale">Locale</label><input type="text" id="img_image_locale" placeholder="en-US"></div>
       </div>
@@ -453,14 +466,7 @@
         <h3 class="cardTitle">PXE server</h3>
         <div class="row"><label for="img_pxe_server_ip">Server IP</label><input type="text" id="img_pxe_server_ip" placeholder="192.168.3.8"></div>
         <div class="row"><label for="img_pxe_http_port">HTTP port</label><input type="text" id="img_pxe_http_port" placeholder="8092"></div>
-        <p class="muted">Runs as the separate <code>pxe</code> container (<code>./run.sh --pxe</code>). PCs need UEFI network boot with Secure Boot <em>off</em> to PXE (iPXE isn't Microsoft-signed) - turn it back on after deployment.</p>
-      </div>
-
-      <div class="actionBar">
-        <button id="imgSaveBtn">Save settings</button>
-        <button class="primary" id="imgBuildBtn">Build image</button>
-        <button class="primary" id="imgCaptureBtn">Capture to WIM</button>
-        <span id="imgSaveStatus" class="muted"></span>
+        <p class="muted">Runs as the separate <code>pxe</code> container (<code>./run.sh --pxe</code>); its boot menu lists the images in <code>PXE_IMAGES</code> (<code>.env</code>). PCs need UEFI network boot with Secure Boot <em>off</em> to PXE (iPXE isn't Microsoft-signed) - turn it back on after deployment.</p>
       </div>
     </section>
 
@@ -1018,48 +1024,68 @@ $('cisRunBtn').addEventListener('click', async () => {
   }
 });
 
-/* ---------- Windows image ---------- */
+/* ---------- Windows images ---------- */
 const IMG_FIELDS = [
   'proxmox_api_url', 'proxmox_token_id', 'proxmox_validate_certs', 'proxmox_node', 'proxmox_storage_pool',
-  'proxmox_iso_storage', 'proxmox_bridge', 'image_win_iso', 'image_edition', 'image_template_vmid',
-  'image_template_name', 'image_capture_vmid', 'image_capture_full_clone', 'image_cores', 'image_memory',
-  'image_disk_size', 'image_timezone', 'image_locale', 'pxe_server_ip', 'pxe_http_port',
+  'proxmox_iso_storage', 'proxmox_bridge', 'image_capture_vmid', 'image_capture_full_clone', 'image_cores',
+  'image_memory', 'image_timezone', 'image_locale', 'pxe_server_ip', 'pxe_http_port',
 ];
+const IMG_PROFILE_FIELDS = ['label', 'iso', 'edition', 'product_key', 'template_vmid', 'template_name', 'disk_size'];
+let imgState = null;
 
 function fillDatalist(id, values) {
   $(id).innerHTML = values.map(v => `<option value="${escapeHtml(String(v))}">`).join('');
 }
 
+function renderImageProfile() {
+  const id = $('imgSelect').value;
+  const p = (imgState && imgState.images[id]) || {};
+  IMG_PROFILE_FIELDS.forEach(k => { $('imgp_' + k).value = p[k] ?? ''; });
+  const w = p.wim || {};
+  $('imgWimStatus').innerHTML = w.exists
+    ? ` <span class="badge ok">${id}.wim ${w.size_gb} GB, ${new Date(w.modified).toLocaleString()}</span>`
+    : ` <span class="badge neutral">not captured yet</span>`;
+}
+
 async function loadImageStatus() {
   const s = await fetch('/api/image/status').then(r => r.json());
+  imgState = s;
   IMG_FIELDS.forEach(k => {
     const el = $('img_' + k);
     if (!el || s.settings[k] === undefined) return;
     if (el.type === 'checkbox') el.checked = !!s.settings[k]; else el.value = s.settings[k];
   });
+  const sel = $('imgSelect'), current = sel.value;
+  sel.innerHTML = Object.entries(s.images).map(([id, p]) => `<option value="${id}">${escapeHtml(p.label || id)}</option>`).join('');
+  if (current && s.images[current]) sel.value = current;
+  renderImageProfile();
   $('imgTokenSecret').placeholder = s.token_set ? '(saved - leave blank to keep)' : '(not set)';
   const badge = (ok, yes, no) => `<span class="badge ${ok ? 'ok' : 'neutral'}">${ok ? yes : no}</span>`;
   $('imgStatus').innerHTML = [
     badge(s.token_set, 'Proxmox token saved', 'no Proxmox token'),
     badge(s.pxe_running, 'PXE server up', 'PXE server not reachable'),
-    badge(s.winpe_ready, 'WinPE ready', s.iso_copies.length ? 'WinPE: extracted on first capture' : 'WinPE: copy the ISO to pxe/data/iso/'),
-    badge(s.wim.exists, `image ${s.wim.size_gb} GB, ${s.wim.modified ? new Date(s.wim.modified).toLocaleString() : ''}`, 'no image captured yet'),
+    badge(s.winpe_ready, 'WinPE ready', s.iso_copies.length ? 'WinPE: extracted on first capture' : 'WinPE: copy a Windows ISO to pxe/data/iso/'),
   ].join(' ');
 }
+$('imgSelect').addEventListener('change', renderImageProfile);
 
 function imageSettingsFromForm() {
-  const settings = {};
+  const settings = {}, profile = {};
   IMG_FIELDS.forEach(k => {
     const el = $('img_' + k);
     if (!el) return;
     if (el.type === 'checkbox') settings[k] = el.checked;
     else if (el.value.trim() !== '') settings[k] = el.value.trim();
   });
-  return settings;
+  IMG_PROFILE_FIELDS.forEach(k => {
+    const v = $('imgp_' + k).value.trim();
+    if (v !== '' || k === 'product_key') profile[k] = v;  // an empty key is meaningful (evaluation media)
+  });
+  return { settings, image_id: $('imgSelect').value, profile };
 }
 
 async function saveImageSettings() {
-  const body = { settings: imageSettingsFromForm() };
+  const body = imageSettingsFromForm();
   if ($('imgTokenSecret').value) body.proxmox_token_secret = $('imgTokenSecret').value;
   const res = await fetch('/api/image/settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
@@ -1094,13 +1120,20 @@ $('imgTestBtn').addEventListener('click', async () => {
   }
 });
 
-async function startImageRun(kind, confirmText) {
-  if (!confirm(confirmText)) return;
+async function startImageRun(kind) {
+  const id = $('imgSelect').value;
+  const label = (imgState.images[id] || {}).label || id;
+  const text = kind === 'build'
+    ? `Build the ${label} image on Proxmox? Takes 1-2 hours and replaces its existing template (if any). No other runs can start meanwhile.`
+    : `Capture the ${label} template to ${id}.wim? Clones the template, network-boots the clone into WinPE, and replaces the current ${id}.wim. Takes 20-60 minutes.`;
+  if (!confirm(text)) return;
   const btns = [$('imgBuildBtn'), $('imgCaptureBtn')];
   btns.forEach(b => b.disabled = true);
   try {
     await saveImageSettings();
-    const res = await fetch(`/api/image/${kind}`, { method: 'POST' });
+    const res = await fetch(`/api/image/${kind}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ image_id: id }),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed to start');
     await watchRun(data.run_id);
@@ -1113,10 +1146,8 @@ async function startImageRun(kind, confirmText) {
   }
 }
 
-$('imgBuildBtn').addEventListener('click', () => startImageRun('build',
-  'Build the Windows 11 image on Proxmox? Takes 1-2 hours and replaces the existing template (if any). No other runs can start meanwhile.'));
-$('imgCaptureBtn').addEventListener('click', () => startImageRun('capture',
-  'Capture the template to win11-pro.wim? Clones the template, network-boots the clone into WinPE, and replaces the current image. Takes 20-60 minutes.'));
+$('imgBuildBtn').addEventListener('click', () => startImageRun('build'));
+$('imgCaptureBtn').addEventListener('click', () => startImageRun('capture'));
 
 loadImageStatus();
 

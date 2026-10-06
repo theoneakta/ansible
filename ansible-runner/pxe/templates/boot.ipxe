@@ -14,18 +14,13 @@ iseq ${platform} efi || goto bios
 menu PXE - ${PXE_SERVER_IP}
 item local   Boot from local disk
 item --gap
-item deploy  Deploy Windows 11 Pro  (ERASES disk 0)
+#@MENU_ITEMS@
 item --gap
 item shell   iPXE shell
 choose --default local --timeout 20000 target || goto local
 goto ${target}
 
-:deploy
-echo
-echo This ERASES disk 0 on this PC and installs Windows 11 Pro.
-prompt --key y --timeout 30000 Press 'y' within 30 seconds to continue, anything else to go back... || goto menu
-set action deploy.cmd
-goto winpe
+#@DEPLOY_TARGETS@
 
 :winpe
 kernel ${base}/wimboot index=2

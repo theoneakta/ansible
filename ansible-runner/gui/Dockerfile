@@ -23,7 +23,7 @@ RUN curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/sh
 # Packer plugins baked into the image, so a build doesn't depend on GitHub
 # being reachable (image_build.yml still runs `packer init`, a no-op then).
 ENV PACKER_PLUGIN_PATH=/usr/share/packer/plugins
-COPY playbooks/packer/win11/plugins.pkr.hcl /tmp/packer-init/plugins.pkr.hcl
+COPY playbooks/packer/windows/plugins.pkr.hcl /tmp/packer-init/plugins.pkr.hcl
 RUN packer init /tmp/packer-init && rm -rf /tmp/packer-init
 
 # Same Ansible stack as the main runner image, plus the small web app's deps.

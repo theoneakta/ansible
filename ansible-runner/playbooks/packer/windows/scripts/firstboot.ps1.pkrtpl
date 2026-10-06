@@ -1,0 +1,31 @@
+# Runs on a freshly deployed PC as SYSTEM (scheduled task registered by
+# prepare-sysprep.ps1), at startup and every 5 minutes, until it succeeds.
+# Rendered by Packer's templatefile() - controller address baked in.
+$ErrorActionPreference = 'Stop'
+$log = 'C:\Windows\Setup\Scripts\firstboot.log'
+Start-Transcript -Path $log -Append
+
+# Wait for Windows setup/OOBE to be fully done (the computer name, network
+# and local accounts only settle after that).
+$setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup'
+if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
+    Write-Output 'Windows setup still in progress - trying again later.'
+    Stop-Transcript
+    exit 1
+}
+
+# Remove the build VM's plain-HTTP WinRM (Packer's) before anything else.
+Get-ChildItem WSMan:\localhost\Listener -ErrorAction SilentlyContinue |
+    Where-Object { $_.Keys -contains 'Transport=HTTP' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $false -ErrorAction SilentlyContinue
+Set-Item WSMan:\localhost\Service\Auth\Basic -Value $false -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -Name 'Packer-WinRM-HTTP' -ErrorAction SilentlyContinue
+
+# Same script, same settings as a hand-prepared PC - WinRM over HTTPS on
+# 5986, reachable from the Ansible controller only.
+Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public' | Set-NetConnectionProfile -NetworkCategory Private
+& 'C:\Windows\Setup\Scripts\setup-winrm-ssl.ps1' -ControllerAddress '${controller_address}'
+
+Unregister-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Confirm:$false
+Write-Output 'WinRM ready for Ansible.'
+Stop-Transcript

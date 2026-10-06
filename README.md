@@ -30,9 +30,9 @@ ansible-runner/
 ├── playbooks/
 │   ├── install_software.yml
 │   ├── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
-│   ├── image_build.yml         # Packer build of the Windows 11 Pro image on Proxmox
-│   ├── image_capture.yml       # template -> win11-pro.wim for PXE deployment
-│   └── packer/win11/           # the Packer template, answer files, build scripts
+│   ├── image_build.yml         # Packer build of a Windows image (Win11, Server 2025) on Proxmox
+│   ├── image_capture.yml       # template -> <image_id>.wim for PXE deployment
+│   └── packer/windows/         # the Packer template, answer files, build scripts
 ├── scripts/
 │   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
 ├── gui/                        # web GUI (own Dockerfile, started via --gui)
@@ -296,24 +296,28 @@ All 4 roles are installed from `requirements.yml` at image build time (`ansible-
 
 **Service-dependency ordering.** The vendored roles disable services in control-number order, not dependency order - e.g. Windows-11-CIS stops `SSDPSRV` (control 5.30) before `upnphost` (5.31), which depends on it. Windows refuses to stop a service while a running dependent needs it ("has dependent services"), and since the role has no `ignore_errors`, Ansible then aborts *every remaining task for that host* - one ordering conflict silently skips hundreds of otherwise-fine controls, not just the one that failed. This isn't something we can fix in the role itself (overwritten from GitHub on every `--build`), so `cis_hardening.yml` works around it with a `pre_tasks` step: `playbooks/files/discover_cis_services.py` scans whichever role is selected for every service any `win_service`/`win_service_info` task references (no hardcoded list - same "read it from the role's actual source" approach as the section/control discovery in the GUI), then the playbook checks each one's currently-running dependents and stops (not disables) them before the role runs. `WinRM` is explicitly never touched by this, even if discovered, since stopping it would sever the very connection running the playbook. Skipped entirely when `audit_only` is set, which must make zero real changes.
 
-## Windows 11 image + PXE deployment
+## Windows image + PXE deployment
 
-Builds a Windows 11 Pro image with Packer on Proxmox, captures it to a `.wim`, and deploys it to physical PCs over the network. Everything is driven from the GUI's **Windows Image** tab (or the two playbooks directly).
+Builds Windows images with Packer on Proxmox, captures them to `.wim` files, and deploys them to physical machines over the network. Two images are defined out of the box - **Windows 11 Pro** (`win11`) and **Windows Server 2025** (`win2025`, from the evaluation ISO) - as profiles under `images:` in `inventory/image.yml`. Everything is driven from the GUI's **Windows Image** tab (pick the image, then Build / Capture), or the two playbooks directly with `-e image_id=<id>`.
 
 | Step | What happens | Time |
 |---|---|---|
-| **Build** (`image_build.yml`) | Packer creates a VM on Proxmox from the Windows 11 ISO, installs Pro unattended, installs all updates and Chocolatey, then sysprep-generalizes it and converts it to a template. | 1-2 h |
-| **Capture** (`image_capture.yml`) | Clones the template, network-boots the clone into WinPE in "capture" mode, which DISM-captures it to `pxe/data/images/win11-pro.wim`. The clone is deleted afterwards. | 20-60 min |
-| **Deploy** | A PC PXE-boots, picks **Deploy Windows 11 Pro** from the menu, confirms with `y`. WinPE wipes disk 0, applies the image, reboots into Windows. | ~10 min |
+| **Build** (`image_build.yml`) | Packer creates a VM on Proxmox from the image's ISO, installs the chosen edition unattended, installs all updates and Chocolatey, then sysprep-generalizes it and converts it to a template (one template per image). | 1-2 h |
+| **Capture** (`image_capture.yml`) | Clones that template, network-boots the clone into WinPE in "capture" mode, which DISM-captures it to `pxe/data/images/<image_id>.wim`. The clone is deleted afterwards. | 20-60 min |
+| **Deploy** | A machine PXE-boots, picks **Deploy Windows 11 Pro** / **Deploy Windows Server 2025** from the menu, confirms with `y`. WinPE wipes disk 0, applies the image, reboots into Windows. | ~10 min |
 
-What the image contains is deliberately minimal - Windows, updates, Chocolatey, and first-boot WinRM setup. Packages, CIS hardening, Tailscale etc. come from the usual playbooks afterwards, so the image rarely needs rebuilding.
+What an image contains is deliberately minimal - Windows, updates, Chocolatey, and first-boot WinRM setup. Packages, CIS hardening, Tailscale etc. come from the usual playbooks afterwards, so images rarely need rebuilding.
 
-**A deployed PC** gets a random computer name, the local administrator from the Credentials tab (`vault_win_user`/`vault_win_password`), and - without anyone logging on - `setup-winrm-ssl.ps1 -ControllerAddress <pxe_server_ip>` via a SYSTEM scheduled task (`firstboot.ps1`). Add its IP on the Hosts tab and it's manageable straight away. No product key is in the image: PCs that shipped with a Windows 10/11 **Pro** key in firmware activate on their own (a firmware *Home* key won't activate Pro).
+**A deployed machine** gets a random computer name, the local administrator from the Credentials tab (`vault_win_user`/`vault_win_password` - also set as the built-in Administrator's password, which Server's setup requires), and - without anyone logging on - `setup-winrm-ssl.ps1 -ControllerAddress <pxe_server_ip>` via a SYSTEM scheduled task (`firstboot.ps1`). Add its IP on the Hosts tab and it's manageable straight away.
+
+**Licensing.** Windows 11: no key is in the image - PCs that shipped with a Windows 10/11 **Pro** key in firmware activate on their own (a firmware *Home* key won't activate Pro); `product_key` in the profile is only Microsoft's public generic install key that picks the edition. Windows Server 2025: the evaluation ISO installs a 180-day evaluation (no key); convert it to a licensed edition with `DISM /Online /Set-Edition:ServerStandard /ProductKey:<key> /AcceptEula` when you have one. The default edition is *Standard Evaluation (Desktop Experience)*; for Datacenter or Server Core, change `edition` to the exact name inside the ISO.
+
+**Another image** = another entry under `images:` (own ISO, edition, template VM ID) plus `<id>=<menu label>` in `PXE_IMAGES` in `.env` (then `./run.sh --pxe` to re-render the menu).
 
 ### One-time setup
 
 1. **Proxmox API token `ansible@pam!ansible`** - the `pam` realm needs a Linux user `ansible` on the node (`useradd -M -s /usr/sbin/nologin ansible`), then in the web UI: Datacenter → Permissions → Users → add `ansible@pam`; Permissions → Add → User Permission: path `/`, user `ansible@pam`, role `PVEAdmin`; API Tokens → add token ID `ansible` for `ansible@pam` with *Privilege Separation* unchecked (so it inherits the user's permissions). Copy the secret into the Windows Image tab.
-2. **Windows 11 ISO** - upload it to a Proxmox ISO storage, *and* copy the same ISO to `pxe/data/iso/` on the Docker host. The first capture extracts WinPE from that copy (~1 GB); delete the copy afterwards if disk is tight.
+2. **ISOs** - each image's ISO goes on a Proxmox ISO storage (named in its profile's `iso`). A copy of one Windows 11 or Server 2025 ISO also goes in `pxe/data/iso/` on the Docker host: the first capture extracts WinPE from it (~1 GB), and that WinPE deploys every image. Delete the copies afterwards if disk is tight.
 3. **PXE server** - add to `ansible-runner/.env`:
    ```
    PXE_SERVER_IP=192.168.3.8      # this Docker host

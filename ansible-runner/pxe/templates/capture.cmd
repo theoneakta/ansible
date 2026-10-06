@@ -1,9 +1,10 @@
 @echo off
-rem Runs inside WinPE on the Proxmox clone of the sysprepped template
+rem Runs inside WinPE on the Proxmox clone of a sysprepped template
 rem (playbooks/image_capture.yml). Captures its Windows volume to
-rem \\server\images\win11-pro.wim, records the outcome in
-rem capture-result.txt, then powers off - the playbook waits for that.
-title Capturing Windows 11 image
+rem \\server\images\capture.wim - the playbook renames it after the image
+rem (win11.wim, win2025.wim, ...) - records the outcome in
+rem capture-result.txt, then powers off; the playbook waits for that.
+title Capturing Windows image
 wpeutil WaitForNetwork
 
 net use Z: \\${PXE_SERVER_IP}\images ${PXE_SMB_PASSWORD} /user:pxe || goto fail_nonet
@@ -16,10 +17,10 @@ for %%d in (C D E F G H I J K L M N O P Q R T U V W Y) do (
 if not defined WIN (echo No Windows volume found. & goto fail)
 echo Capturing %WIN%\ ...
 
-del Z:\win11-pro.wim.partial 2>nul
-dism /Capture-Image /ImageFile:Z:\win11-pro.wim.partial /CaptureDir:%WIN%\ /Name:"Windows 11 Pro" /Compress:max /CheckIntegrity || goto fail
-del Z:\win11-pro.wim 2>nul
-ren Z:\win11-pro.wim.partial win11-pro.wim || goto fail
+del Z:\capture.wim.partial 2>nul
+dism /Capture-Image /ImageFile:Z:\capture.wim.partial /CaptureDir:%WIN%\ /Name:"Captured image" /Compress:max /CheckIntegrity || goto fail
+del Z:\capture.wim 2>nul
+ren Z:\capture.wim.partial capture.wim || goto fail
 echo OK> Z:\capture-result.txt
 wpeutil shutdown
 exit /b 0
