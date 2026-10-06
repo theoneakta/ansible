@@ -30,9 +30,11 @@ ansible-runner/
 ├── playbooks/
 │   ├── install_software.yml
 │   ├── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
-│   ├── image_build.yml         # Packer build of a Windows image (Win11, Server 2025) on Proxmox
+│   ├── image_build.yml         # Packer build of an image (Win11, Server 2025, Rocky) on Proxmox
 │   ├── image_capture.yml       # template -> <image_id>.wim for PXE deployment
-│   └── packer/windows/         # the Packer template, answer files, build scripts
+│   ├── image_publish_linux.yml # Rocky: ISO + kickstart onto the PXE server
+│   ├── templates/rocky-ks.cfg.j2  # Rocky kickstart (Packer build and PXE install)
+│   └── packer/{windows,rocky}/ # the Packer templates, answer files, build scripts
 ├── scripts/
 │   └── setup-winrm-ssl.ps1     # run on each target PC to enable WinRM/HTTPS
 ├── gui/                        # web GUI (own Dockerfile, started via --gui)
@@ -296,7 +298,7 @@ All 4 roles are installed from `requirements.yml` at image build time (`ansible-
 
 **Service-dependency ordering.** The vendored roles disable services in control-number order, not dependency order - e.g. Windows-11-CIS stops `SSDPSRV` (control 5.30) before `upnphost` (5.31), which depends on it. Windows refuses to stop a service while a running dependent needs it ("has dependent services"), and since the role has no `ignore_errors`, Ansible then aborts *every remaining task for that host* - one ordering conflict silently skips hundreds of otherwise-fine controls, not just the one that failed. This isn't something we can fix in the role itself (overwritten from GitHub on every `--build`), so `cis_hardening.yml` works around it with a `pre_tasks` step: `playbooks/files/discover_cis_services.py` scans whichever role is selected for every service any `win_service`/`win_service_info` task references (no hardcoded list - same "read it from the role's actual source" approach as the section/control discovery in the GUI), then the playbook checks each one's currently-running dependents and stops (not disables) them before the role runs. `WinRM` is explicitly never touched by this, even if discovered, since stopping it would sever the very connection running the playbook. Skipped entirely when `audit_only` is set, which must make zero real changes.
 
-## Windows image + PXE deployment
+## Windows / Linux image + PXE deployment
 
 Builds Windows images with Packer on Proxmox, captures them to `.wim` files, and deploys them to physical machines over the network. Two images are defined out of the box - **Windows 11 Pro** (`win11`) and **Windows Server 2025** (`win2025`, from the evaluation ISO) - as profiles under `images:` in `inventory/image.yml`. Everything is driven from the GUI's **Windows Image** tab (pick the image, then Build / Capture), or the two playbooks directly with `-e image_id=<id>`.
 
@@ -312,7 +314,19 @@ What an image contains is deliberately minimal - Windows, updates, Chocolatey, a
 
 **Licensing.** Windows 11: no key is in the image - PCs that shipped with a Windows 10/11 **Pro** key in firmware activate on their own (a firmware *Home* key won't activate Pro); `product_key` in the profile is only Microsoft's public generic install key that picks the edition. Windows Server 2025: the evaluation ISO installs a 180-day evaluation (no key); convert it to a licensed edition with `DISM /Online /Set-Edition:ServerStandard /ProductKey:<key> /AcceptEula` when you have one. The default edition is *Standard Evaluation (Desktop Experience)*; for Datacenter or Server Core, change `edition` to the exact name inside the ISO.
 
-**Another image** = another entry under `images:` (own ISO, edition, template VM ID) plus `<id>=<menu label>` in `PXE_IMAGES` in `.env` (then `./run.sh --pxe` to re-render the menu).
+**Another image** = another entry under `images:` (own ISO, edition, template VM ID; `os: linux` for a kickstart-based one) plus `<id>=<menu label>` (`<id>=<menu label>=linux` for Linux) in `PXE_IMAGES` in `.env` (then `./run.sh --pxe` to re-render the menu).
+
+### Rocky Linux
+
+`rocky10` (**Rocky Linux 10**, from the minimal ISO) is handled the Linux way rather than by imaging:
+
+| Step | What happens | Time |
+|---|---|---|
+| **Build** (`image_build.yml`) | Packer installs Rocky on Proxmox from a kickstart (`playbooks/templates/rocky-ks.cfg.j2`, on an `OEMDRV` CD that Anaconda picks up by itself), updates it, and leaves a template with a cloud-init drive - for cloning VMs. VirtIO hardware, since Linux needs no extra drivers. | 15-30 min |
+| **Publish to PXE** (`image_publish_linux.yml`) | Extracts the ISO to `pxe/data/linux/rocky10/` and renders the same kickstart in deploy mode to `pxe/data/ks/rocky10.ks`. No capture. | ~5 min |
+| **Deploy** | **Deploy Rocky Linux 10** in the PXE menu boots Rocky's own installer over HTTP with that kickstart - so a physical machine ends up the same as the template. Wipes the first non-removable disk only. | ~10 min |
+
+Accounts: `vault_win_user` with the vault password (SHA-512 hashed in the kickstart), in `wheel` (sudo), SSH enabled; root is locked. Timezone from `image_linux_timezone`. The kickstart - password hash included - is served over plain HTTP on the LAN, the same trade-off as the Windows answer files. The ISO copy in `pxe/data/iso/` must have the same file name as the `iso` setting. (This toolkit's inventory is Windows-only, so Rocky machines aren't added to the Hosts tab.)
 
 ### One-time setup
 

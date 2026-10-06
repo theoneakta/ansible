@@ -20,11 +20,13 @@ image_capture_full_clone: false
 image_cores: 8
 image_memory: 8192
 image_timezone: Eastern Standard Time
+image_linux_timezone: America/Toronto
 image_locale: en-US
 pxe_server_ip: 192.168.3.8
 pxe_http_port: 8092
 images:
   win11:
+    os: windows
     label: Windows 11 Pro
     iso: local:iso/Windows11.iso
     edition: Windows 11 Pro
@@ -34,6 +36,7 @@ images:
     template_name: win11-pro-base
     disk_size: 64G
   win2025:
+    os: windows
     label: Windows Server 2025
     iso: local:iso/WindowsServer2025.iso
     edition: Windows Server 2025 Standard Evaluation (Desktop Experience)
@@ -42,3 +45,12 @@ images:
     template_vmid: 9025
     template_name: win2025-base
     disk_size: 64G
+  rocky10:
+    # Linux: Proxmox template via kickstart; physical machines PXE-install
+    # from the same kickstart (image_publish_linux.yml) instead of a capture.
+    os: linux
+    label: Rocky Linux 10
+    iso: local:iso/Rocky-10.2-x86_64-minimal.iso
+    template_vmid: 9100
+    template_name: rocky10-base
+    disk_size: 32G

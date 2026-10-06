@@ -23,7 +23,9 @@
   vars:
     image_id: win11
     img: "{{ images[image_id] }}"
-    packer_dir: "{{ playbook_dir }}/packer/windows"
+    image_os: "{{ img.os | default('windows') }}"
+    packer_dir: "{{ playbook_dir }}/packer/{{ 'rocky' if image_os == 'linux' else 'windows' }}"
+    ks_path: "/tmp/ks-{{ image_id }}.cfg"
     packer_log: "/ansible/gui-data/packer-build-{{ image_id }}.log"
     # The local admin every deployed PC gets - the same account the rest of
     # this toolkit connects as, so a freshly deployed PC is manageable from
@@ -62,6 +64,16 @@
           {{ iso_list.json.data | map(attribute='volid') | join(', ') }}
       when: img.iso not in (iso_list.json.data | map(attribute='volid') | list)
 
+    - name: Render the kickstart for the Linux build (contains the admin password hash)
+      ansible.builtin.template:
+        src: templates/rocky-ks.cfg.j2
+        dest: "{{ ks_path }}"
+        mode: "0600"
+      vars:
+        ks_mode: build
+      no_log: true
+      when: image_os == 'linux'
+
     - name: Install Packer plugins (no-op if already in the image)
       ansible.builtin.command:
         cmd: packer init {{ packer_dir }}
@@ -98,6 +110,11 @@
             PKR_VAR_timezone: "{{ image_timezone }}"
             PKR_VAR_locale: "{{ image_locale }}"
             PKR_VAR_controller_address: "{{ pxe_server_ip }}"
+            # Linux (packer/rocky) - each template ignores the other's variables.
+            PKR_VAR_iso: "{{ img.iso }}"
+            PKR_VAR_ks_path: "{{ ks_path }}"
+            PKR_VAR_ssh_username: "{{ image_admin_user }}"
+            PKR_VAR_ssh_password: "{{ image_admin_password }}"
           # Far past the WinRM-style timeouts elsewhere: Windows Update alone
           # can take an hour on a fresh install.
           async: 14400
@@ -114,9 +131,15 @@
         - name: Fail with Packer's own output
           ansible.builtin.fail:
             msg: "{{ ['Packer build failed (full log: gui/data/packer-build-' ~ image_id ~ '.log):'] + (packer_tail.stdout_lines | default([])) }}"
+      always:
+        - name: Remove the rendered kickstart
+          ansible.builtin.file:
+            path: "{{ ks_path }}"
+            state: absent
 
     - name: Report
       ansible.builtin.debug:
         msg: >-
-          Template {{ img.template_name }} (VM {{ img.template_vmid }}) built on
-          {{ proxmox_node }}. Next: "Capture" to produce the deployable .wim.
+          Template {{ img.template_name }} (VM {{ img.template_vmid }}) built on {{ proxmox_node }}.
+          Next: {{ '"Publish to PXE" so machines can network-install it.' if image_os == 'linux'
+          else '"Capture" to produce the deployable .wim.' }}
