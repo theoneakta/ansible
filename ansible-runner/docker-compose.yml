@@ -67,6 +67,9 @@ services:
       PXE_SUBNET: ${PXE_SUBNET:-}
       PXE_HTTP_PORT: ${PXE_HTTP_PORT:-8092}
       PXE_SMB_PASSWORD: ${PXE_SMB_PASSWORD:-}
+      # Boot-menu entries: "<image_id>=<label>;..." (image_id = a key under
+      # `images:` in inventory/image.yml, deployed from <image_id>.wim).
+      PXE_IMAGES: ${PXE_IMAGES:-win11=Windows 11 Pro;win2025=Windows Server 2025}
     volumes:
       - ./pxe/data:/data
     restart: unless-stopped

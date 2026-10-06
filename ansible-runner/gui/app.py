@@ -1075,26 +1075,47 @@ def api_history(limit: int = 20):
 
 
 # ---------------------------------------------------------------------------
-# Windows 11 image: Packer build on Proxmox (image_build.yml), capture to WIM
+# Windows images: Packer build on Proxmox (image_build.yml), capture to WIM
 # (image_capture.yml), deployed by the pxe container. Settings live in
-# inventory/image.yml (plain) + vault_proxmox_token_secret (group vault).
+# inventory/image.yml - shared Proxmox/PXE keys plus one profile per image
+# under `images:` - and vault_proxmox_token_secret (group vault).
 # ---------------------------------------------------------------------------
 IMAGE_SETTINGS = INVENTORY_DIR / "image.yml"
 PXE_DATA = pathlib.Path("/ansible/pxe")
 IMAGE_BUILD_PLAYBOOK = "playbooks/image_build.yml"
 IMAGE_CAPTURE_PLAYBOOK = "playbooks/image_capture.yml"
+IMAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
 
-# Keys the GUI may edit, with their type. Anything else in image.yml is
-# left alone (and editable by hand).
+# Keys the GUI may edit, with their type. Anything else in image.yml is left
+# alone (and editable by hand).
 IMAGE_SETTING_TYPES = {
     "proxmox_api_url": str, "proxmox_token_id": str, "proxmox_validate_certs": bool,
     "proxmox_node": str, "proxmox_storage_pool": str, "proxmox_iso_storage": str,
-    "proxmox_bridge": str, "image_win_iso": str, "image_edition": str,
-    "image_template_vmid": int, "image_template_name": str, "image_capture_vmid": int,
-    "image_capture_full_clone": bool, "image_cores": int, "image_memory": int,
-    "image_disk_size": str, "image_timezone": str, "image_locale": str,
+    "proxmox_bridge": str, "image_capture_vmid": int, "image_capture_full_clone": bool,
+    "image_cores": int, "image_memory": int, "image_timezone": str, "image_locale": str,
     "pxe_server_ip": str, "pxe_http_port": int,
 }
+IMAGE_PROFILE_TYPES = {
+    "label": str, "iso": str, "edition": str, "product_key": str,
+    "template_vmid": int, "template_name": str, "disk_size": str,
+}
+IMAGE_SETTINGS_HEADER = """---
+# Windows image build/capture settings (playbooks/image_build.yml,
+# playbooks/image_capture.yml). Managed by the GUI's "Windows Image" tab,
+# which rewrites this file - comments other than this header aren't kept.
+# The Proxmox API token SECRET is not here: it's vault_proxmox_token_secret
+# in group_vars/windows/vault.yml (also set from that tab).
+#
+# Proxmox token ansible@pam!ansible: user "ansible" in the pam realm (a Linux
+# user of that name must exist on the node), Administrator role on "/", and
+# its token "ansible" with Privilege Separation unchecked so it inherits that.
+"""
+
+
+def _coerce(kind, value):
+    if kind is bool:
+        return str(value).lower() in ("1", "true", "yes", "on")
+    return kind(value)
 
 
 def load_image_settings() -> dict:
@@ -1103,18 +1124,15 @@ def load_image_settings() -> dict:
     return yaml.safe_load(IMAGE_SETTINGS.read_text()) or {}
 
 
-def save_image_settings(updates: dict) -> None:
-    """Rewrites only the changed `key: value` lines, so the explanatory
-    comments in image.yml survive GUI edits."""
-    text = IMAGE_SETTINGS.read_text() if IMAGE_SETTINGS.exists() else "---\n"
-    for key, value in updates.items():
-        line = yaml.safe_dump({key: value}, default_flow_style=False, width=1000).strip()
-        pattern = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
-        if pattern.search(text):
-            text = pattern.sub(lambda _m: line, text, count=1)
-        else:
-            text = text.rstrip("\n") + "\n" + line + "\n"
-    IMAGE_SETTINGS.write_text(text)
+def save_image_settings(updates: dict, image_id: Optional[str] = None, profile: Optional[dict] = None) -> None:
+    data = load_image_settings()
+    data.update(updates)
+    if image_id:
+        data.setdefault("images", {}).setdefault(image_id, {}).update(profile or {})
+    images = data.pop("images", {})
+    body = yaml.safe_dump(data, default_flow_style=False, sort_keys=False, width=1000)
+    body += yaml.safe_dump({"images": images}, default_flow_style=False, sort_keys=False, width=1000)
+    IMAGE_SETTINGS.write_text(IMAGE_SETTINGS_HEADER + body)
 
 
 def proxmox_get(settings: dict, secret: str, path: str):
@@ -1132,10 +1150,21 @@ def proxmox_secret() -> str:
     return (read_vault(GROUP_VAULT).get("vault_proxmox_token_secret") or "") if has_vault_pass() else ""
 
 
+def _wim_status(image_id: str) -> dict:
+    wim = PXE_DATA / "images" / f"{image_id}.wim"
+    if not wim.exists():
+        return {"exists": False, "size_gb": None, "modified": None}
+    st = wim.stat()
+    return {
+        "exists": True,
+        "size_gb": round(st.st_size / 1073741824, 1),
+        "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+    }
+
+
 @app.get("/api/image/status")
 def api_image_status():
     settings = load_image_settings()
-    wim = PXE_DATA / "images" / "win11-pro.wim"
     pxe_up = False
     try:
         pxe_up = requests.get(
@@ -1143,38 +1172,42 @@ def api_image_status():
         ).ok
     except requests.RequestException:
         pass
+    images = settings.get("images", {})
     return {
-        "settings": settings,
+        "settings": {k: v for k, v in settings.items() if k != "images"},
+        "images": {i: {**p, "wim": _wim_status(i)} for i, p in images.items()},
         "token_set": bool(proxmox_secret()),
         "iso_copies": sorted(p.name for p in (PXE_DATA / "iso").glob("*.[iI][sS][oO]")) if (PXE_DATA / "iso").exists() else [],
         "winpe_ready": (PXE_DATA / "winpe" / "sources" / "boot.wim").exists(),
-        "wim": {
-            "exists": wim.exists(),
-            "size_gb": round(wim.stat().st_size / 1073741824, 1) if wim.exists() else None,
-            "modified": datetime.fromtimestamp(wim.stat().st_mtime, timezone.utc).isoformat() if wim.exists() else None,
-        },
         "pxe_running": pxe_up,
     }
 
 
 class ImageSettingsIn(BaseModel):
     settings: dict = {}
+    image_id: Optional[str] = None
+    profile: dict = {}
     proxmox_token_secret: Optional[str] = None
 
 
 @app.post("/api/image/settings")
 def api_image_settings(body: ImageSettingsIn):
-    updates = {}
-    for key, value in body.settings.items():
-        kind = IMAGE_SETTING_TYPES.get(key)
-        if kind is None:
-            raise HTTPException(400, f"Unknown setting '{key}'.")
-        try:
-            updates[key] = (str(value).lower() in ("1", "true", "yes", "on")) if kind is bool else kind(value)
-        except (TypeError, ValueError):
-            raise HTTPException(400, f"Invalid value for {key}.")
-    if updates:
-        save_image_settings(updates)
+    updates, profile = {}, {}
+    try:
+        for key, value in body.settings.items():
+            if key not in IMAGE_SETTING_TYPES:
+                raise HTTPException(400, f"Unknown setting '{key}'.")
+            updates[key] = _coerce(IMAGE_SETTING_TYPES[key], value)
+        for key, value in body.profile.items():
+            if key not in IMAGE_PROFILE_TYPES:
+                raise HTTPException(400, f"Unknown image setting '{key}'.")
+            profile[key] = _coerce(IMAGE_PROFILE_TYPES[key], value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid value in settings.")
+    if body.image_id and not IMAGE_ID_RE.match(body.image_id):
+        raise HTTPException(400, "Image id: lower-case letters, digits, '-' and '_' only.")
+    if updates or profile:
+        save_image_settings(updates, body.image_id, profile)
     if body.proxmox_token_secret:
         if not has_vault_pass():
             raise HTTPException(400, "No vault password file on the server.")
@@ -1214,22 +1247,28 @@ def api_image_proxmox():
         raise HTTPException(502, f"Proxmox API error: {e}")
 
 
-@app.post("/api/image/build")
-def api_image_build():
+class ImageRunIn(BaseModel):
+    image_id: str
+
+
+def _start_image_run(playbook: str, body: ImageRunIn, action: str, timeout: int) -> dict:
     if not has_vault_pass():
         raise HTTPException(400, "No vault password file on the server.")
-    cmd = ["ansible-playbook", IMAGE_BUILD_PLAYBOOK] + vault_password_args()
-    run_id = _start_run(cmd, ["localhost"], {"image": "build"}, timeout=5 * 3600)
+    if body.image_id not in load_image_settings().get("images", {}):
+        raise HTTPException(400, f"Unknown image '{body.image_id}'.")
+    cmd = ["ansible-playbook", playbook, "-e", json.dumps({"image_id": body.image_id})] + vault_password_args()
+    run_id = _start_run(cmd, ["localhost"], {"image": action, "image_id": body.image_id}, timeout=timeout)
     return {"run_id": run_id, "status": "running"}
+
+
+@app.post("/api/image/build")
+def api_image_build(body: ImageRunIn):
+    return _start_image_run(IMAGE_BUILD_PLAYBOOK, body, "build", 5 * 3600)
 
 
 @app.post("/api/image/capture")
-def api_image_capture():
-    if not has_vault_pass():
-        raise HTTPException(400, "No vault password file on the server.")
-    cmd = ["ansible-playbook", IMAGE_CAPTURE_PLAYBOOK] + vault_password_args()
-    run_id = _start_run(cmd, ["localhost"], {"image": "capture"}, timeout=3 * 3600)
-    return {"run_id": run_id, "status": "running"}
+def api_image_capture(body: ImageRunIn):
+    return _start_image_run(IMAGE_CAPTURE_PLAYBOOK, body, "capture", 3 * 3600)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

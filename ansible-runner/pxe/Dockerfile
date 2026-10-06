@@ -38,6 +38,9 @@ COPY --from=ipxe /ipxe/src/bin/undionly.kpxe /ipxe/src/bin-x86_64-efi/snponly.ef
 # dnsmasq appends ".0" to pxe-service file names for BIOS clients.
 RUN cp /srv/tftp/undionly.kpxe /srv/tftp/undionly.0 && cp /srv/tftp/snponly.efi /srv/tftp/snponly.efi.0
 
+# mkdir first: ADD --chmod would otherwise apply 644 to the parent directory
+# it creates too, leaving /srv/http untraversable (nginx 403 on everything).
+RUN mkdir -p /srv/http
 ADD --chmod=644 https://github.com/ipxe/wimboot/releases/download/v2.9.0/wimboot /srv/http/wimboot
 
 COPY templates/ /templates/
