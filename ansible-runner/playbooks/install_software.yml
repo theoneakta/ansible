@@ -93,6 +93,15 @@
 
     # state: latest -> installs if missing, upgrades if outdated
     # category groups the GUI's package list (Multimedia / Internet / Dev / Tools).
+    # ignore_checksums: true - only for packages whose installer comes from an
+    # unversioned "always latest" vendor URL: every time the vendor ships a
+    # new build, the package's pinned checksum stops matching until its
+    # maintainer catches up, and the install fails outright ("Checksum ...
+    # did not meet ..."). Confirmed live on 192.168.3.15/.17 for googlechrome
+    # (googlechromestandaloneenterprise64.msi) and potplayer
+    # (.../Version/Latest/PotPlayerSetup64.exe). The download is still HTTPS
+    # from the vendor's own CDN, but nothing verifies the file itself - so
+    # keep this to packages that actually need it.
     choco_packages:
       # --- Confident package IDs ---
       - { name: 7zip,             label: 7zip,                            category: tools }
@@ -103,7 +112,7 @@
       - { name: bulkrenameutility, label: Bulk Rename Utility,            category: tools }
       - { name: filebot,          label: FileBot,                         category: multimedia }
       - { name: git,              label: Git,                             category: dev }
-      - { name: googlechrome,     label: Chrome,                          category: internet }
+      - { name: googlechrome,     label: Chrome,                          category: internet, ignore_checksums: true }
       - { name: googledrive,      label: Google Drive,                    category: internet }
       - { name: handbrake,        label: HandBrake,                       category: multimedia }
       - { name: temurinjre,       label: Java Runtime (Eclipse Temurin JRE), category: tools }
@@ -111,7 +120,7 @@
       - { name: vscode,           label: VS Code,                         category: dev }
       - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
-      - { name: potplayer,        label: PotPlayer,                       category: multimedia }
+      - { name: potplayer,        label: PotPlayer,                       category: multimedia, ignore_checksums: true }
       - { name: powershell-core,  label: PowerShell 7,                    category: dev }
       - { name: powertoys,        label: PowerToys,                       category: tools }
       - { name: rambox,           label: Rambox,                          category: internet }
@@ -158,7 +167,7 @@
       chocolatey.chocolatey.win_chocolatey:
         name: "{{ item.name }}"
         state: latest
-        ignore_checksums: false
+        ignore_checksums: "{{ item.ignore_checksums | default(false) }}"
       loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
       loop_control:
         label: "{{ item.label }}"
