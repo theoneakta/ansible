@@ -101,7 +101,7 @@ YML
 
   --pxe)
     grep -qs '^PXE_SMB_PASSWORD=.' .env || { echo "Set PXE_SERVER_IP, PXE_SUBNET and PXE_SMB_PASSWORD in .env first (see README.md)."; exit 1; }
-    mkdir -p pxe/data/images pxe/data/iso pxe/data/winpe pxe/data/hosts
+    mkdir -p pxe/data/images pxe/data/iso pxe/data/winpe pxe/data/hosts pxe/data/linux pxe/data/ks
     docker compose --profile pxe up -d --build pxe
     ;;
   --pxe-stop) docker compose --profile pxe stop pxe ;;

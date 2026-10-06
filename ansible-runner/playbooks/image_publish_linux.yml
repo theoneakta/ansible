@@ -1,0 +1,84 @@
+---
+# Linux counterpart of image_capture.yml: makes a Linux image (e.g. image_id
+# rocky10 in inventory/image.yml) installable over PXE. No disk capture -
+# machines network-install with Anaconda from the same kickstart that built
+# the Proxmox template, so they end up the same:
+#   pxe/data/linux/<image_id>/  the ISO's contents (installer kernel/initrd
+#                               under images/pxeboot/, plus the package repo)
+#   pxe/data/ks/<image_id>.ks   the kickstart in deploy mode
+# The pxe container serves both over HTTP; its boot menu entry for the image
+# (PXE_IMAGES "<id>=<label>=linux") boots the installer with them.
+#
+# Needs the ISO in pxe/data/iso/ under the same file name as the image's
+# Proxmox ISO (the `iso` setting). Re-run after changing the kickstart, the
+# admin credentials, or the ISO.
+#
+# Run:  from the GUI's "Windows Image" tab ("Publish to PXE"), or
+#       ansible-playbook playbooks/image_publish_linux.yml -e image_id=rocky10 --vault-password-file ...
+
+- name: Publish a Linux image for PXE installs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    image_id: rocky10
+    img: "{{ images[image_id] }}"
+    pxe_data: /ansible/pxe
+    iso_copy: "{{ pxe_data }}/iso/{{ img.iso.split('/') | last }}"
+    tree: "{{ pxe_data }}/linux/{{ image_id }}"
+    image_admin_user: "{{ vault_win_user }}"
+    image_admin_password: "{{ vault_win_password }}"
+
+  tasks:
+    - name: Check this is a Linux image
+      ansible.builtin.assert:
+        that:
+          - image_id in images
+          - img.os | default('windows') == 'linux'
+        fail_msg: "{{ image_id }} isn't a Linux image in inventory/image.yml - Windows images use image_capture.yml."
+        quiet: true
+
+    - name: Check the ISO copy is there
+      ansible.builtin.stat:
+        path: "{{ iso_copy }}"
+      register: iso_stat
+
+    - name: Fail if it isn't
+      ansible.builtin.fail:
+        msg: "Copy the ISO to pxe/data/iso/{{ iso_copy | basename }} on the Docker host first."
+      when: not iso_stat.stat.exists
+
+    - name: Extract the ISO into the PXE web root (replaces any previous copy)
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          rm -rf "{{ tree }}.new"
+          7z x -y -o"{{ tree }}.new" "{{ iso_copy }}" >/dev/null
+          test -f "{{ tree }}.new/images/pxeboot/vmlinuz"
+          rm -rf "{{ tree }}"
+          mv "{{ tree }}.new" "{{ tree }}"
+          chmod -R a+rX "{{ tree }}"
+
+    - name: Make sure the kickstart folder exists
+      ansible.builtin.file:
+        path: "{{ pxe_data }}/ks"
+        state: directory
+        mode: "0755"
+
+    - name: Render the deploy-mode kickstart
+      ansible.builtin.template:
+        src: templates/rocky-ks.cfg.j2
+        dest: "{{ pxe_data }}/ks/{{ image_id }}.ks"
+        mode: "0644"
+      vars:
+        ks_mode: deploy
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ img.label }} published. Machines can now PXE-boot and pick
+          "Deploy {{ img.label }}" (needs "{{ image_id }}={{ img.label }}=linux" in PXE_IMAGES).

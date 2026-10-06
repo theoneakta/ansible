@@ -1084,6 +1084,7 @@ IMAGE_SETTINGS = INVENTORY_DIR / "image.yml"
 PXE_DATA = pathlib.Path("/ansible/pxe")
 IMAGE_BUILD_PLAYBOOK = "playbooks/image_build.yml"
 IMAGE_CAPTURE_PLAYBOOK = "playbooks/image_capture.yml"
+IMAGE_PUBLISH_LINUX_PLAYBOOK = "playbooks/image_publish_linux.yml"
 IMAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
 
 # Keys the GUI may edit, with their type. Anything else in image.yml is left
@@ -1096,7 +1097,7 @@ IMAGE_SETTING_TYPES = {
     "pxe_server_ip": str, "pxe_http_port": int,
 }
 IMAGE_PROFILE_TYPES = {
-    "label": str, "iso": str, "edition": str, "product_key": str,
+    "os": str, "label": str, "iso": str, "edition": str, "product_key": str,
     "template_vmid": int, "template_name": str, "disk_size": str,
 }
 IMAGE_SETTINGS_HEADER = """---
@@ -1175,7 +1176,12 @@ def api_image_status():
     images = settings.get("images", {})
     return {
         "settings": {k: v for k, v in settings.items() if k != "images"},
-        "images": {i: {**p, "wim": _wim_status(i)} for i, p in images.items()},
+        "images": {
+            i: {**p, "wim": _wim_status(i)} if p.get("os", "windows") != "linux"
+            else {**p, "published": (PXE_DATA / "linux" / i / "images" / "pxeboot" / "vmlinuz").exists()
+                  and (PXE_DATA / "ks" / f"{i}.ks").exists()}
+            for i, p in images.items()
+        },
         "token_set": bool(proxmox_secret()),
         "iso_copies": sorted(p.name for p in (PXE_DATA / "iso").glob("*.[iI][sS][oO]")) if (PXE_DATA / "iso").exists() else [],
         "winpe_ready": (PXE_DATA / "winpe" / "sources" / "boot.wim").exists(),
@@ -1268,6 +1274,10 @@ def api_image_build(body: ImageRunIn):
 
 @app.post("/api/image/capture")
 def api_image_capture(body: ImageRunIn):
+    # Linux images aren't captured - "capture" publishes their installer tree
+    # and kickstart to the PXE server instead (image_publish_linux.yml).
+    if load_image_settings().get("images", {}).get(body.image_id, {}).get("os") == "linux":
+        return _start_image_run(IMAGE_PUBLISH_LINUX_PLAYBOOK, body, "publish", 3600)
     return _start_image_run(IMAGE_CAPTURE_PLAYBOOK, body, "capture", 3 * 3600)
 
 

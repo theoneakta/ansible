@@ -34,8 +34,11 @@
       ansible.builtin.assert:
         that:
           - image_id in images
+          - img.os | default('windows') == 'windows'
           - (vault_proxmox_token_secret | default('')) | length > 0
-        fail_msg: Unknown image_id, or no Proxmox API token secret (set it on the Windows Image tab).
+        fail_msg: >-
+          Unknown image_id, a Linux image (those use image_publish_linux.yml),
+          or no Proxmox API token secret (set it on the Windows Image tab).
         quiet: true
 
     # ---------------------------------------------------------------- WinPE
@@ -47,18 +50,19 @@
     - name: Extract WinPE from the Windows ISO
       when: not winpe_wim.stat.exists
       block:
-        - name: Find the Windows ISO copy in pxe/data/iso/
-          ansible.builtin.find:
-            paths: "{{ pxe_data }}/iso"
-            patterns: "*.iso,*.ISO"
-          register: iso_found
+        # The ISO of the Windows image being captured - not just any ISO in
+        # that folder, which may also hold Linux ISOs (no WinPE in those).
+        - name: Check the image's ISO copy is in pxe/data/iso/
+          ansible.builtin.stat:
+            path: "{{ pxe_data }}/iso/{{ img.iso.split('/') | last }}"
+          register: winpe_iso
 
         - name: Fail if there's no ISO to extract from
           ansible.builtin.fail:
             msg: >-
-              No WinPE yet and no ISO to take it from: copy the same Windows 11
-              ISO that's on Proxmox into pxe/data/iso/ on the Docker host.
-          when: iso_found.files | length == 0
+              No WinPE yet and no ISO to take it from: copy {{ img.iso.split('/') | last }}
+              (the same ISO that's on Proxmox) into pxe/data/iso/ on the Docker host.
+          when: not winpe_iso.stat.exists
 
         - name: Extract boot.wim, BCD and boot.sdi (case-insensitive; names normalized to lower case)
           ansible.builtin.shell:
@@ -66,7 +70,7 @@
               set -e
               out="{{ pxe_data }}/winpe"
               tmp="$(mktemp -d)"
-              7z x -y -ssc- -o"$tmp" "{{ (iso_found.files | first).path }}" boot/bcd boot/boot.sdi sources/boot.wim >/dev/null
+              7z x -y -ssc- -o"$tmp" "{{ winpe_iso.stat.path }}" boot/bcd boot/boot.sdi sources/boot.wim >/dev/null
               mkdir -p "$out/boot" "$out/sources"
               mv "$(find "$tmp" -ipath '*/boot/bcd')"         "$out/boot/bcd"
               mv "$(find "$tmp" -ipath '*/boot/boot.sdi')"    "$out/boot/boot.sdi"

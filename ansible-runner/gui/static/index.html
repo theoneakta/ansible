@@ -423,8 +423,8 @@
         <div class="row"><label for="imgSelect">Image</label><select id="imgSelect"></select><span id="imgWimStatus" class="muted"></span></div>
         <div class="row"><label for="imgp_label">Name (PXE menu)</label><input type="text" id="imgp_label"></div>
         <div class="row"><label for="imgp_iso">ISO on Proxmox</label><input type="text" id="imgp_iso" list="imgIsos" placeholder="local:iso/Windows11.iso"><datalist id="imgIsos"></datalist></div>
-        <div class="row"><label for="imgp_edition">Edition (name inside the ISO)</label><input type="text" id="imgp_edition" placeholder="Windows 11 Pro"></div>
-        <div class="row"><label for="imgp_product_key">Install key (blank for evaluation media)</label><input type="text" id="imgp_product_key"></div>
+        <div class="row winOnly"><label for="imgp_edition">Edition (name inside the ISO)</label><input type="text" id="imgp_edition" placeholder="Windows 11 Pro"></div>
+        <div class="row winOnly"><label for="imgp_product_key">Install key (blank for evaluation media)</label><input type="text" id="imgp_product_key"></div>
         <div class="row"><label for="imgp_template_vmid">Template VM ID</label><input type="text" id="imgp_template_vmid"></div>
         <div class="row"><label for="imgp_template_name">Template name</label><input type="text" id="imgp_template_name"></div>
         <div class="row"><label for="imgp_disk_size">Disk size</label><input type="text" id="imgp_disk_size" placeholder="64G"></div>
@@ -1031,6 +1031,7 @@ const IMG_FIELDS = [
   'image_memory', 'image_timezone', 'image_locale', 'pxe_server_ip', 'pxe_http_port',
 ];
 const IMG_PROFILE_FIELDS = ['label', 'iso', 'edition', 'product_key', 'template_vmid', 'template_name', 'disk_size'];
+const IMG_PROFILE_WIN_ONLY = ['edition', 'product_key'];
 let imgState = null;
 
 function fillDatalist(id, values) {
@@ -1041,6 +1042,17 @@ function renderImageProfile() {
   const id = $('imgSelect').value;
   const p = (imgState && imgState.images[id]) || {};
   IMG_PROFILE_FIELDS.forEach(k => { $('imgp_' + k).value = p[k] ?? ''; });
+  // Linux images aren't captured: "Publish" puts the installer + kickstart
+  // on the PXE server instead, and edition/product key don't apply.
+  const linux = p.os === 'linux';
+  document.querySelectorAll('#tab-image .winOnly').forEach(el => { el.style.display = linux ? 'none' : ''; });
+  $('imgCaptureBtn').textContent = linux ? 'Publish to PXE' : 'Capture to WIM';
+  if (linux) {
+    $('imgWimStatus').innerHTML = p.published
+      ? ` <span class="badge ok">published for PXE install</span>`
+      : ` <span class="badge neutral">not published yet</span>`;
+    return;
+  }
   const w = p.wim || {};
   $('imgWimStatus').innerHTML = w.exists
     ? ` <span class="badge ok">${id}.wim ${w.size_gb} GB, ${new Date(w.modified).toLocaleString()}</span>`
@@ -1079,6 +1091,8 @@ function imageSettingsFromForm() {
   });
   IMG_PROFILE_FIELDS.forEach(k => {
     const v = $('imgp_' + k).value.trim();
+    const linux = ((imgState && imgState.images[$('imgSelect').value]) || {}).os === 'linux';
+    if (linux && IMG_PROFILE_WIN_ONLY.includes(k)) return;
     if (v !== '' || k === 'product_key') profile[k] = v;  // an empty key is meaningful (evaluation media)
   });
   return { settings, image_id: $('imgSelect').value, profile };
@@ -1123,9 +1137,12 @@ $('imgTestBtn').addEventListener('click', async () => {
 async function startImageRun(kind) {
   const id = $('imgSelect').value;
   const label = (imgState.images[id] || {}).label || id;
+  const linux = (imgState.images[id] || {}).os === 'linux';
   const text = kind === 'build'
-    ? `Build the ${label} image on Proxmox? Takes 1-2 hours and replaces its existing template (if any). No other runs can start meanwhile.`
-    : `Capture the ${label} template to ${id}.wim? Clones the template, network-boots the clone into WinPE, and replaces the current ${id}.wim. Takes 20-60 minutes.`;
+    ? `Build the ${label} image on Proxmox? ${linux ? 'Takes 15-30 minutes' : 'Takes 1-2 hours'} and replaces its existing template (if any). No other runs can start meanwhile.`
+    : linux
+      ? `Publish ${label} to the PXE server? Extracts its ISO for network installs and writes its kickstart (replaces the previous copy).`
+      : `Capture the ${label} template to ${id}.wim? Clones the template, network-boots the clone into WinPE, and replaces the current ${id}.wim. Takes 20-60 minutes.`;
   if (!confirm(text)) return;
   const btns = [$('imgBuildBtn'), $('imgCaptureBtn')];
   btns.forEach(b => b.disabled = true);
