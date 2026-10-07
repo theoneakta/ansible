@@ -9,6 +9,11 @@
 # --- iPXE, with a tiny script embedded that chains straight to this
 # server's HTTP menu. Embedding avoids the classic proxy-DHCP loop (iPXE
 # re-requesting iPXE forever) without needing any DHCP option tricks.
+# The `exit` after the chain matters: when the menu returns (its "Boot from
+# local disk" entry, the default), iPXE must hand back to the firmware's
+# next boot device - without it the script fell through into its own error
+# message and an iPXE shell, so a PXE-first PC never reached its disk
+# (confirmed live).
 FROM debian:trixie-slim AS ipxe
 ARG PXE_SERVER_IP
 ARG PXE_HTTP_PORT=8092
@@ -22,6 +27,7 @@ RUN printf '%s\n' \
         ':retry' \
         'dhcp || goto retry' \
         "chain http://${PXE_SERVER_IP}:${PXE_HTTP_PORT}/boot.ipxe || goto failed" \
+        'exit' \
         ':failed' \
         "echo Could not load http://${PXE_SERVER_IP}:${PXE_HTTP_PORT}/boot.ipxe - is the pxe container running?" \
         'shell' > /embed.ipxe \
