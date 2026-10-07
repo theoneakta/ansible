@@ -54,3 +54,9 @@ images:
     template_vmid: 9100
     template_name: rocky10-base
     disk_size: 32G
+    # Rocky 10 needs an x86-64-v3 (AVX2) CPU: pve5 (i5-6500) has it, pve6
+    # (Xeon E5-2650 v2) doesn't. pve5 is smaller - 4 cores, ~5 GB free RAM.
+    node: pve5
+    bridge: vmbr1
+    cores: 4
+    memory: 4096
