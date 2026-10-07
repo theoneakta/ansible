@@ -65,18 +65,18 @@ source "proxmox-iso" "rocky" {
   template_name        = var.template_name
   template_description = "Rocky Linux base (kickstart), built by Packer (ansible-runner) on ${timestamp()}."
 
+  # SeaBIOS, not OVMF: Rocky 10's DVD bootloader (shim/GRUB 2.12) hangs
+  # straight after OVMF starts it on this Proxmox - Secure Boot keys enrolled
+  # or not, DVD on IDE or SATA - with no further disk reads. Confirmed live
+  # with console screenshots; under SeaBIOS the GRUB menu comes up normally.
+  # Fine for a VM template (clones boot the same way). PXE deploys aren't
+  # affected: iPXE loads the installer kernel directly, bypassing that GRUB.
   os       = "l26"
   machine  = "q35"
-  bios     = "ovmf"
+  bios     = "seabios"
   cpu_type = "host"
   cores    = var.cores
   memory   = var.memory
-
-  efi_config {
-    efi_storage_pool  = var.storage_pool
-    efi_type          = "4m"
-    pre_enrolled_keys = false
-  }
 
   scsi_controller = "virtio-scsi-single"
   disks {
@@ -110,7 +110,10 @@ source "proxmox-iso" "rocky" {
 
   # GRUB's default entry is "Test this media & install"; go up one to plain
   # "Install Rocky Linux" so the build doesn't spend minutes checksumming.
-  boot_wait    = "5s"
+  # The menu took ~20s to appear on pve6 (confirmed on the console), and it
+  # auto-boots after 60s - 30s lands safely in between. Missing it isn't
+  # fatal anyway: the default entry installs too, just after a media check.
+  boot_wait    = "30s"
   boot_command = ["<up><wait><enter>"]
 
   cloud_init              = true

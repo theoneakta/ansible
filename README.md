@@ -328,6 +328,10 @@ What an image contains is deliberately minimal - Windows, updates, Chocolatey, a
 
 Accounts: `vault_win_user` with the vault password (SHA-512 hashed in the kickstart), in `wheel` (sudo), SSH enabled; root is locked. Timezone from `image_linux_timezone`. The kickstart - password hash included - is served over plain HTTP on the LAN, the same trade-off as the Windows answer files. The ISO copy in `pxe/data/iso/` must have the same file name as the `iso` setting. (This toolkit's inventory is Windows-only, so Rocky machines aren't added to the Hosts tab.)
 
+**CPU requirement.** Rocky Linux 10 needs an **x86-64-v3** CPU (AVX2 - roughly Intel Haswell / AMD Excavator, 2013-15, or newer). On older CPUs its kernel hangs silently right after GRUB. That's why the `rocky10` profile sets `node: pve5` (i5-6500): pve6's Xeon E5-2650 v2 lacks AVX2. The same applies to physical machines PXE-installing Rocky 10. Any profile can override `node`, `bridge`, `storage_pool`, `cores` and `memory` this way; Windows images stay on the default node.
+
+**SeaBIOS, not UEFI**, for the Rocky template: Rocky 10's DVD bootloader hung under this Proxmox's OVMF (Secure Boot keys enrolled or not, DVD on IDE or SATA), and boots normally under SeaBIOS. PXE installs aren't affected - iPXE loads the installer kernel directly.
+
 ### One-time setup
 
 1. **Proxmox API token `ansible@pam!ansible`** - the `pam` realm needs a Linux user `ansible` on the node (`useradd -M -s /usr/sbin/nologin ansible`), then in the web UI: Datacenter → Permissions → Users → add `ansible@pam`; Permissions → Add → User Permission: path `/`, user `ansible@pam`, role `PVEAdmin`; API Tokens → add token ID `ansible` for `ansible@pam` with *Privilege Separation* unchecked (so it inherits the user's permissions). Copy the secret into the Windows Image tab.

@@ -23,6 +23,20 @@
   vars:
     image_id: win11
     img: "{{ images[image_id] }}"
+    # Pin where async job status lives: the gui container sets HOME=/tmp,
+    # and the async wrapper and the poller otherwise resolve "~" differently
+    # (/tmp vs /root), so polling the Packer build fails at once with "could
+    # not find job" while Packer carries on orphaned - confirmed live.
+    ansible_async_dir: /tmp/.ansible_async
+    # Per-image overrides of the shared Proxmox/build-VM settings - e.g.
+    # Rocky Linux 10 needs an x86-64-v3 (AVX2) CPU, which pve6's Xeon
+    # E5-2650 v2 lacks (its kernel hangs silently at boot there - confirmed
+    # live), so the rocky10 profile builds on pve5 instead.
+    build_node: "{{ img.node | default(proxmox_node) }}"
+    build_bridge: "{{ img.bridge | default(proxmox_bridge) }}"
+    build_storage: "{{ img.storage_pool | default(proxmox_storage_pool) }}"
+    build_cores: "{{ img.cores | default(image_cores) }}"
+    build_memory: "{{ img.memory | default(image_memory) }}"
     image_os: "{{ img.os | default('windows') }}"
     packer_dir: "{{ playbook_dir }}/packer/{{ 'rocky' if image_os == 'linux' else 'windows' }}"
     ks_path: "/tmp/ks-{{ image_id }}.cfg"
@@ -51,7 +65,7 @@
 
     - name: Check Proxmox is reachable and the Windows ISO is on it
       ansible.builtin.uri:
-        url: "{{ proxmox_api_url }}/nodes/{{ proxmox_node }}/storage/{{ img.iso.split(':')[0] }}/content?content=iso"
+        url: "{{ proxmox_api_url }}/nodes/{{ build_node }}/storage/{{ img.iso.split(':')[0] }}/content?content=iso"
         headers: "{{ proxmox_headers }}"
         validate_certs: "{{ proxmox_validate_certs }}"
       register: iso_list
@@ -60,9 +74,39 @@
     - name: Fail if the ISO isn't on Proxmox
       ansible.builtin.fail:
         msg: >-
-          {{ img.iso }} not found on {{ proxmox_node }}. ISOs there:
+          {{ img.iso }} not found on {{ build_node }}. ISOs there:
           {{ iso_list.json.data | map(attribute='volid') | join(', ') }}
       when: img.iso not in (iso_list.json.data | map(attribute='volid') | list)
+
+    # A build that was interrupted or crashed can leave its half-built VM at
+    # the template's ID; Packer's -force only replaces a finished *template*
+    # there and refuses this ("found matching VM ... but it is not a
+    # template") - confirmed live. VM IDs are cluster-wide, so look on every
+    # node (an earlier build may have been on another node - confirmed live
+    # too). Only Packer's own leftovers (named packer-..., not a template)
+    # are removed; anything else at that ID is left alone and the build
+    # fails as before.
+    - name: Look for a leftover build VM at the template's ID, cluster-wide
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/cluster/resources?type=vm"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: cluster_vms
+      no_log: true
+
+    - name: Remember it if it's Packer's own unfinished VM
+      ansible.builtin.set_fact:
+        leftover_vm: "{{ cluster_vms.json.data | selectattr('vmid', 'equalto', img.template_vmid | int)
+                         | selectattr('name', 'match', 'packer-')
+                         | rejectattr('template', 'equalto', 1) | first | default({}) }}"
+
+    - name: Remove the leftover build VM
+      ansible.builtin.include_tasks: tasks/proxmox_destroy_vm.yml
+      vars:
+        vmid: "{{ img.template_vmid }}"
+        node_api: "{{ proxmox_api_url }}/nodes/{{ leftover_vm.node }}"
+        vm_running: "{{ leftover_vm.status == 'running' }}"
+      when: leftover_vm | length > 0
 
     - name: Render the kickstart for the Linux build (contains the admin password hash)
       ansible.builtin.template:
@@ -87,21 +131,25 @@
               packer build -force -color=false -timestamp-ui {{ packer_dir }}
               > {{ packer_log }} 2>&1
           environment:
+            # Packer's own detailed log, separate from the console output
+            # above - the first place to look when a build stalls.
+            PACKER_LOG: "1"
+            PACKER_LOG_PATH: "/ansible/gui-data/packer-debug-{{ image_id }}.log"
             PKR_VAR_proxmox_url: "{{ proxmox_api_url }}"
             PKR_VAR_proxmox_token_id: "{{ proxmox_token_id }}"
             PKR_VAR_proxmox_token_secret: "{{ vault_proxmox_token_secret }}"
             PKR_VAR_proxmox_insecure: "{{ (not (proxmox_validate_certs | bool)) | string | lower }}"
-            PKR_VAR_proxmox_node: "{{ proxmox_node }}"
-            PKR_VAR_storage_pool: "{{ proxmox_storage_pool }}"
+            PKR_VAR_proxmox_node: "{{ build_node }}"
+            PKR_VAR_storage_pool: "{{ build_storage }}"
             PKR_VAR_iso_storage: "{{ proxmox_iso_storage }}"
-            PKR_VAR_bridge: "{{ proxmox_bridge }}"
+            PKR_VAR_bridge: "{{ build_bridge }}"
             PKR_VAR_win_iso: "{{ img.iso }}"
-            PKR_VAR_image_name: "{{ img.edition }}"
+            PKR_VAR_image_name: "{{ img.edition | default('') }}"
             PKR_VAR_product_key: "{{ img.product_key | default('') }}"
             PKR_VAR_vm_id: "{{ img.template_vmid }}"
             PKR_VAR_template_name: "{{ img.template_name }}"
-            PKR_VAR_cores: "{{ image_cores }}"
-            PKR_VAR_memory: "{{ image_memory }}"
+            PKR_VAR_cores: "{{ build_cores }}"
+            PKR_VAR_memory: "{{ build_memory }}"
             PKR_VAR_disk_size: "{{ img.disk_size }}"
             # Fresh random password per build, only valid on the build VM.
             PKR_VAR_build_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
@@ -119,7 +167,11 @@
           # can take an hour on a fresh install.
           async: 14400
           poll: 30
-          no_log: true
+          # No no_log here: on an async task it also censors the job id, so
+          # Ansible can't poll the job and fails at once ("could not find
+          # job", jid=None) while Packer carries on orphaned - confirmed live.
+          # Nothing secret is printed anyway: the secrets are only in
+          # `environment`, which Ansible never echoes, not in the command.
       rescue:
         - name: Read the end of the Packer log
           ansible.builtin.command:
@@ -140,6 +192,6 @@
     - name: Report
       ansible.builtin.debug:
         msg: >-
-          Template {{ img.template_name }} (VM {{ img.template_vmid }}) built on {{ proxmox_node }}.
+          Template {{ img.template_name }} (VM {{ img.template_vmid }}) built on {{ build_node }}.
           Next: {{ '"Publish to PXE" so machines can network-install it.' if image_os == 'linux'
           else '"Capture" to produce the deployable .wim.' }}

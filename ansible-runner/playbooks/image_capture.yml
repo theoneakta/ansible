@@ -25,7 +25,9 @@
     image_id: win11
     img: "{{ images[image_id] }}"
     pxe_data: /ansible/pxe
-    node_api: "{{ proxmox_api_url }}/nodes/{{ proxmox_node }}"
+    # The node the image's template was built on (see image_build.yml).
+    build_node: "{{ img.node | default(proxmox_node) }}"
+    node_api: "{{ proxmox_api_url }}/nodes/{{ build_node }}"
     proxmox_headers:
       Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
 
@@ -91,7 +93,7 @@
 
     - name: Fail if there's no template to capture
       ansible.builtin.fail:
-        msg: "No template at VM {{ img.template_vmid }} on {{ proxmox_node }} - run Build first."
+        msg: "No template at VM {{ img.template_vmid }} on {{ build_node }} - run Build first."
       when: template_cfg.status != 200 or (template_cfg.json.data.template | default(0) | int) != 1
 
     # ------------------------------------------------- leftover capture VM

@@ -16,7 +16,7 @@ rootpw --lock
 user --name={{ image_admin_user }} --groups=wheel --password={{ image_admin_password | password_hash('sha512') }} --iscrypted
 selinux --enforcing
 firewall --enabled --service=ssh
-services --enabled=sshd{{ ',qemu-guest-agent' if ks_mode == 'build' else '' }}
+services --enabled=sshd
 firstboot --disable
 bootloader --timeout=1
 {% if ks_mode == 'build' %}
@@ -37,10 +37,6 @@ sudo
 python3
 curl
 tar
-{% if ks_mode == 'build' %}
-qemu-guest-agent
-cloud-init
-{% endif %}
 %end
 {% if ks_mode == 'deploy' %}
 
@@ -58,6 +54,15 @@ EOF
 
 %post --log=/root/ks-post.log
 {% if ks_mode == 'build' %}
+# Proxmox template extras. Not in %packages: the minimal ISO doesn't carry
+# them (and --ignoremissing skipped them silently), so install from the
+# online repos - the VM is on the network by now. Not in `services
+# --enabled` either: qemu-guest-agent has no [Install] section - it starts
+# by itself when Proxmox's agent channel exists - and enabling it there
+# aborted the install ("Error enabling service qemu-guest-agent") - confirmed
+# live. Packer finds the VM's IP through that agent.
+dnf -y install qemu-guest-agent cloud-init
+
 # Packer's provisioner needs passwordless sudo; removed again by its last step.
 echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/99-packer-build
 chmod 440 /etc/sudoers.d/99-packer-build
