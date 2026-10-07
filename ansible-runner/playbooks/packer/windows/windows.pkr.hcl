@@ -69,6 +69,15 @@ source "proxmox-iso" "windows" {
     iso_file = var.win_iso
     unmount  = true
   }
+  # virtio-win: firstlogon.ps1 runs its guest-tools installer. Windows has no
+  # inbox driver for the VirtIO serial channel the QEMU guest agent talks
+  # over, so the agent alone ran but Proxmox never heard from it ("QEMU guest
+  # agent is not running") and Packer never got the VM's IP - confirmed live.
+  additional_iso_files {
+    type     = "ide"
+    iso_file = var.virtio_iso
+    unmount  = true
+  }
   # autounattend.xml + first-logon script, packed into a small ISO and
   # uploaded to iso_storage for the build only.
   additional_iso_files {

@@ -30,14 +30,30 @@ New-NetFirewallRule -Name 'Packer-WinRM-HTTP' -DisplayName 'Packer WinRM HTTP (b
 Set-Service WinRM -StartupType Automatic
 Restart-Service WinRM
 
-# QEMU guest agent: from a virtio-win ISO if one happens to be attached,
-# otherwise straight from the virtio-win project.
+# QEMU guest agent - and the VirtIO serial driver it talks to Proxmox
+# through, which Windows doesn't have inbox. virtio-win's guest tools
+# install both (the virtio-win ISO is attached by windows.pkr.hcl); the
+# agent-only MSI below is just a fallback and is useless without that driver.
+$tools = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'virtio-win-guest-tools.exe' } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($tools) {
+    Start-Process $tools -ArgumentList '/install', '/quiet', '/norestart' -Wait
+    Stop-Transcript
+    return
+}
 $msi = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'guest-agent\qemu-ga-x86_64.msi' } |
     Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $msi) {
     $msi = 'C:\Windows\Temp\qemu-ga-x86_64.msi'
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-qemu-ga/qemu-ga-x86_64.msi' -OutFile $msi -UseBasicParsing
+    # curl.exe (built into Windows 10/11/Server), not Invoke-WebRequest: the
+    # "latest" URL redirects https -> http, which Windows PowerShell 5.1
+    # won't follow - it saved the 4 KB redirect page as the "MSI", msiexec
+    # failed silently, and Packer waited forever for an agent that never
+    # came - confirmed live.
+    curl.exe -fsSL --retry 5 -o $msi 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-qemu-ga/qemu-ga-x86_64.msi'
+}
+if ((Get-Item $msi -ErrorAction SilentlyContinue).Length -lt 1MB) {
+    throw "QEMU guest agent download failed - $msi is missing or too small to be the installer."
 }
 Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart' -Wait
 
