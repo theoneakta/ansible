@@ -13,7 +13,7 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Windows\Setup\Scripts\firstboot.ps1'
 $triggers = @(
     New-ScheduledTaskTrigger -AtStartup
-    New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+    New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
 )
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 Register-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Action $action -Trigger $triggers -Settings $settings `
@@ -47,3 +47,7 @@ if ($state -ne 7) {
 # first boot; the copy holding the admin password isn't needed any more.
 Remove-Item "$env:SystemRoot\System32\Sysprep\unattend-deploy.xml" -Force
 Write-Output 'Sysprep generalize complete.'
+# Packer judges the script by $LASTEXITCODE - here DISM's, which can be
+# non-zero (e.g. "restart required") on success. Real failure already threw
+# above, so report success explicitly.
+exit 0

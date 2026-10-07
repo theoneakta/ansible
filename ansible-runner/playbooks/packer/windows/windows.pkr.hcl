@@ -98,14 +98,17 @@ source "proxmox-iso" "windows" {
   }
 
   # "Press any key to boot from CD or DVD..." only shows for a few seconds,
-  # and when it appears depends on how fast the node's firmware gets there
-  # (~20s on pve6). Five taps in the first 7s missed it, and the VM fell
-  # through to network boot - confirmed live. So tap once a second for ~45s
-  # instead; spaces landing after Setup has started are harmless. And no
-  # net0 in the boot order, so a missed prompt can't reach PXE at all.
+  # and when it appears depends on how fast (and how loaded) the node's
+  # firmware is - 5 taps in 7s missed it, and so did 45 taps in 45s on a
+  # slower run (confirmed live both times). So tap for 150s. The key is the
+  # Up arrow, not space: it triggers the prompt just the same (tested live),
+  # but once Setup's own screens are up it can't press a button - space on
+  # the focused "Cancel" of the install-progress screen would abort the
+  # install. And no net0 in the boot order, so a missed prompt can't reach
+  # PXE at all.
   boot         = "order=sata0;ide0"
   boot_wait    = "3s"
-  boot_command = [join("", [for i in range(45) : "<spacebar><wait1>"])]
+  boot_command = [join("", [for i in range(150) : "<up><wait1>"])]
 
   # IP discovery for WinRM comes from the QEMU guest agent, which
   # firstlogon.ps1 installs (and prepare-sysprep.ps1 removes again).
@@ -122,7 +125,12 @@ build {
 
   provisioner "powershell" {
     inline = [
-      "Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force",
+      # No Set-ExecutionPolicy here: under Packer's own process-level Bypass it
+      # throws a terminating "overridden by a policy defined at a more
+      # specific scope" error (not silenced by -ErrorAction) and failed the
+      # build twice - confirmed live. Not needed either: this runs under that
+      # Bypass, and install_software.yml sets the machine policy on deployed
+      # PCs when it needs to.
       "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
       "iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))",
     ]
