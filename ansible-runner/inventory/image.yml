@@ -20,6 +20,8 @@ image_capture_full_clone: false
 image_cores: 8
 image_memory: 8192
 image_timezone: Eastern Standard Time
+# virtio-win ISO on Proxmox (Windows builds need its guest tools for the QEMU agent)
+image_virtio_iso: local:iso/virtio-win.iso
 image_linux_timezone: America/Toronto
 image_locale: en-US
 pxe_server_ip: 192.168.3.8

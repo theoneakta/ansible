@@ -40,6 +40,11 @@ variable "win_iso" {
   type        = string
   default     = ""
 }
+variable "virtio_iso" {
+  description = "virtio-win ISO on Proxmox - its guest tools give Windows the VirtIO serial driver the QEMU guest agent needs"
+  type        = string
+  default     = "local:iso/virtio-win.iso"
+}
 variable "image_name" {
   description = "Edition to install, as named inside install.wim/esd"
   type        = string
