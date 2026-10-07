@@ -88,9 +88,15 @@ source "proxmox-iso" "windows" {
     }
   }
 
-  # "Press any key to boot from CD or DVD..." - keep tapping until it takes.
-  boot_wait    = "2s"
-  boot_command = ["<spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>"]
+  # "Press any key to boot from CD or DVD..." only shows for a few seconds,
+  # and when it appears depends on how fast the node's firmware gets there
+  # (~20s on pve6). Five taps in the first 7s missed it, and the VM fell
+  # through to network boot - confirmed live. So tap once a second for ~45s
+  # instead; spaces landing after Setup has started are harmless. And no
+  # net0 in the boot order, so a missed prompt can't reach PXE at all.
+  boot         = "order=sata0;ide0"
+  boot_wait    = "3s"
+  boot_command = [join("", [for i in range(45) : "<spacebar><wait1>"])]
 
   # IP discovery for WinRM comes from the QEMU guest agent, which
   # firstlogon.ps1 installs (and prepare-sysprep.ps1 removes again).
