@@ -125,10 +125,14 @@
 
     - name: Build
       block:
+        # -on-error=abort: a failed build keeps its VM (named packer-..., at the
+        # template's ID) for inspection instead of deleting it - a Windows
+        # build fails, if at all, after ~35 min of Setup, so re-running blind
+        # is expensive. The next build removes it (see the leftover cleanup).
         - name: Build the image (Windows install + updates + sysprep - 1-2 hours)
           ansible.builtin.shell:
             cmd: >-
-              packer build -force -color=false -timestamp-ui {{ packer_dir }}
+              packer build -force -on-error=abort -color=false -timestamp-ui {{ packer_dir }}
               > {{ packer_log }} 2>&1
           environment:
             # Packer's own detailed log, separate from the console output
