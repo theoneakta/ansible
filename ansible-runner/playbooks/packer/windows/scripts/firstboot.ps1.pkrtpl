@@ -26,6 +26,11 @@ Remove-NetFirewallRule -Name 'Packer-WinRM-HTTP' -ErrorAction SilentlyContinue
 Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public' | Set-NetConnectionProfile -NetworkCategory Private
 & 'C:\Windows\Setup\Scripts\setup-winrm-ssl.ps1' -ControllerAddress '${controller_address}'
 
+# Build leftovers: the task that ran sysprep, and the answer-file copy it
+# was given (holds the admin password; Windows has already used it).
+Unregister-ScheduledTask -TaskName 'Packer-Sysprep' -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Item 'C:\Windows\System32\Sysprep\unattend-deploy.xml' -Force -ErrorAction SilentlyContinue
+
 Unregister-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Confirm:$false
 Write-Output 'WinRM ready for Ansible.'
 Stop-Transcript

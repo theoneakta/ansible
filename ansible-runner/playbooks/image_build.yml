@@ -118,6 +118,24 @@
       no_log: true
       when: image_os == 'linux'
 
+    # Throwaway password for the build VM's built-in Administrator (never
+    # used on deployed PCs). Kept in a root-only file next to the logs for
+    # as long as the build runs, so a failed build's VM (kept by
+    # -on-error=abort) can still be logged into and inspected - once the
+    # build had uninstalled the guest agent and sat at the lock screen, there
+    # was no other way in (confirmed live). Removed again on success.
+    - name: Generate the build VM's throwaway Administrator password
+      ansible.builtin.set_fact:
+        build_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Keep it for debugging a failed build
+      ansible.builtin.copy:
+        content: "{{ build_password }}\n"
+        dest: "/ansible/gui-data/packer-build-{{ image_id }}.password"
+        mode: "0600"
+      no_log: true
+
     - name: Install Packer plugins (no-op if already in the image)
       ansible.builtin.command:
         cmd: packer init {{ packer_dir }}
@@ -157,7 +175,7 @@
             PKR_VAR_memory: "{{ build_memory }}"
             PKR_VAR_disk_size: "{{ img.disk_size }}"
             # Fresh random password per build, only valid on the build VM.
-            PKR_VAR_build_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+            PKR_VAR_build_password: "{{ build_password }}"
             PKR_VAR_admin_user: "{{ image_admin_user }}"
             PKR_VAR_admin_password: "{{ image_admin_password }}"
             PKR_VAR_timezone: "{{ image_timezone }}"
@@ -200,3 +218,8 @@
           Template {{ img.template_name }} (VM {{ img.template_vmid }}) built on {{ build_node }}.
           Next: {{ '"Publish to PXE" so machines can network-install it.' if image_os == 'linux'
           else '"Capture" to produce the deployable .wim.' }}
+
+    - name: Remove the build VM's password (the template is generalized; it's useless now)
+      ansible.builtin.file:
+        path: "/ansible/gui-data/packer-build-{{ image_id }}.password"
+        state: absent

@@ -1,7 +1,7 @@
-# Last Packer provisioner: undo build-only changes, arrange the first-boot
-# WinRM setup for deployed PCs, then generalize with sysprep. Uses /quit, not
-# /shutdown - Packer's Proxmox builder shuts the VM down itself (through the
-# Proxmox API) right after this, before converting it to a template.
+# Last in-guest Packer provisioner: undo build-only changes, arrange the first-boot
+# WinRM setup for deployed PCs, then start sysprep (generalize + shutdown) as a
+# SYSTEM task - windows.pkr.hcl waits for the power-off, then Packer converts
+# the VM to a template.
 $ErrorActionPreference = 'Stop'
 
 # 1. First-boot task: firstboot.ps1 makes the deployed PC Ansible-manageable
@@ -19,6 +19,14 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Action $action -Trigger $triggers -Settings $settings `
     -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
 
+# 1b. IPv6 off on every interface (Microsoft's documented DisabledComponents
+#     switch; 0xFF = all IPv6 components). Survives sysprep and takes effect
+#     from the deployed PC's first boot. Note Microsoft's own caveat: some
+#     Windows features assume IPv6 (e.g. HomeGroup-era features, DirectAccess)
+#     - none of which this toolkit's targets use.
+New-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' -Name DisabledComponents `
+    -Value 0xFF -PropertyType DWord -Force | Out-Null
+
 # 2. Build-only pieces out.
 Remove-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker' -Name PreventDeviceEncryption -ErrorAction SilentlyContinue
 $ga = Get-CimInstance Win32_Product -Filter "Name LIKE 'QEMU guest agent%'" -ErrorAction SilentlyContinue
@@ -27,27 +35,34 @@ Remove-Item 'C:\Windows\Temp\*' -Recurse -Force -ErrorAction SilentlyContinue
 
 # 3. Appx packages installed for a user but not provisioned for all users
 #    make sysprep /generalize fail outright.
+#    Frameworks are skipped (they go with the apps that use them), and each
+#    removal is wrapped: Remove-AppxPackage throws a terminating COM error -
+#    not stopped by -ErrorAction - e.g. "cannot remove framework ... because
+#    Microsoft.Paint depends on it", which aborted the build - confirmed live.
 $provisioned = (Get-AppxProvisionedPackage -Online).PackageName
-Get-AppxPackage -AllUsers | Where-Object { -not $_.NonRemovable -and $_.PackageFullName -notin $provisioned -and $_.SignatureKind -ne 'System' } |
-    ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction SilentlyContinue }
+Get-AppxPackage -AllUsers |
+    Where-Object { -not $_.NonRemovable -and -not $_.IsFramework -and $_.PackageFullName -notin $provisioned -and $_.SignatureKind -ne 'System' } |
+    ForEach-Object {
+        try { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction Stop }
+        catch { Write-Output "Couldn't remove $($_.TargetObject): $($_.Exception.Message)" }
+    }
 
 # 4. Component store cleanup keeps the captured WIM smaller.
 Dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase | Out-Null
 
-# 5. Generalize.
-$sysprep = Start-Process -FilePath "$env:SystemRoot\System32\Sysprep\sysprep.exe" `
-    -ArgumentList '/generalize', '/oobe', '/quit', '/quiet', "/unattend:$env:SystemRoot\System32\Sysprep\unattend-deploy.xml" `
-    -Wait -PassThru
-$state = (Get-ItemProperty 'HKLM:\SYSTEM\Setup\Status\SysprepStatus' -ErrorAction SilentlyContinue).GeneralizationState
-if ($state -ne 7) {
-    Get-Content "$env:SystemRoot\System32\Sysprep\Panther\setuperr.log" -Tail 40 -ErrorAction SilentlyContinue
-    throw "sysprep /generalize did not complete (exit $($sysprep.ExitCode), GeneralizationState=$state) - see setuperr.log above."
-}
-# Sysprep has cached the answer file in Panther for the deployed PC's
-# first boot; the copy holding the admin password isn't needed any more.
-Remove-Item "$env:SystemRoot\System32\Sysprep\unattend-deploy.xml" -Force
-Write-Output 'Sysprep generalize complete.'
-# Packer judges the script by $LASTEXITCODE - here DISM's, which can be
-# non-zero (e.g. "restart required") on success. Real failure already threw
-# above, so report success explicitly.
+# 5. Generalize - from a SYSTEM scheduled task, not over this WinRM session:
+#    sysprep /generalize resets the network adapter and the built-in
+#    Administrator, which dropped Packer's connection mid-run ("connection
+#    reset by peer") and left no way to log back in - confirmed live. The
+#    task runs sysprep with /shutdown, which only powers off when
+#    generalization succeeded; windows.pkr.hcl's next step waits for that
+#    power-off through the Proxmox API (no WinRM). firstboot.ps1 removes the
+#    task and the answer-file copy on deployed PCs.
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\Sysprep\sysprep.exe" `
+    -Argument "/generalize /oobe /shutdown /quiet /unattend:$env:SystemRoot\System32\Sysprep\unattend-deploy.xml"
+Register-ScheduledTask -TaskName 'Packer-Sysprep' -Action $action -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+Start-ScheduledTask -TaskName 'Packer-Sysprep'
+Write-Output 'Sysprep started (generalize + shutdown); waiting for power-off from outside.'
+# Packer judges the script by $LASTEXITCODE - e.g. DISM's above, which can be
+# non-zero on success. Real failures here already threw.
 exit 0
