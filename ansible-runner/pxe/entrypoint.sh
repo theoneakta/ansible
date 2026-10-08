@@ -30,7 +30,6 @@ ln -sfn /data/ks /srv/http/ks
 VARS='$PXE_SERVER_IP $PXE_HTTP_PORT $PXE_SMB_PASSWORD $PXE_SUBNET'
 rm -f /srv/http/scripts/deploy-*.cmd
 envsubst "$VARS" < /templates/capture.cmd > /srv/http/scripts/capture.cmd
-cp /templates/winpeshl.ini /srv/http/scripts/winpeshl.ini
 
 # Per image: a menu item and a confirm-then-boot target. Windows images also
 # get a deploy-<id>.cmd for WinPE; Linux images boot their installer straight
@@ -55,7 +54,7 @@ echo "$PXE_IMAGES" | tr ';' '\n' | while IFS='=' read -r id label kind; do
     printf '%s\n' \
       "echo This ERASES disk 0 on this PC and installs $label." \
       "prompt --key y --timeout 30000 Press 'y' within 30 seconds to continue, anything else to go back... || goto menu" \
-      "set action deploy-$id.cmd" \
+      "set action deploy-$id" \
       "goto winpe" \
       "" >> "$targets"
   fi
@@ -64,7 +63,49 @@ envsubst "$VARS" < /templates/boot.ipxe \
   | sed -e "/^#@MENU_ITEMS@$/{r $items" -e 'd}' -e "/^#@DEPLOY_TARGETS@$/{r $targets" -e 'd}' > /srv/http/boot.ipxe
 
 # WinPE's cmd.exe wants CRLF line endings.
-sed -i 's/\r*$/\r/' /srv/http/scripts/*.cmd /srv/http/scripts/winpeshl.ini
+sed -i 's/\r*$/\r/' /srv/http/scripts/*.cmd
+
+# Per-action WinPE images: /data/winpe/build/<action>.wim = image 1 of the
+# Windows ISO's boot.wim (plain WinPE - DISM, diskpart, bcdboot, networking),
+# with the action's script baked in as startnet.cmd (preceded by wpeinit,
+# like the stock one). Built in the background, and rebuilt whenever
+# boot.wim is (re)extracted or a script changes.
+# Baking the script in keeps boot.ipxe simple and the WinPE self-contained
+# (no wimboot file injection to get right). The classic bootmgfw.efi is also
+# extracted and handed to wimboot explicitly, instead of the newer
+# bootmgfw_EX.efi it would otherwise pick.
+build_winpe() {
+  src=/data/winpe/sources/boot.wim
+  out=/data/winpe/build
+  [ -f "$src" ] || return 0
+  mkdir -p "$out"
+  if [ ! -f "$out/bootmgfw.efi" ] || [ "$src" -nt "$out/bootmgfw.efi" ]; then
+    wimextract "$src" 1 /Windows/Boot/EFI/bootmgfw.efi --dest-dir="$out" --no-acls >/dev/null 2>&1 \
+      && touch "$out/bootmgfw.efi" && chmod 644 "$out/bootmgfw.efi"
+  fi
+  for script in /srv/http/scripts/*.cmd; do
+    action=$(basename "$script" .cmd)
+    wim="$out/$action.wim"
+    sum=$(cat "$script" | md5sum | cut -d' ' -f1)
+    if [ -f "$wim" ] && [ ! "$src" -nt "$wim" ] && [ "$(cat "$wim.md5" 2>/dev/null)" = "$sum" ]; then
+      continue
+    fi
+    echo "building WinPE for $action"
+    tmp="$out/.$action.wim.tmp"
+    { printf 'wpeinit\r\n'; cat "$script"; } > /tmp/startnet-$action.cmd
+    rm -f "$tmp"
+    # wiminfo --boot marks the exported (single) image as the boot image.
+    if wimexport "$src" 1 "$tmp" >/dev/null 2>&1 \
+       && wimupdate "$tmp" 1 --command="add /tmp/startnet-$action.cmd /Windows/System32/startnet.cmd" >/dev/null 2>&1 \
+       && wiminfo "$tmp" 1 --boot >/dev/null 2>&1; then
+      chmod 644 "$tmp" && mv -f "$tmp" "$wim" && echo "$sum" > "$wim.md5"
+      echo "built $wim"
+    else
+      echo "failed to build $wim" >&2; rm -f "$tmp"
+    fi
+  done
+}
+( while true; do build_winpe; sleep 30; done ) &
 envsubst "$VARS" < /templates/dnsmasq.conf > /etc/dnsmasq.d/pxe.conf
 envsubst "$VARS" < /templates/nginx.conf   > /etc/nginx/conf.d/pxe.conf
 cp /templates/smb.conf /etc/samba/smb.conf

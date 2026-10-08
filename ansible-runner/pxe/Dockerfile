@@ -35,8 +35,9 @@ RUN printf '%s\n' \
 
 # --- runtime
 FROM debian:trixie-slim
+# wimtools: builds the per-action WinPE images (see entrypoint.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        dnsmasq nginx samba gettext-base ca-certificates \
+        dnsmasq nginx samba gettext-base ca-certificates wimtools \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default
 
