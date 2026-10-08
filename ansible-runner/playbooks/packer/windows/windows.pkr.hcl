@@ -168,4 +168,29 @@ build {
   provisioner "powershell" {
     script = "${abspath(path.root)}/scripts/prepare-sysprep.ps1"
   }
+
+  # prepare-sysprep.ps1 only *starts* sysprep (generalize + /shutdown) - it
+  # resets the network and the Administrator, so nothing can be checked over
+  # WinRM afterwards. Wait for the power-off through the Proxmox API instead:
+  # sysprep only shuts down when generalization succeeded (on failure it
+  # stays up with an error dialog), so a timeout here means it failed.
+  # Packer then converts the stopped VM to a template.
+  provisioner "shell-local" {
+    environment_vars = [
+      "PVE_URL=${var.proxmox_url}",
+      "PVE_AUTH=PVEAPIToken=${var.proxmox_token_id}=${var.proxmox_token_secret}",
+      "PVE_NODE=${var.proxmox_node}",
+      "PVE_VMID=${var.vm_id}",
+    ]
+    inline = [
+      "for i in $(seq 1 120); do",
+      "  status=$(curl -sk -H \"Authorization: $PVE_AUTH\" \"$PVE_URL/nodes/$PVE_NODE/qemu/$PVE_VMID/status/current\" | grep -o '\"status\":\"[a-z]*\"')",
+      "  echo \"sysprep: VM $status ($i/120)\"",
+      "  [ \"$status\" = '\"status\":\"stopped\"' ] && exit 0",
+      "  sleep 30",
+      "done",
+      "echo 'sysprep did not power the VM off within 60 minutes - it most likely failed (check the console)' >&2",
+      "exit 1",
+    ]
+  }
 }

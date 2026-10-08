@@ -11,14 +11,16 @@ text
 lang {{ image_locale | replace('-', '_') }}.UTF-8
 keyboard us
 timezone {{ image_linux_timezone }} --utc
-network --bootproto=dhcp --activate --onboot=yes
+# IPv6 off everywhere: no IPv6 config on the interface, and disabled in the
+# kernel itself (ipv6.disable=1 on the boot line below).
+network --bootproto=dhcp --activate --onboot=yes --noipv6
 rootpw --lock
 user --name={{ image_admin_user }} --groups=wheel --password={{ image_admin_password | password_hash('sha512') }} --iscrypted
 selinux --enforcing
 firewall --enabled --service=ssh
 services --enabled=sshd
 firstboot --disable
-bootloader --timeout=1
+bootloader --timeout=1 --append="ipv6.disable=1"
 {% if ks_mode == 'build' %}
 zerombr
 clearpart --all --initlabel
