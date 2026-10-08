@@ -68,5 +68,12 @@ dnf -y install qemu-guest-agent cloud-init
 # Packer's provisioner needs passwordless sudo; removed again by its last step.
 echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/99-packer-build
 chmod 440 /etc/sudoers.d/99-packer-build
+{% else %}
+# PXE installs onto a Proxmox VM get the guest agent too (online repos, same
+# reason as the build above), so Proxmox shows the IP and can shut it down
+# cleanly. Physical machines don't need it.
+if [ "$(systemd-detect-virt)" = kvm ]; then
+  dnf -y install qemu-guest-agent
+fi
 {% endif %}
 %end
