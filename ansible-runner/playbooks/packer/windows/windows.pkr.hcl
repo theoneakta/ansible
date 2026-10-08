@@ -106,9 +106,13 @@ source "proxmox-iso" "windows" {
   # the focused "Cancel" of the install-progress screen would abort the
   # install. And no net0 in the boot order, so a missed prompt can't reach
   # PXE at all.
+  # Server ISOs then show a "Windows Setup [EMS Enabled]" boot menu whose
+  # countdown the taps cancel, leaving it waiting forever (confirmed live on
+  # Server 2025) - boot_menu adds one Enter after the taps to choose it.
+  # Not for client ISOs: by then Setup's own screens are up.
   boot         = "order=sata0;ide0"
   boot_wait    = "3s"
-  boot_command = [join("", [for i in range(150) : "<up><wait1>"])]
+  boot_command = [join("", concat([for i in range(150) : "<up><wait1>"], var.boot_menu ? ["<enter>"] : []))]
 
   # IP discovery for WinRM comes from the QEMU guest agent, which
   # firstlogon.ps1 installs (and prepare-sysprep.ps1 removes again).

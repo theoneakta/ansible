@@ -44,6 +44,8 @@ images:
     edition: Windows Server 2025 Standard Evaluation (Desktop Experience)
     # Evaluation media takes no key (180-day evaluation, convertible later).
     product_key: ''
+    # Server media boots into a "Windows Setup [EMS Enabled]" menu first.
+    boot_menu: true
     template_vmid: 9025
     template_name: win2025-base
     disk_size: 64G
