@@ -69,6 +69,20 @@
     # there's no per-tool picker here, matching "with all options".
     rsat_enabled: false
 
+    # IPv6 is turned off on every managed PC, on every run (same as the PXE
+    # images, see playbooks/packer/windows/scripts/prepare-sysprep.ps1).
+    # -e disable_ipv6=false skips the step; it never turns IPv6 back on.
+    disable_ipv6: true
+
+    # Bitdefender (consumer, Bitdefender Central account): off by default.
+    # There's no package for it - the installer is tied to your account, so
+    # download it from https://central.bitdefender.com (My Devices > Install
+    # protection > Protect this device > Download) and put the .exe in
+    # playbooks/files/bitdefender/ (git-ignored). Skipped on PCs that already
+    # have a Bitdefender product.
+    bitdefender_enabled: false
+    bitdefender_install_args: /silent
+
     # Distros installable via `wsl --install -d <name>` (see `wsl --list --online`
     # on a Windows host for the current catalog).
     wsl_distros_available:
@@ -136,6 +150,33 @@
       - { name: battle.net,       label: Battle.net,                      category: multimedia }
 
   tasks:
+    # DisabledComponents=0xFF is Microsoft's documented "IPv6 off" (all
+    # interfaces except loopback) and takes effect at the next reboot - this
+    # run doesn't reboot anyone's PC. Unbinding IPv6 from the network
+    # adapters takes effect straight away. The Tailscale adapter is left
+    # alone: its IPv4 tailnet address is unaffected either way, and the
+    # tunnel isn't ours to reconfigure underneath tailscaled.
+    - name: Turn IPv6 off (adapters now, everything after the next reboot)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+          if ((Get-ItemProperty $key -Name DisabledComponents -ErrorAction SilentlyContinue).DisabledComponents -ne 0xFF) {
+            New-ItemProperty $key -Name DisabledComponents -Value 0xFF -PropertyType DWord -Force | Out-Null
+            $Ansible.Changed = $true
+            'DisabledComponents set to 0xFF - reboot to finish turning IPv6 off'
+          }
+          $tailscale = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceDescription -like 'Tailscale*' -or $_.Name -like 'Tailscale*' } |
+            Select-Object -ExpandProperty Name
+          Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Enabled -and $_.Name -notin $tailscale } | ForEach-Object {
+              Disable-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6 -Confirm:$false
+              $Ansible.Changed = $true
+              "IPv6 unbound from $($_.Name)"
+            }
+      when: disable_ipv6 | bool
+
     # win_chocolatey's bootstrap writes chocolateyInstall.ps1 to a temp FILE
     # and runs it with `&`, so it's subject to the execution policy. A fresh
     # Windows 11 client has every scope Undefined, which means effectively
@@ -426,6 +467,88 @@
       no_log: true
       when: tailscale_join_enabled | bool and (tailscale_authkey | default('')) | length > 0
 
+    # Bitdefender consumer (Central): installer downloaded from the account,
+    # see bitdefender_enabled above. The newest .exe in the folder is used.
+    - name: Bitdefender (installer from your Bitdefender Central account)
+      when: bitdefender_enabled | bool
+      block:
+        - name: Find the Bitdefender installer in playbooks/files/bitdefender/
+          ansible.builtin.find:
+            paths: "{{ playbook_dir }}/files/bitdefender"
+            patterns: ["*.exe", "*.EXE"]
+          delegate_to: localhost
+          run_once: true
+          register: bitdefender_found
+
+        - name: Fail if there's no installer
+          ansible.builtin.fail:
+            msg: >-
+              No Bitdefender installer: download it from https://central.bitdefender.com
+              (My Devices > Install protection > Protect this device > Download) and put the
+              .exe in playbooks/files/bitdefender/ on the Docker host.
+          when: bitdefender_found.files | length == 0
+
+        - name: Check whether a Bitdefender product is already installed
+          ansible.windows.win_powershell:
+            script: &bitdefender_check |
+              $Ansible.Changed = $false
+              Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                               'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+                Where-Object DisplayName -like 'Bitdefender*' | Select-Object -ExpandProperty DisplayName -Unique
+          register: bitdefender_before
+
+        - name: Install Bitdefender
+          when: bitdefender_before.output | length == 0
+          vars:
+            bitdefender_src: "{{ (bitdefender_found.files | sort(attribute='mtime') | last).path }}"
+            bitdefender_dest: 'C:\ProgramData\Ansible\bitdefender\{{ bitdefender_src | basename }}'
+          block:
+            - name: Copy the installer to the PC
+              ansible.windows.win_copy:
+                src: "{{ bitdefender_src }}"
+                dest: "{{ bitdefender_dest }}"
+
+            # The Central installer is a downloader: it fetches the product
+            # itself, which can take a while - async keeps WinRM out of it.
+            - name: Run the installer unattended
+              ansible.windows.win_command: '"{{ bitdefender_dest }}" {{ bitdefender_install_args }}'
+              async: 3600
+              poll: 30
+              register: bitdefender_install
+              failed_when: false
+
+            # The downloader can exit before the product it launched has
+            # finished installing, so wait for the product itself.
+            - name: Wait for Bitdefender to show up as installed (up to 30 minutes)
+              ansible.windows.win_powershell:
+                script: *bitdefender_check
+              register: bitdefender_after
+              until: bitdefender_after.output | length > 0
+              retries: 60
+              delay: 30
+              failed_when: false
+
+            - name: Remove the copied installer
+              ansible.windows.win_file:
+                path: 'C:\ProgramData\Ansible\bitdefender'
+                state: absent
+
+            - name: Fail if Bitdefender didn't install
+              ansible.builtin.fail:
+                msg: >-
+                  Bitdefender isn't installed after the installer ran (exit code
+                  {{ bitdefender_install.rc | default('unknown') }}, args "{{ bitdefender_install_args }}").
+                  Run the installer by hand on this PC once to see what it asks for.
+              when: bitdefender_after.output | default([]) | length == 0
+
+        - name: Report Bitdefender
+          ansible.builtin.debug:
+            msg: >-
+              {{ (bitdefender_before.output | length > 0) | ternary('Already installed', 'Installed') }}:
+              {{ (bitdefender_before.output + (bitdefender_after.output | default([]))) | unique | join(', ') }}.
+              Check the PC appears under My Devices in Bitdefender Central; if it doesn't,
+              open Bitdefender on it and sign in to the account once.
+
     - name: Configure Git global user.name
       ansible.windows.win_command: >-
         git config --global user.name "{{ git_user_name }}"
@@ -518,7 +641,6 @@
     - name: Items that need manual install (not in Chocolatey / licensed / unclear)
       ansible.builtin.debug:
         msg:
-          - "Bitdefender            - deploy from your Bitdefender/GravityZone console (tenant-specific installer)"
           - "Punch! Software 22     - commercial, no public package; deploy your licensed installer"
           - "Duplicate Cleaner Pro  - licensed; deploy your installer/key"
           - "DownloadHelper         - browser extension (+ optional CoApp); deploy via browser policy"
