@@ -32,7 +32,6 @@
 #   --wsl-user <name>                    also provision the WSL distro(s) for this Windows user (repeatable)
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
-#   --bitdefender                        install Bitdefender from the Central installer in playbooks/files/bitdefender/
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
 #   --cis-os <windows11|windows2019|windows2022|windows2025>  default: windows11
@@ -138,7 +137,6 @@ YML
         --wsl-user)                    WSL_TARGET_USERS+=("$2"); shift 2 ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
-        --bitdefender)                 EXTRA_VARS+=(-e "bitdefender_enabled=true"); shift ;;
         --cis-os)                      CIS_OS="$2"; shift 2 ;;
         --cis-level)                   CIS_LEVEL_ID="$2"; shift 2 ;;
         --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); shift ;;
