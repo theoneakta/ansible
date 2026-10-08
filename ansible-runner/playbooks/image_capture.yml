@@ -82,6 +82,17 @@
             creates: "{{ pxe_data }}/winpe/sources/boot.wim"
 
     # ------------------------------------------------------------- template
+    # The pxe container builds winpe/build/capture.wim (plain WinPE with
+    # capture.cmd baked in) in the background once boot.wim is extracted -
+    # see pxe/entrypoint.sh. Wait for it rather than boot a clone into nothing.
+    - name: Wait for the PXE server's capture WinPE to be built
+      ansible.builtin.stat:
+        path: "{{ pxe_data }}/winpe/build/capture.wim"
+      register: capture_wim
+      until: capture_wim.stat.exists
+      retries: 40
+      delay: 30
+
     - name: Check the template exists
       ansible.builtin.uri:
         url: "{{ node_api }}/qemu/{{ img.template_vmid }}/config"
@@ -166,12 +177,12 @@
               #!ipxe
               # Written by image_capture.yml for the capture clone; removed when it finishes.
               set base http://{{ pxe_server_ip }}:{{ pxe_http_port }}
-              kernel ${base}/wimboot index=2
-              initrd ${base}/winpe/boot/bcd           BCD
-              initrd ${base}/winpe/boot/boot.sdi      boot.sdi
-              initrd ${base}/scripts/winpeshl.ini     winpeshl.ini
-              initrd ${base}/scripts/capture.cmd      action.cmd
-              initrd ${base}/winpe/sources/boot.wim   boot.wim
+              # -n: the BCD loads \boot.wim - see pxe/templates/boot.ipxe.
+              kernel ${base}/wimboot
+              initrd -n bootmgfw.efi ${base}/winpe/build/bootmgfw.efi
+              initrd -n BCD          ${base}/winpe/boot/bcd
+              initrd -n boot.sdi     ${base}/winpe/boot/boot.sdi
+              initrd -n boot.wim     ${base}/winpe/build/capture.wim
               boot
 
         - name: Clear the previous capture result
@@ -182,6 +193,33 @@
         - name: Start the clone
           ansible.builtin.uri:
             url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/start"
+            method: POST
+            headers: "{{ proxmox_headers }}"
+            validate_certs: "{{ proxmox_validate_certs }}"
+          register: start_task
+          no_log: true
+
+        # The start call returns before the VM is up; without waiting, the
+        # first poll below still saw "stopped", took that as "WinPE done",
+        # and the clone was deleted mid-boot - confirmed live.
+        - name: Wait for the clone to be running
+          ansible.builtin.include_tasks: tasks/proxmox_wait_task.yml
+          vars:
+            upid: "{{ start_task.json.data }}"
+
+        # On a clone's very first power-on its PXE DHCP broadcasts never
+        # reached the PXE server ("PXE-E16: No valid offer received", nothing
+        # in dnsmasq's log for that MAC) - twice in a row, confirmed live -
+        # while after a reset the same clone network-booted fine. Cause not
+        # pinned down (not STP: off, forward delay 0); a reset is harmless
+        # here, so just do it.
+        - name: Give the first boot attempt time, then reset the clone once
+          ansible.builtin.pause:
+            seconds: 30
+
+        - name: Reset the clone (its second boot reaches the PXE server)
+          ansible.builtin.uri:
+            url: "{{ node_api }}/qemu/{{ image_capture_vmid }}/status/reset"
             method: POST
             headers: "{{ proxmox_headers }}"
             validate_certs: "{{ proxmox_validate_certs }}"

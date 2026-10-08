@@ -23,12 +23,16 @@ goto ${target}
 #@DEPLOY_TARGETS@
 
 :winpe
-kernel ${base}/wimboot index=2
-initrd ${base}/winpe/boot/bcd           BCD
-initrd ${base}/winpe/boot/boot.sdi      boot.sdi
-initrd ${base}/scripts/winpeshl.ini     winpeshl.ini
-initrd ${base}/scripts/${action}        action.cmd
-initrd ${base}/winpe/sources/boot.wim   boot.wim
+# winpe/build/<action>.wim: plain WinPE with the action's script baked in as
+# startnet.cmd - built by the pxe container (see entrypoint.sh).
+# -n sets the name wimboot exposes: the ISO's BCD loads \boot.wim, and with
+# any other name the boot manager stops with 0xc000000f (confirmed live). A
+# trailing word after the URL is NOT a name - it's a command-line argument.
+kernel ${base}/wimboot
+initrd -n bootmgfw.efi ${base}/winpe/build/bootmgfw.efi
+initrd -n BCD          ${base}/winpe/boot/bcd
+initrd -n boot.sdi     ${base}/winpe/boot/boot.sdi
+initrd -n boot.wim     ${base}/winpe/build/${action}.wim
 boot || goto failed
 
 :failed
