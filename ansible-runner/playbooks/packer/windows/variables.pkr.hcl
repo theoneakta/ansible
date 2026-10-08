@@ -55,6 +55,11 @@ variable "product_key" {
   type        = string
   default     = ""
 }
+variable "boot_menu" {
+  description = "The ISO shows a Windows Boot Manager menu (Server media): press Enter on it"
+  type        = bool
+  default     = false
+}
 variable "vm_id" {
   type    = number
   default = 9011

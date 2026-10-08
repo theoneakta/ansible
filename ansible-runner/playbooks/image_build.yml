@@ -169,6 +169,7 @@
             PKR_VAR_virtio_iso: "{{ image_virtio_iso | default('local:iso/virtio-win.iso') }}"
             PKR_VAR_image_name: "{{ img.edition | default('') }}"
             PKR_VAR_product_key: "{{ img.product_key | default('') }}"
+            PKR_VAR_boot_menu: "{{ img.boot_menu | default(false) | bool | string | lower }}"
             PKR_VAR_vm_id: "{{ img.template_vmid }}"
             PKR_VAR_template_name: "{{ img.template_name }}"
             PKR_VAR_cores: "{{ build_cores }}"
