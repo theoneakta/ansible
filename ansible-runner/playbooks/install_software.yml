@@ -74,15 +74,6 @@
     # -e disable_ipv6=false skips the step; it never turns IPv6 back on.
     disable_ipv6: true
 
-    # Bitdefender (consumer, Bitdefender Central account): off by default.
-    # There's no package for it - the installer is tied to your account, so
-    # download it from https://central.bitdefender.com (My Devices > Install
-    # protection > Protect this device > Download) and put the .exe in
-    # playbooks/files/bitdefender/ (git-ignored). Skipped on PCs that already
-    # have a Bitdefender product.
-    bitdefender_enabled: false
-    bitdefender_install_args: /silent
-
     # Distros installable via `wsl --install -d <name>` (see `wsl --list --online`
     # on a Windows host for the current catalog).
     wsl_distros_available:
@@ -466,88 +457,6 @@
           "Joined: $ip"
       no_log: true
       when: tailscale_join_enabled | bool and (tailscale_authkey | default('')) | length > 0
-
-    # Bitdefender consumer (Central): installer downloaded from the account,
-    # see bitdefender_enabled above. The newest .exe in the folder is used.
-    - name: Bitdefender (installer from your Bitdefender Central account)
-      when: bitdefender_enabled | bool
-      block:
-        - name: Find the Bitdefender installer in playbooks/files/bitdefender/
-          ansible.builtin.find:
-            paths: "{{ playbook_dir }}/files/bitdefender"
-            patterns: ["*.exe", "*.EXE"]
-          delegate_to: localhost
-          run_once: true
-          register: bitdefender_found
-
-        - name: Fail if there's no installer
-          ansible.builtin.fail:
-            msg: >-
-              No Bitdefender installer: download it from https://central.bitdefender.com
-              (My Devices > Install protection > Protect this device > Download) and put the
-              .exe in playbooks/files/bitdefender/ on the Docker host.
-          when: bitdefender_found.files | length == 0
-
-        - name: Check whether a Bitdefender product is already installed
-          ansible.windows.win_powershell:
-            script: &bitdefender_check |
-              $Ansible.Changed = $false
-              Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                               'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
-                Where-Object DisplayName -like 'Bitdefender*' | Select-Object -ExpandProperty DisplayName -Unique
-          register: bitdefender_before
-
-        - name: Install Bitdefender
-          when: bitdefender_before.output | length == 0
-          vars:
-            bitdefender_src: "{{ (bitdefender_found.files | sort(attribute='mtime') | last).path }}"
-            bitdefender_dest: 'C:\ProgramData\Ansible\bitdefender\{{ bitdefender_src | basename }}'
-          block:
-            - name: Copy the installer to the PC
-              ansible.windows.win_copy:
-                src: "{{ bitdefender_src }}"
-                dest: "{{ bitdefender_dest }}"
-
-            # The Central installer is a downloader: it fetches the product
-            # itself, which can take a while - async keeps WinRM out of it.
-            - name: Run the installer unattended
-              ansible.windows.win_command: '"{{ bitdefender_dest }}" {{ bitdefender_install_args }}'
-              async: 3600
-              poll: 30
-              register: bitdefender_install
-              failed_when: false
-
-            # The downloader can exit before the product it launched has
-            # finished installing, so wait for the product itself.
-            - name: Wait for Bitdefender to show up as installed (up to 30 minutes)
-              ansible.windows.win_powershell:
-                script: *bitdefender_check
-              register: bitdefender_after
-              until: bitdefender_after.output | length > 0
-              retries: 60
-              delay: 30
-              failed_when: false
-
-            - name: Remove the copied installer
-              ansible.windows.win_file:
-                path: 'C:\ProgramData\Ansible\bitdefender'
-                state: absent
-
-            - name: Fail if Bitdefender didn't install
-              ansible.builtin.fail:
-                msg: >-
-                  Bitdefender isn't installed after the installer ran (exit code
-                  {{ bitdefender_install.rc | default('unknown') }}, args "{{ bitdefender_install_args }}").
-                  Run the installer by hand on this PC once to see what it asks for.
-              when: bitdefender_after.output | default([]) | length == 0
-
-        - name: Report Bitdefender
-          ansible.builtin.debug:
-            msg: >-
-              {{ (bitdefender_before.output | length > 0) | ternary('Already installed', 'Installed') }}:
-              {{ (bitdefender_before.output + (bitdefender_after.output | default([]))) | unique | join(', ') }}.
-              Check the PC appears under My Devices in Bitdefender Central; if it doesn't,
-              open Bitdefender on it and sign in to the account once.
 
     - name: Configure Git global user.name
       ansible.windows.win_command: >-

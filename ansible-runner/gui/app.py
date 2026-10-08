@@ -715,7 +715,6 @@ class RunIn(BaseModel):
     wsl_target_users: list[str] = []  # also provision selected distro(s) for these specific Windows users
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
     rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
-    bitdefender: bool = False  # install Bitdefender from the Central installer in playbooks/files/bitdefender/
 
 
 def build_extra_vars(body: RunIn) -> dict:
@@ -762,8 +761,6 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["win11debloat_enabled"] = True
     if body.rsat:
         extra_vars["rsat_enabled"] = True
-    if body.bitdefender:
-        extra_vars["bitdefender_enabled"] = True
     return extra_vars
 
 
