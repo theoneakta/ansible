@@ -256,6 +256,10 @@
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"></rect><path d="M8 20h8M12 16v4"></path><path d="M12 7v5m0 0-2-2m2 2 2-2"></path></svg>
       Windows Image
     </button>
+    <button class="navItem" data-tab="sniff">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path><path d="M8 11h6M11 8v6"></path></svg>
+      Network Capture
+    </button>
     <div class="navDivider"></div>
     <button class="navItem" data-tab="activity">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 8 4-16 2 8h6"></path></svg>
@@ -489,6 +493,27 @@
     </section>
 
     <!-- ============ ACTIVITY ============ -->
+    <!-- ============ NETWORK CAPTURE ============ -->
+    <section class="tabPanel" id="tab-sniff">
+      <div class="panelHead"><h2>Network Capture</h2><p>Mirror a Proxmox node's traffic to a capture VM (ntopng).</p></div>
+      <div class="card">
+        <div class="row"><label for="sniffVmid">Capture VM id</label><input type="number" id="sniffVmid" value="102"></div>
+        <div class="row"><label for="sniffVmHost">Its address (Linux host)</label><input type="text" id="sniffVmHost" value="192.168.3.8"></div>
+        <div class="row"><label for="sniffBridge">Bridge to mirror on its node</label><input type="text" id="sniffBridge" value="vmbr0"></div>
+        <div class="row"><label for="sniffMode">What to capture</label>
+          <select id="sniffMode">
+            <option value="uplink">Uplink - everything the node exchanges with the LAN</option>
+            <option value="ports">All bridge ports - adds VM-to-VM traffic inside the node</option>
+          </select></div>
+        <div class="row"><label for="sniffExclude">Never capture (IPs)</label><input type="text" id="sniffExclude" value="192.168.3.188" placeholder="comma-separated"></div>
+        <p class="muted">Sets up, on the VM's Proxmox node: an isolated bridge <code>vmbrsniff</code> and a tc mirror of the chosen bridge's traffic to a new NIC on the capture VM, kept in place by a timer (survives reboots). On the capture VM: that NIC as <code>sniff0</code> (no address, promiscuous), added to ntopng. Needs the node on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login. The TrueNAS is excluded by default - its iSCSI storage traffic would swamp the capture.</p>
+        <div class="actionBar">
+          <button class="primary" id="sniffApplyBtn">Set up capture</button>
+          <button id="sniffRemoveBtn">Remove capture</button>
+        </div>
+      </div>
+    </section>
+
     <section class="tabPanel" id="tab-activity">
       <div class="panelHead"><h2>Activity</h2><p>Live output for the current run, and history of past runs.</p></div>
       <div class="card" id="runOutputSection">
@@ -1199,6 +1224,34 @@ $('imgBuildBtn').addEventListener('click', () => startImageRun('build'));
 $('imgCaptureBtn').addEventListener('click', () => startImageRun('capture'));
 
 loadImageStatus();
+
+async function startSniffRun(state) {
+  if (state === 'absent' && !confirm('Remove the capture setup (mirror, timer, capture NIC, ntopng interface)?')) return;
+  const btns = [$('sniffApplyBtn'), $('sniffRemoveBtn')];
+  btns.forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/sniff', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        vmid: parseInt($('sniffVmid').value, 10),
+        vm_host: $('sniffVmHost').value.trim(),
+        source_bridge: $('sniffBridge').value.trim(),
+        mode: $('sniffMode').value,
+        exclude_hosts: $('sniffExclude').value.split(',').map(s => s.trim()).filter(Boolean),
+        state,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start');
+    await watchRun(data.run_id);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+$('sniffApplyBtn').addEventListener('click', () => startSniffRun('present'));
+$('sniffRemoveBtn').addEventListener('click', () => startSniffRun('absent'));
 
 async function loadHistory() {
   const runs = await fetch('/api/history').then(r => r.json());

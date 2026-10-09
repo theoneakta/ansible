@@ -1,0 +1,456 @@
+---
+# Network capture ("sniffing") on a Proxmox node: mirrors the traffic of one
+# of its bridges to a dedicated NIC on a capture VM - by default everything
+# pve6 exchanges with the LAN, to docker-apps2 (VM 102, 192.168.3.8), where
+# ntopng analyzes it.
+#
+#   pve6 vmbr0 uplink (nic6) --tc mirror--> tap102iN --> vmbrsniff --> VM 102 "sniff0" --> ntopng
+#
+# What it sets up:
+#   1. On the node (root over SSH - add the node on the Hosts tab as "SSH
+#      only" with a per-host root login on the Credentials tab):
+#      - vmbrsniff: a bridge with no physical ports, so the capture NIC gets
+#        the mirrored copies and nothing else. Brought up on its own (ifup);
+#        the node's other interfaces are not reloaded.
+#      - /usr/local/sbin/pve-sniff-mirror + a systemd timer (every 30 s):
+#        tc "mirred" filters that copy the source ports' frames to the
+#        capture VM's tap. Idempotent, and the timer puts them back after the
+#        VM or the node restarts (a new tap breaks the old mirror).
+#   2. Through the Proxmox API: a NIC on vmbrsniff for the capture VM
+#      (hot-plugged, firewall off, no IP).
+#   3. On the capture VM: that NIC up as "sniff0" without an address,
+#      promiscuous, and added to ntopng's interfaces.
+#
+# Modes (sniff_mode):
+#   uplink - both directions on the bridge's physical port(s): everything the
+#            node and its VMs exchange with the LAN. Misses VM-to-VM traffic
+#            that stays inside the node.
+#   ports  - every frame entering the bridge from any port (VMs and uplink):
+#            adds the VM-to-VM traffic; not the node's own outbound traffic.
+#
+# Run:  ./run.sh proxmox_sniff.yml
+#       ./run.sh proxmox_sniff.yml -e sniff_state=absent      (remove it all)
+
+- name: Capture setup - discover the node, the VM and the bridge
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    sniff_vmid: 102
+    sniff_vm_host: 192.168.3.8
+    sniff_source_bridge: vmbr0
+    sniff_bridge: vmbrsniff
+    proxmox_headers:
+      Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
+  tasks:
+    # Facts, not play vars: the later localhost play needs them too.
+    - name: Remember the settings for the later plays
+      ansible.builtin.set_fact:
+        sniff_vmid: "{{ sniff_vmid }}"
+        sniff_vm_host: "{{ sniff_vm_host }}"
+        sniff_bridge: "{{ sniff_bridge }}"
+        sniff_source_bridge: "{{ sniff_source_bridge }}"
+
+    - name: Find the capture VM's node
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/cluster/resources?type=vm"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: cluster_vms
+      no_log: true
+
+    - name: Read the cluster's node addresses
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/cluster/status"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: cluster_status
+      no_log: true
+
+    - name: Remember the node
+      ansible.builtin.set_fact:
+        sniff_node: "{{ (cluster_vms.json.data | selectattr('vmid', 'equalto', sniff_vmid | int) | first).node }}"
+
+    - name: Remember the node's address
+      ansible.builtin.set_fact:
+        sniff_node_ip: "{{ (cluster_status.json.data | selectattr('type', 'equalto', 'node')
+                            | selectattr('name', 'equalto', sniff_node) | first).ip }}"
+
+    - name: Check the node can be reached as root over SSH
+      ansible.builtin.assert:
+        that: sniff_node_ip in (groups['ssh'] | default([]))
+        fail_msg: >-
+          Add {{ sniff_node }} ({{ sniff_node_ip }}) on the Hosts tab as "SSH only", then set its
+          per-host login to root on the Credentials tab - the mirror is set up on the node as root.
+        quiet: true
+
+    - name: Read the node's network config
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ sniff_node }}/network"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: node_network
+      no_log: true
+
+    - name: Remember the source bridge's physical ports
+      ansible.builtin.set_fact:
+        sniff_uplinks: "{{ ((node_network.json.data | selectattr('iface', 'equalto', sniff_source_bridge) | first).bridge_ports
+                           | default('')).split() }}"
+
+    - name: Check the source bridge has a physical port
+      ansible.builtin.assert:
+        that: sniff_uplinks | length > 0
+        fail_msg: "{{ sniff_source_bridge }} on {{ sniff_node }} has no bridge_ports - nothing to mirror in uplink mode."
+        quiet: true
+      when: (sniff_mode | default('uplink')) == 'uplink' and (sniff_state | default('present')) == 'present'
+
+    - name: Read the capture VM's config
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ sniff_node }}/qemu/{{ sniff_vmid }}/config"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: vm_config
+      no_log: true
+
+    # Its NIC on the capture bridge, if it has one already: net<N> -> tap<vmid>i<N>.
+    - name: Find the VM's capture NIC
+      ansible.builtin.set_fact:
+        sniff_netkey: "{{ vm_config.json.data | dict2items | selectattr('key', 'match', '^net[0-9]+$')
+                          | selectattr('value', 'search', 'bridge=' ~ sniff_bridge ~ '(,|$)')
+                          | map(attribute='key') | first | default('') }}"
+        sniff_free_netkey: "{{ range(0, 32) | map('regex_replace', '^', 'net') | reject('in', vm_config.json.data.keys() | list) | first }}"
+
+    - name: Hand the details to the node and VM plays
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: ["{{ 'sniff_node' if item == sniff_node_ip else 'sniff_vm' }}"]
+        sniff_node: "{{ sniff_node }}"
+        sniff_bridge: "{{ sniff_bridge }}"
+        sniff_source_bridge: "{{ sniff_source_bridge }}"
+        sniff_uplinks: "{{ sniff_uplinks }}"
+        sniff_tap: "tap{{ sniff_vmid }}i{{ (sniff_netkey or sniff_free_netkey) | regex_replace('^net', '') }}"
+        sniff_mac: "{{ (vm_config.json.data[sniff_netkey] | regex_search('([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}')) if sniff_netkey else '' }}"
+      loop: ["{{ sniff_node_ip }}", "{{ sniff_vm_host }}"]
+
+- name: Capture setup - bridge and mirror on the Proxmox node (root)
+  hosts: sniff_node
+  gather_facts: false
+  become: false
+  vars:
+    sniff_state: present
+    sniff_mode: uplink
+    # Never mirror traffic to/from these hosts: the TrueNAS's iSCSI storage
+    # traffic would swamp the capture (every VM disk read/write).
+    sniff_exclude_hosts: [192.168.3.188]
+  pre_tasks:
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+  tasks:
+    - name: Mirror script settings
+      ansible.builtin.copy:
+        dest: /etc/default/pve-sniff-mirror
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (playbooks/proxmox_sniff.yml).
+          TAP={{ sniff_tap }}
+          MODE={{ sniff_mode }}
+          SOURCE_BRIDGE={{ sniff_source_bridge }}
+          UPLINKS="{{ sniff_uplinks | join(' ') }}"
+          EXCLUDE="{{ sniff_exclude_hosts | join(' ') }}"
+      when: sniff_state == 'present'
+
+    - name: Mirror script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/pve-sniff-mirror
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Copies the source bridge's traffic to the capture VM's tap with tc
+          # mirred (clsact qdisc). Re-run every 30 s by pve-sniff-mirror.timer:
+          # idempotent, and repairs the mirror when the tap is recreated (VM
+          # restart) - a mirred action keeps pointing at the old interface.
+          # "clear" removes every filter it added.
+          set -u
+          . /etc/default/pve-sniff-mirror
+          if [ "$MODE" = ports ]; then
+            PORTS=$(ls /sys/class/net/"$SOURCE_BRIDGE"/brif 2>/dev/null); DIRS=ingress
+          else
+            PORTS=$UPLINKS; DIRS="ingress egress"
+          fi
+          if [ "${1:-}" = clear ]; then
+            for p in $UPLINKS $(ls /sys/class/net/"$SOURCE_BRIDGE"/brif 2>/dev/null); do
+              tc filter show dev "$p" ingress 2>/dev/null | grep -q "to device $TAP" && tc qdisc del dev "$p" clsact
+            done
+            exit 0
+          fi
+          [ -e /sys/class/net/"$TAP" ] || exit 0          # capture VM not running
+          for p in $PORTS; do
+            [ "$p" = "$TAP" ] && continue
+            ok=1
+            for d in $DIRS; do
+              tc filter show dev "$p" "$d" 2>/dev/null | grep -q "Mirror to device $TAP" || ok=0
+            done
+            [ $ok = 1 ] && continue
+            tc qdisc del dev "$p" clsact 2>/dev/null
+            tc qdisc add dev "$p" clsact
+            for d in $DIRS; do
+              prio=1
+              for h in $EXCLUDE; do
+                tc filter add dev "$p" "$d" prio $prio protocol ip flower src_ip "$h" action pass
+                tc filter add dev "$p" "$d" prio $((prio + 1)) protocol ip flower dst_ip "$h" action pass
+                prio=$((prio + 2))
+              done
+              tc filter add dev "$p" "$d" prio 100 matchall action mirred egress mirror dev "$TAP"
+            done
+            echo "mirroring $p ($DIRS) to $TAP"
+          done
+
+    - name: Stop and remove the mirror (sniff_state=absent)
+      when: sniff_state == 'absent'
+      block:
+        - name: Stop the timer
+          ansible.builtin.systemd_service:
+            name: pve-sniff-mirror.timer
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Remove the tc mirror filters
+          ansible.builtin.command: /usr/local/sbin/pve-sniff-mirror clear
+          changed_when: true
+
+        - name: Remove the timer, service, script and settings
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/pve-sniff-mirror.timer
+            - /etc/systemd/system/pve-sniff-mirror.service
+            - /usr/local/sbin/pve-sniff-mirror
+            - /etc/default/pve-sniff-mirror
+
+    - name: Set up the bridge and the timer (sniff_state=present)
+      when: sniff_state == 'present'
+      block:
+        # Its own stanza file, brought up on its own - no `ifreload -a`, which
+        # would also apply any unrelated pending change on the node.
+        - name: Capture bridge (no physical ports)
+          ansible.builtin.copy:
+            dest: "/etc/network/interfaces.d/{{ sniff_bridge }}"
+            mode: "0644"
+            content: |
+              # Managed by ansible-runner (playbooks/proxmox_sniff.yml): receives
+              # the mirrored traffic for the capture VM, nothing else.
+              auto {{ sniff_bridge }}
+              iface {{ sniff_bridge }} inet manual
+                  bridge-ports none
+                  bridge-stp off
+                  bridge-fd 0
+                  bridge-ageing 0
+          register: sniff_bridge_conf
+
+        - name: Check /etc/network/interfaces includes interfaces.d
+          ansible.builtin.command: grep -Eq '^\s*source(-directory)?\s+/etc/network/interfaces\.d' /etc/network/interfaces
+          register: interfaces_d_sourced
+          changed_when: false
+          failed_when: false
+
+        - name: Include interfaces.d (so the bridge survives a reboot)
+          ansible.builtin.lineinfile:
+            path: /etc/network/interfaces
+            line: source /etc/network/interfaces.d/*
+          when: interfaces_d_sourced.rc != 0
+
+        - name: Bring the capture bridge up
+          ansible.builtin.command: ifup {{ sniff_bridge }}
+          when: sniff_bridge_conf is changed
+          changed_when: true
+
+        - name: Mirror service
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/pve-sniff-mirror.service
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Mirror bridge traffic to the capture VM (ansible-runner)
+              After=network-online.target pve-guests.service
+
+              [Service]
+              Type=oneshot
+              ExecStart=/usr/local/sbin/pve-sniff-mirror
+
+        - name: Mirror timer (every 30 s)
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/pve-sniff-mirror.timer
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Keep the capture mirror in place (ansible-runner)
+
+              [Timer]
+              OnBootSec=60
+              OnUnitActiveSec=30
+
+              [Install]
+              WantedBy=timers.target
+
+        - name: Start the timer
+          ansible.builtin.systemd_service:
+            name: pve-sniff-mirror.timer
+            state: started
+            enabled: true
+            daemon_reload: true
+
+- name: Capture setup - NIC for the capture VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    sniff_vmid: 102
+    sniff_state: present
+    proxmox_headers:
+      Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
+  tasks:
+    - name: Add the capture NIC (hot-plugged, no firewall)
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ sniff_node }}/qemu/{{ sniff_vmid }}/config"
+        method: PUT
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+        body_format: form-urlencoded
+        body:
+          "{{ sniff_free_netkey }}": "virtio,bridge={{ sniff_bridge }},firewall=0"
+      when: sniff_state == 'present' and not sniff_netkey
+      no_log: true
+
+    - name: Remove the capture NIC
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ sniff_node }}/qemu/{{ sniff_vmid }}/config"
+        method: PUT
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+        body_format: form-urlencoded
+        body:
+          delete: "{{ sniff_netkey }}"
+      when: sniff_state == 'absent' and sniff_netkey
+      no_log: true
+
+    - name: Read the new NIC's MAC address
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/nodes/{{ sniff_node }}/qemu/{{ sniff_vmid }}/config"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      register: vm_config_after
+      when: sniff_state == 'present'
+      no_log: true
+
+    - name: Hand the MAC to the VM play
+      ansible.builtin.add_host:
+        name: "{{ sniff_vm_host }}"
+        groups: [sniff_vm]
+        sniff_mac: "{{ vm_config_after.json.data[sniff_netkey or sniff_free_netkey] | regex_search('([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | lower }}"
+      when: sniff_state == 'present'
+
+- name: Capture setup - capture interface and ntopng on the VM
+  hosts: sniff_vm
+  gather_facts: false
+  become: true
+  vars:
+    sniff_state: present
+    sniff_iface: sniff0
+    # ntopng's compose file on the capture VM; empty = leave ntopng alone.
+    sniff_ntopng_compose: /home/mbmondor/docker/ntopng/docker-compose.yml
+  pre_tasks:
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+
+    # Ubuntu 25.10+: sudo-rs - see linux_software.yml.
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+  tasks:
+    - name: Capture interface - up, no address, matched by MAC
+      ansible.builtin.copy:
+        dest: /etc/netplan/60-sniff.yaml
+        mode: "0600"
+        content: |
+          # Managed by ansible-runner (playbooks/proxmox_sniff.yml): receives
+          # mirrored traffic from the Proxmox node - no address, no routes.
+          network:
+            version: 2
+            ethernets:
+              {{ sniff_iface }}:
+                match:
+                  macaddress: "{{ sniff_mac }}"
+                set-name: {{ sniff_iface }}
+                dhcp4: false
+                dhcp6: false
+                link-local: []
+                optional: true
+      register: sniff_netplan
+      when: sniff_state == 'present'
+
+    - name: Remove the capture interface config
+      ansible.builtin.file:
+        path: /etc/netplan/60-sniff.yaml
+        state: absent
+      register: sniff_netplan_removed
+      when: sniff_state == 'absent'
+
+    - name: Apply the network config
+      ansible.builtin.command: netplan apply
+      when: sniff_netplan is changed or sniff_netplan_removed is changed
+      changed_when: true
+
+    - name: Promiscuous mode (ntopng also asks for it while capturing)
+      ansible.builtin.command: ip link set dev {{ sniff_iface }} up promisc on
+      when: sniff_state == 'present'
+      changed_when: false
+
+    - name: Check for ntopng's compose file
+      ansible.builtin.stat:
+        path: "{{ sniff_ntopng_compose }}"
+      register: ntopng_compose
+      when: sniff_ntopng_compose | length > 0
+
+    - name: Add (or remove) the capture interface in ntopng
+      ansible.builtin.lineinfile:
+        path: "{{ sniff_ntopng_compose }}"
+        regexp: '^(\s*)- --interface={{ sniff_iface }}$'
+        insertafter: '^\s*- --interface=tcp://'
+        line: "      - --interface={{ sniff_iface }}"
+        state: "{{ sniff_state }}"
+        backup: true
+      register: ntopng_compose_changed
+      when: sniff_ntopng_compose | length > 0 and ntopng_compose.stat.exists | default(false)
+
+    - name: Restart ntopng with the new interface list
+      ansible.builtin.command:
+        cmd: docker compose up -d
+        chdir: "{{ sniff_ntopng_compose | dirname }}"
+      when: ntopng_compose_changed is changed
+      changed_when: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Capture interface ' ~ sniff_iface ~ ' (' ~ sniff_mac ~ ') receives the mirrored traffic'
+             ~ ('; added to ntopng' if ntopng_compose_changed is changed else '') if sniff_state == 'present'
+             else 'Capture setup removed.' }}

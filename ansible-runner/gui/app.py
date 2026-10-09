@@ -1394,6 +1394,36 @@ class ImageRunIn(BaseModel):
     image_id: str
 
 
+SNIFF_PLAYBOOK = "playbooks/proxmox_sniff.yml"
+_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+class SniffIn(BaseModel):
+    vmid: int = 102  # capture VM (gets the extra NIC)
+    vm_host: str = "192.168.3.8"  # its address in the inventory (linux group)
+    source_bridge: str = "vmbr0"  # bridge on its node whose traffic is mirrored
+    mode: str = "uplink"  # uplink | ports - see playbooks/proxmox_sniff.yml
+    exclude_hosts: list[str] = ["192.168.3.188"]  # never mirrored (the TrueNAS's iSCSI)
+    state: str = "present"  # present | absent
+
+
+@app.post("/api/sniff")
+def api_sniff(body: SniffIn):
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server.")
+    if body.mode not in ("uplink", "ports") or body.state not in ("present", "absent"):
+        raise HTTPException(400, "Mode must be uplink or ports, state present or absent.")
+    if not (_IP_RE.match(body.vm_host) or HOST_NAME_RE.match(body.vm_host)) \
+            or not re.match(r"^[A-Za-z0-9_.-]{1,15}$", body.source_bridge) \
+            or not all(_IP_RE.match(h) for h in body.exclude_hosts):
+        raise HTTPException(400, "Invalid VM address, bridge name or excluded address.")
+    extra_vars = {"sniff_vmid": body.vmid, "sniff_vm_host": body.vm_host, "sniff_source_bridge": body.source_bridge,
+                  "sniff_mode": body.mode, "sniff_exclude_hosts": body.exclude_hosts, "sniff_state": body.state}
+    cmd = ["ansible-playbook", SNIFF_PLAYBOOK, "-e", json.dumps(extra_vars)] + vault_password_args()
+    run_id = _start_run(cmd, ["localhost"], {"sniff": body.state, **extra_vars}, timeout=1800)
+    return {"run_id": run_id, "status": "running"}
+
+
 def _start_image_run(playbook: str, body: ImageRunIn, action: str, timeout: int) -> dict:
     if not has_vault_pass():
         raise HTTPException(400, "No vault password file on the server.")
