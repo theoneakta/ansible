@@ -30,6 +30,21 @@
     # exist yet is created - with no password, so set one before using sudo.
     docker_users: [theoneakta]
 
+    # softflowd: exports NetFlow for the host's traffic to a collector - by
+    # default netflow2ng on the Docker host (192.168.3.8, UDP 2055), which
+    # feeds ntopng. Off unless requested (--softflowd / GUI).
+    softflowd_enabled: false
+    softflowd_collector: "192.168.3.8:2055"
+    # Interface to watch; empty = the one holding the default route.
+    softflowd_interface: ""
+    # NetFlow v9 (what netflow2ng and most collectors expect); maxlife=60 exports
+    # long-running flows every minute instead of only when they end, so ntopng
+    # shows them live.
+    softflowd_options: "-n {{ softflowd_collector }} -v 9 -t maxlife=60"
+    # Rocky/RHEL: no package (not in EPEL 9/10) - built from this upstream
+    # release instead (https://github.com/irino/softflowd).
+    softflowd_version: "1.1.1"
+
   pre_tasks:
     # The login (vault_win_user/vault_win_password) comes from the host's own
     # inventory/host_vars/<host>/vault.yml when it has one - inventory loads
@@ -193,3 +208,119 @@
               - >-
                 {% set created = docker_users | reject('in', ansible_facts.getent_passwd) | list %}
                 {{ ('Created with NO password - set one (sudo passwd <user>) before they can use sudo: ' ~ created | join(', ')) if created else 'No new users created.' }}
+
+    # One instance, "default", configured the Debian way on every distro:
+    # /etc/softflowd/default.conf (interface + options) and the
+    # softflowd@default service. Ubuntu/Debian ship both with the package;
+    # on Rocky/RHEL the binary is built from source and the same unit added.
+    - name: softflowd (NetFlow exporter)
+      when: softflowd_enabled | bool
+      block:
+        - name: Gather facts (distribution, default route)
+          ansible.builtin.setup:
+            gather_subset: [min, network]
+
+        - name: Install softflowd (Ubuntu / Debian)
+          ansible.builtin.apt:
+            name: softflowd
+            update_cache: true
+          when: ansible_facts['os_family'] == 'Debian'
+
+        - name: Build softflowd from source (Rocky / RHEL - not packaged)
+          when: ansible_facts['os_family'] == 'RedHat'
+          block:
+            # softflowd -v sets the NetFlow version, it doesn't print one - so
+            # the installed version is recorded next to the sources.
+            - name: Check whether this version is installed already
+              ansible.builtin.slurp:
+                src: /usr/local/src/softflowd.installed-version
+              register: softflowd_installed
+              failed_when: false
+
+            - name: Build and install
+              when: (softflowd_installed.content | default('') | b64decode | trim) != softflowd_version
+              block:
+                # libpcap-devel is in CRB, off by default on EL9/EL10 - enabled
+                # for this install only (the build failed without it, confirmed).
+                - name: Install the build tools and libpcap headers
+                  ansible.builtin.dnf:
+                    name: [gcc, make, autoconf, automake, libpcap-devel, tar]
+                    enablerepo: crb
+                    state: present
+
+                - name: Download the release
+                  ansible.builtin.get_url:
+                    url: "https://github.com/irino/softflowd/archive/refs/tags/softflowd-v{{ softflowd_version }}.tar.gz"
+                    dest: "/usr/local/src/softflowd-{{ softflowd_version }}.tar.gz"
+                    mode: "0644"
+
+                - name: Unpack it
+                  ansible.builtin.unarchive:
+                    src: "/usr/local/src/softflowd-{{ softflowd_version }}.tar.gz"
+                    dest: /usr/local/src
+                    remote_src: true
+
+                - name: Configure, compile and install (to /usr/local/sbin)
+                  ansible.builtin.shell:
+                    cmd: autoreconf -if && ./configure --prefix=/usr/local && make && make install
+                    chdir: "/usr/local/src/softflowd-softflowd-v{{ softflowd_version }}"
+
+                - name: Record the installed version
+                  ansible.builtin.copy:
+                    content: "{{ softflowd_version }}\n"
+                    dest: /usr/local/src/softflowd.installed-version
+                    mode: "0644"
+
+            - name: Add the instance service (same as Debian's, binary in /usr/local)
+              ansible.builtin.copy:
+                dest: /etc/systemd/system/softflowd@.service
+                mode: "0644"
+                content: |
+                  [Unit]
+                  Description=softflowd %I instance
+                  Documentation=man:softflowd(8)
+                  After=network-online.target
+                  Wants=network-online.target
+
+                  [Service]
+                  Type=forking
+                  EnvironmentFile=/etc/softflowd/%I.conf
+                  RuntimeDirectory=softflowd
+                  ExecStart=/usr/local/sbin/softflowd -i $interface -p /run/softflowd/%I.pid -c /run/softflowd/%I.ctl $options
+                  Restart=always
+                  RestartSec=10
+                  PIDFile=/run/softflowd/%I.pid
+
+                  [Install]
+                  WantedBy=multi-user.target
+
+        # The Ubuntu package creates it; the source build doesn't.
+        - name: Make sure the config folder exists
+          ansible.builtin.file:
+            path: /etc/softflowd
+            state: directory
+            mode: "0755"
+
+        - name: Configure the default instance
+          ansible.builtin.copy:
+            dest: /etc/softflowd/default.conf
+            mode: "0644"
+            content: |
+              # Managed by ansible-runner (linux_software.yml) - changes are overwritten.
+              interface='{{ softflowd_interface or ansible_facts['default_ipv4']['interface'] }}'
+              options='{{ softflowd_options }}'
+          register: softflowd_conf
+
+        - name: Start softflowd now and at boot
+          ansible.builtin.systemd_service:
+            name: softflowd@default
+            state: "{{ 'restarted' if softflowd_conf is changed else 'started' }}"
+            enabled: true
+            daemon_reload: true
+
+        - name: Report softflowd
+          ansible.builtin.debug:
+            msg: >-
+              softflowd exporting NetFlow v9 for
+              {{ softflowd_interface or ansible_facts['default_ipv4']['interface'] }}
+              to {{ softflowd_collector }}.

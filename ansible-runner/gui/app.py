@@ -784,6 +784,8 @@ class RunIn(BaseModel):
     rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
     docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
     docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
+    softflowd: bool = False  # Linux hosts: softflowd NetFlow exporter
+    softflowd_collector: Optional[str] = None  # host:port, default 192.168.3.8:2055 (netflow2ng)
 
 
 def build_extra_vars(body: RunIn) -> dict:
@@ -837,10 +839,17 @@ def build_extra_vars(body: RunIn) -> dict:
             raise HTTPException(400, "Invalid Linux user name - use lower-case letters, digits, '-', '_' and '.'.")
         if users:
             extra_vars["docker_users"] = users
+    if body.softflowd:
+        extra_vars["softflowd_enabled"] = True
+        if body.softflowd_collector:
+            if not COLLECTOR_RE.match(body.softflowd_collector):
+                raise HTTPException(400, "softflowd collector must be host:port, e.g. 192.168.3.8:2055.")
+            extra_vars["softflowd_collector"] = body.softflowd_collector
     return extra_vars
 
 
 LINUX_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+COLLECTOR_RE = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
 
 
 def run_log_path(run_id: int) -> pathlib.Path:

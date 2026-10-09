@@ -33,6 +33,7 @@
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
 #   --docker                             Linux hosts: install Docker Engine + the Compose plugin
+#   --softflowd [--softflowd-collector <host:port>]  Linux hosts: softflowd NetFlow exporter (default collector 192.168.3.8:2055)
 #   --docker-user <name>                 Linux hosts: add this user to the docker + sudo groups (repeatable;
 #                                        default theoneakta)
 #
@@ -142,6 +143,8 @@ YML
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
         --docker)                      EXTRA_VARS+=(-e "docker_enabled=true"); shift ;;
+        --softflowd)                   EXTRA_VARS+=(-e "softflowd_enabled=true"); shift ;;
+        --softflowd-collector)         EXTRA_VARS+=(-e "softflowd_collector=$2"); shift 2 ;;
         --docker-user)                 DOCKER_USERS+=("$2"); shift 2 ;;
         --cis-os)                      CIS_OS="$2"; shift 2 ;;
         --cis-level)                   CIS_LEVEL_ID="$2"; shift 2 ;;

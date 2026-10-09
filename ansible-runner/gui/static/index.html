@@ -384,6 +384,14 @@
       </div>
 
       <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="softflowdToggle"> Install softflowd - NetFlow exporter (Linux hosts)</label>
+        <div class="params" id="softflowdParams">
+          <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.168.3.8:2055" placeholder="192.168.3.8:2055"></div>
+          <p class="muted">Ubuntu and Rocky Linux. Exports NetFlow v9 for the host's main network interface to the collector - by default netflow2ng on the Docker host, which feeds ntopng. Ubuntu installs the package; Rocky has no package, so it's built from the upstream source.</p>
+        </div>
+      </div>
+
+      <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="dockerToggle"> Install Docker + Docker Compose (Linux hosts)</label>
         <div class="params" id="dockerParams">
           <div class="row"><label for="dockerUsers">Users for the docker + sudo groups</label><input type="text" id="dockerUsers" value="theoneakta" placeholder="e.g. theoneakta, jdoe"></div>
@@ -533,6 +541,7 @@ toggleParams('wslToggle', 'wslParams');
 toggleParams('win11debloatToggle', 'win11debloatParams');
 toggleParams('rsatToggle', 'rsatParams');
 toggleParams('dockerToggle', 'dockerParams');
+toggleParams('softflowdToggle', 'softflowdParams');
 
 let hostsCache = [];
 
@@ -881,8 +890,9 @@ async function startInstallRun() {
   const wantsWin11Debloat = $('win11debloatToggle').checked;
   const wantsRsat = $('rsatToggle').checked;
   const wantsDocker = $('dockerToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsDocker) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, Docker).');
+  const wantsSoftflowd = $('softflowdToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsDocker && !wantsSoftflowd) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, Docker, softflowd).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -920,6 +930,10 @@ async function startInstallRun() {
   }
   if ($('rsatToggle').checked) {
     body.rsat = true;
+  }
+  if (wantsSoftflowd) {
+    body.softflowd = true;
+    body.softflowd_collector = $('softflowdCollector').value.trim() || null;
   }
   if (wantsDocker) {
     body.docker = true;
