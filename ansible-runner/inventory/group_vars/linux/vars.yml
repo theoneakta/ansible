@@ -1,0 +1,12 @@
+# Linux hosts: SSH + sudo as the same vault account the Windows hosts use
+# (vault_win_user / vault_win_password in group_vars/windows/vault.yml -
+# linux_software.yml loads that file; the PXE images create this account).
+ansible_connection: ssh
+ansible_user: "{{ vault_win_user }}"
+ansible_password: "{{ vault_win_password }}"
+ansible_become: true
+ansible_become_method: sudo
+ansible_become_password: "{{ vault_win_password }}"
+# Trust a new host's SSH key on first contact (freshly deployed machines),
+# but still refuse one that changed afterwards.
+ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new

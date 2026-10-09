@@ -69,7 +69,7 @@ services:
       PXE_SMB_PASSWORD: ${PXE_SMB_PASSWORD:-}
       # Boot-menu entries: "<image_id>=<label>[=linux];..." (image_id = a key under
       # `images:` in inventory/image.yml, deployed from <image_id>.wim).
-      PXE_IMAGES: ${PXE_IMAGES:-win11=Windows 11 Pro;win2025=Windows Server 2025;rocky10=Rocky Linux 10=linux}
+      PXE_IMAGES: ${PXE_IMAGES:-win11=Windows 11 Pro;win2025=Windows Server 2025;rocky10=Rocky Linux 10=linux;ubuntu2604=Ubuntu 26.04 Server=ubuntu;ubuntu2604-desktop=Ubuntu 26.04 Desktop=ubuntu}
     volumes:
       - ./pxe/data:/data
     restart: unless-stopped

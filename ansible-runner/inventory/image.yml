@@ -64,3 +64,27 @@ images:
     bridge: vmbr1
     cores: 4
     memory: 4096
+  ubuntu2604:
+    # Linux: Proxmox template via autoinstall; physical machines PXE-install
+    # from the same answer file (image_publish_linux.yml) - like rocky10.
+    os: linux
+    distro: ubuntu
+    label: Ubuntu 26.04 Server
+    iso: local:iso/ubuntu-26.04.1-live-server-amd64.iso
+    template_vmid: 9200
+    template_name: ubuntu2604-server-base
+    disk_size: 32G
+    cores: 4
+    memory: 4096
+  ubuntu2604-desktop:
+    # Same server ISO and answer file, plus the full ubuntu-desktop (GNOME).
+    os: linux
+    distro: ubuntu
+    desktop: true
+    label: Ubuntu 26.04 Desktop
+    iso: local:iso/ubuntu-26.04.1-live-server-amd64.iso
+    template_vmid: 9201
+    template_name: ubuntu2604-desktop-base
+    disk_size: 64G
+    cores: 4
+    memory: 8192
