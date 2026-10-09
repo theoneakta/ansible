@@ -1,0 +1,9 @@
+# "SSH only" hosts (e.g. the TrueNAS): reached over SSH for connection tests
+# and read-only checks. No install playbook targets this group. Login is
+# vault_win_user/vault_win_password from the host's own
+# host_vars/<host>/vault.yml (set a per-host override on the Credentials tab).
+ansible_connection: ssh
+ansible_user: "{{ vault_win_user }}"
+ansible_password: "{{ vault_win_password }}"
+ansible_become: false
+ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new

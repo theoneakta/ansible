@@ -301,8 +301,10 @@ def init_db():
 init_db()
 
 
-# Inventory groups the GUI manages, and the OS each one means.
-HOST_GROUPS = ("windows", "linux")
+# Inventory groups the GUI manages, and the OS each one means. "ssh" is for
+# machines reached over SSH that no install playbook may touch (a NAS, an
+# appliance): connection tests and read-only checks only.
+HOST_GROUPS = ("windows", "linux", "ssh")
 
 
 def list_hosts() -> list[dict]:
@@ -404,10 +406,18 @@ def check_winrm(host: str) -> dict:
 def check_ssh(host: str) -> dict:
     if not has_vault_pass():
         return {"ok": False, "detail": "No vault password file on the server - cannot authenticate."}
-    # Linux hosts use the Windows group's vault account (group_vars/linux/vars.yml),
-    # which linux_software.yml loads itself - an ad-hoc command has to pass it.
-    cmd = ["ansible", host, "-m", "ansible.builtin.ping", "-e", f"@{GROUP_VAULT.relative_to(BASE)}"] \
-        + vault_password_args()
+    # Linux/ssh hosts log in with vault_win_user/vault_win_password: their own
+    # host_vars/<host>/vault.yml if they have one (inventory loads that by
+    # itself), otherwise the group default in group_vars/windows/vault.yml -
+    # which only the windows group loads, so pass it then. Never pass it when a
+    # host has its own: extra vars outrank host vars.
+    # Without become: on Ubuntu 25.10+ sudo is sudo-rs, whose prompt ad-hoc
+    # Ansible never sees (timeout, confirmed live). linux_software.yml switches
+    # to the classic sudo.ws by itself; this only checks SSH and the login.
+    cmd = ["ansible", host, "-m", "ansible.builtin.ping", "-e", "ansible_become=false"]
+    if not (HOST_VARS_DIR / host / "vault.yml").exists():
+        cmd += ["-e", f"@{GROUP_VAULT.relative_to(BASE)}"]
+    cmd += vault_password_args()
     env = os.environ.copy()
     env.setdefault("HOME", "/tmp")
     env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
@@ -424,19 +434,19 @@ def test_linux_host(host: str) -> dict:
     tcp = check_tcp_port(host, 22)
     ssh = check_ssh(host)
     if ssh["ok"]:
-        summary = "Connected successfully - SSH, credentials and sudo are working."
+        summary = "Connected successfully - SSH and credentials are working."
     elif not tcp["ok"]:
         summary = ("Host looks unreachable on the network (no ping reply, SSH port closed)." if ping["ok"] is False
                    else "Network reachable but SSH (port 22) is closed - check sshd and the firewall.")
     else:
-        summary = "SSH port is open but the connection failed - likely the credentials or sudo. See details below."
+        summary = "SSH port is open but the login failed - likely the credentials. See details below."
     # Same keys as the Windows test ("winrm" = the connection check), plus its label.
     return {"host": host, "ping": ping, "port": {**tcp, "port": 22}, "winrm": ssh,
             "check_label": "SSH / credentials", "summary": summary}
 
 
 def test_host(host: str) -> dict:
-    if host_os(host) == "linux":
+    if host_os(host) in ("linux", "ssh"):
         return test_linux_host(host)
     port = get_winrm_port()
     ping = check_ping(host)
