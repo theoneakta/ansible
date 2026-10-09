@@ -38,7 +38,9 @@
     build_cores: "{{ img.cores | default(image_cores) }}"
     build_memory: "{{ img.memory | default(image_memory) }}"
     image_os: "{{ img.os | default('windows') }}"
-    packer_dir: "{{ playbook_dir }}/packer/{{ 'rocky' if image_os == 'linux' else 'windows' }}"
+    # Linux images name their distro (rocky, ubuntu); each has its own packer/<distro>/.
+    image_distro: "{{ img.distro | default('rocky') if image_os == 'linux' else 'windows' }}"
+    packer_dir: "{{ playbook_dir }}/packer/{{ image_distro }}"
     ks_path: "/tmp/ks-{{ image_id }}.cfg"
     packer_log: "/ansible/gui-data/packer-build-{{ image_id }}.log"
     # The local admin every deployed PC gets - the same account the rest of
@@ -108,9 +110,9 @@
         vm_running: "{{ leftover_vm.status == 'running' }}"
       when: leftover_vm | length > 0
 
-    - name: Render the kickstart for the Linux build (contains the admin password hash)
+    - name: Render the Linux answer file (kickstart / autoinstall - contains the admin password hash)
       ansible.builtin.template:
-        src: templates/rocky-ks.cfg.j2
+        src: "templates/{{ 'ubuntu-autoinstall.yaml.j2' if image_distro == 'ubuntu' else 'rocky-ks.cfg.j2' }}"
         dest: "{{ ks_path }}"
         mode: "0600"
       vars:
@@ -185,6 +187,8 @@
             # Linux (packer/rocky) - each template ignores the other's variables.
             PKR_VAR_iso: "{{ img.iso }}"
             PKR_VAR_ks_path: "{{ ks_path }}"
+            PKR_VAR_user_data_path: "{{ ks_path }}"
+            PKR_VAR_template_label: "{{ img.label }}"
             PKR_VAR_ssh_username: "{{ image_admin_user }}"
             PKR_VAR_ssh_password: "{{ image_admin_password }}"
           # Far past the WinRM-style timeouts elsewhere: Windows Update alone

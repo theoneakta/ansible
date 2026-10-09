@@ -1,0 +1,168 @@
+---
+# Provisioning for Linux hosts (inventory group "linux") - Ubuntu and
+# Rocky Linux. The GUI runs it together with install_software.yml through
+# playbooks/install.yml, so one run can cover Windows and Linux hosts.
+#
+# Connection: SSH as the same vault account the Windows hosts use
+# (vault_win_user / vault_win_password, the admin account the PXE images
+# create too), with sudo - see inventory/group_vars/linux/vars.yml.
+#
+# Run:  ./run.sh install.yml --docker
+#       ./run.sh install.yml --docker --docker-user alice --limit 192.168.3.150
+
+- name: Provision Linux hosts
+  hosts: linux
+  # Facts only when a step needs them (Docker) - a Windows-only run with
+  # "all hosts" shouldn't have to reach every Linux host for nothing.
+  gather_facts: false
+  become: true
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+
+  vars:
+    # IPv6 is turned off on every managed machine, on every run - same as the
+    # Windows hosts (install_software.yml) and the PXE images.
+    disable_ipv6: true
+
+    # Docker Engine + the Compose plugin, from Docker's own repositories
+    # (Ubuntu: apt, Rocky: dnf). Off unless requested (--docker / GUI).
+    docker_enabled: false
+    # Users added to the docker group (docker without sudo) and to the
+    # distro's sudo group (Ubuntu "sudo", Rocky "wheel"). A user that doesn't
+    # exist yet is created - with no password, so set one before using sudo.
+    docker_users: [theoneakta]
+
+  tasks:
+    # sysctl takes effect immediately and persists (/etc/sysctl.d). The PXE
+    # Rocky image also boots with ipv6.disable=1.
+    - name: Turn IPv6 off
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: "1"
+        sysctl_file: /etc/sysctl.d/90-disable-ipv6.conf
+        reload: true
+      loop:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+      # With ipv6.disable=1 on the kernel line these keys don't exist at all -
+      # IPv6 is already off.
+      register: ipv6_sysctl
+      failed_when:
+        - ipv6_sysctl is failed
+        - "'No such file or directory' not in (ipv6_sysctl.msg | default(''))"
+        - "'cannot stat' not in (ipv6_sysctl.msg | default(''))"
+      when: disable_ipv6 | bool
+
+    - name: Docker Engine + Docker Compose
+      when: docker_enabled | bool
+      block:
+        - name: Gather facts (distribution)
+          ansible.builtin.setup:
+            gather_subset: [min]
+
+        - name: Check the distribution is supported
+          ansible.builtin.assert:
+            that: ansible_facts['os_family'] in ['Debian', 'RedHat']
+            fail_msg: "Docker step supports Ubuntu/Debian and Rocky/RHEL only, not {{ ansible_facts['distribution'] }}."
+            quiet: true
+
+        # ------------------------------------------------- Ubuntu / Debian
+        - name: Ubuntu / Debian
+          when: ansible_facts['os_family'] == 'Debian'
+          block:
+            # Distro builds that conflict with Docker's own packages.
+            - name: Remove conflicting distro packages
+              ansible.builtin.apt:
+                name: [docker.io, docker-doc, docker-compose, docker-compose-v2, podman-docker, containerd, runc]
+                state: absent
+
+            # python3-debian: what deb822_repository needs on the host.
+            - name: Install repository prerequisites
+              ansible.builtin.apt:
+                name: [ca-certificates, curl, python3-debian]
+                update_cache: true
+
+            - name: Make sure the apt keyrings folder exists
+              ansible.builtin.file:
+                path: /etc/apt/keyrings
+                state: directory
+                mode: "0755"
+
+            - name: Add Docker's signing key
+              ansible.builtin.get_url:
+                url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
+                dest: /etc/apt/keyrings/docker.asc
+                mode: "0644"
+
+            - name: Add Docker's apt repository
+              ansible.builtin.deb822_repository:
+                name: docker
+                types: [deb]
+                uris: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+                suites: ["{{ ansible_facts['distribution_release'] }}"]
+                components: [stable]
+                architectures: ["{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"]
+                signed_by: /etc/apt/keyrings/docker.asc
+
+            - name: Install Docker Engine and the Compose plugin
+              ansible.builtin.apt:
+                name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+                state: present
+                update_cache: true
+
+        # ----------------------------------------------------- Rocky / RHEL
+        - name: Rocky / RHEL
+          when: ansible_facts['os_family'] == 'RedHat'
+          block:
+            - name: Remove conflicting packages
+              ansible.builtin.dnf:
+                name: [docker, docker-client, docker-client-latest, docker-common, docker-latest,
+                       docker-latest-logrotate, docker-logrotate, docker-engine, podman-docker, runc]
+                state: absent
+
+            # Rocky is RHEL-compatible: Docker's RHEL repository.
+            - name: Add Docker's dnf repository
+              ansible.builtin.get_url:
+                url: https://download.docker.com/linux/rhel/docker-ce.repo
+                dest: /etc/yum.repos.d/docker-ce.repo
+                mode: "0644"
+
+            - name: Install Docker Engine and the Compose plugin
+              ansible.builtin.dnf:
+                name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+                state: present
+
+        - name: Start Docker now and at boot
+          ansible.builtin.systemd_service:
+            name: docker
+            state: started
+            enabled: true
+
+        - name: See which users exist already
+          ansible.builtin.getent:
+            database: passwd
+
+        - name: Add the users to the docker and sudo groups (created if missing)
+          ansible.builtin.user:
+            name: "{{ item }}"
+            groups: [docker, "{{ 'sudo' if ansible_facts['os_family'] == 'Debian' else 'wheel' }}"]
+            append: true
+            shell: "{{ omit if item in ansible_facts.getent_passwd else '/bin/bash' }}"
+          loop: "{{ docker_users }}"
+
+        - name: Check Docker and Compose work
+          ansible.builtin.command: "{{ item }}"
+          loop: [docker --version, docker compose version]
+          register: docker_check
+          changed_when: false
+
+        - name: Report
+          ansible.builtin.debug:
+            msg:
+              - "{{ docker_check.results | map(attribute='stdout') | join(' / ') }}"
+              - >-
+                In docker + {{ 'sudo' if ansible_facts['os_family'] == 'Debian' else 'wheel' }}:
+                {{ docker_users | join(', ') }} (group changes apply at their next login).
+              - >-
+                {% set created = docker_users | reject('in', ansible_facts.getent_passwd) | list %}
+                {{ ('Created with NO password - set one (sudo passwd <user>) before they can use sudo: ' ~ created | join(', ')) if created else 'No new users created.' }}

@@ -1,19 +1,26 @@
 ---
-# Linux counterpart of image_capture.yml: makes a Linux image (e.g. image_id
-# rocky10 in inventory/image.yml) installable over PXE. No disk capture -
-# machines network-install with Anaconda from the same kickstart that built
-# the Proxmox template, so they end up the same:
-#   pxe/data/linux/<image_id>/  the ISO's contents (installer kernel/initrd
-#                               under images/pxeboot/, plus the package repo)
-#   pxe/data/ks/<image_id>.ks   the kickstart in deploy mode
-# The pxe container serves both over HTTP; its boot menu entry for the image
-# (PXE_IMAGES "<id>=<label>=linux") boots the installer with them.
+# Linux counterpart of image_capture.yml: makes a Linux image (rocky10,
+# ubuntu2604, ... in inventory/image.yml) installable over PXE. No disk
+# capture - machines network-install from the same answer file that built
+# the Proxmox template, so they end up the same. Served over HTTP by the pxe
+# container, whose boot menu entry for the image (PXE_IMAGES
+# "<id>=<label>=<distro>") boots the installer with them:
+#   Rocky (Anaconda + kickstart):
+#     pxe/data/linux/<id>/        the ISO's contents (installer kernel/initrd
+#                                 under images/pxeboot/, plus the package repo)
+#     pxe/data/ks/<id>.ks         the kickstart in deploy mode
+#   Ubuntu (Subiquity + autoinstall):
+#     pxe/data/linux/<id>/        casper/vmlinuz + casper/initrd, and the ISO
+#                                 itself as install.iso (the installer
+#                                 downloads it whole: url=...)
+#     pxe/data/ks/<id>/user-data  autoinstall in deploy mode (+ meta-data)
+# linux/<id>/.published marks a finished publish (the GUI's status).
 #
 # Needs the ISO in pxe/data/iso/ under the same file name as the image's
-# Proxmox ISO (the `iso` setting). Re-run after changing the kickstart, the
+# Proxmox ISO (the `iso` setting). Re-run after changing the answer file, the
 # admin credentials, or the ISO.
 #
-# Run:  from the GUI's "Windows Image" tab ("Publish to PXE"), or
+# Run:  from the GUI's image tab ("Publish to PXE"), or
 #       ansible-playbook playbooks/image_publish_linux.yml -e image_id=rocky10 --vault-password-file ...
 
 - name: Publish a Linux image for PXE installs
@@ -26,6 +33,7 @@
   vars:
     image_id: rocky10
     img: "{{ images[image_id] }}"
+    distro: "{{ img.distro | default('rocky') }}"
     pxe_data: /ansible/pxe
     iso_copy: "{{ pxe_data }}/iso/{{ img.iso.split('/') | last }}"
     tree: "{{ pxe_data }}/linux/{{ image_id }}"
@@ -38,7 +46,10 @@
         that:
           - image_id in images
           - img.os | default('windows') == 'linux'
-        fail_msg: "{{ image_id }} isn't a Linux image in inventory/image.yml - Windows images use image_capture.yml."
+          - distro in ['rocky', 'ubuntu']
+        fail_msg: >-
+          {{ image_id }} isn't a Rocky or Ubuntu image in inventory/image.yml -
+          Windows images use image_capture.yml.
         quiet: true
 
     - name: Check the ISO copy is there
@@ -61,10 +72,27 @@
           rm -rf "{{ tree }}"
           mv "{{ tree }}.new" "{{ tree }}"
           chmod -R a+rX "{{ tree }}"
+      when: distro == 'rocky'
 
-    - name: Make sure the kickstart folder exists
+    # Ubuntu's installer needs only its kernel and initrd from the tree; it
+    # then downloads the whole ISO (url=) and runs from it in RAM. A hard
+    # link, not a copy: same filesystem, no extra 3+ GB.
+    - name: Extract the installer kernel/initrd and link the ISO (replaces any previous copy)
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          rm -rf "{{ tree }}.new"
+          7z x -y -o"{{ tree }}.new" "{{ iso_copy }}" casper/vmlinuz casper/initrd >/dev/null
+          test -f "{{ tree }}.new/casper/vmlinuz" && test -f "{{ tree }}.new/casper/initrd"
+          ln "{{ iso_copy }}" "{{ tree }}.new/install.iso" 2>/dev/null || cp "{{ iso_copy }}" "{{ tree }}.new/install.iso"
+          rm -rf "{{ tree }}"
+          mv "{{ tree }}.new" "{{ tree }}"
+          chmod -R a+rX "{{ tree }}"
+      when: distro == 'ubuntu'
+
+    - name: Make sure the answer-file folder exists
       ansible.builtin.file:
-        path: "{{ pxe_data }}/ks"
+        path: "{{ pxe_data }}/ks{{ '/' ~ image_id if distro == 'ubuntu' else '' }}"
         state: directory
         mode: "0755"
 
@@ -76,9 +104,34 @@
       vars:
         ks_mode: deploy
       no_log: true
+      when: distro == 'rocky'
+
+    - name: Render the deploy-mode autoinstall
+      ansible.builtin.template:
+        src: templates/ubuntu-autoinstall.yaml.j2
+        dest: "{{ pxe_data }}/ks/{{ image_id }}/user-data"
+        mode: "0644"
+      vars:
+        ks_mode: deploy
+      no_log: true
+      when: distro == 'ubuntu'
+
+    - name: Add the (empty) NoCloud meta-data next to it
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ pxe_data }}/ks/{{ image_id }}/meta-data"
+        mode: "0644"
+      when: distro == 'ubuntu'
+
+    - name: Mark the image as published
+      ansible.builtin.copy:
+        content: "{{ distro }}\n"
+        dest: "{{ tree }}/.published"
+        mode: "0644"
 
     - name: Report
       ansible.builtin.debug:
         msg: >-
           {{ img.label }} published. Machines can now PXE-boot and pick
-          "Deploy {{ img.label }}" (needs "{{ image_id }}={{ img.label }}=linux" in PXE_IMAGES).
+          "Deploy {{ img.label }}" (needs "{{ image_id }}={{ img.label }}={{ 'linux' if distro == 'rocky' else distro }}"
+          in PXE_IMAGES).

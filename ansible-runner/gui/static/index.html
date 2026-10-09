@@ -277,7 +277,9 @@
         <div class="row">
           <label for="newHost">Add host (name or IP)</label>
           <input type="text" id="newHost" placeholder="192.168.3.18">
+          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option></select>
         </div>
+        <p class="muted">Linux hosts are reached over SSH with the same account as the Windows hosts (Credentials tab), using sudo.</p>
         <div class="actionBar">
           <button class="primary" id="addHostBtn">Add host</button>
           <span id="addHostStatus" class="muted"></span>
@@ -378,6 +380,14 @@
         <label class="toggleHead"><input type="checkbox" id="rsatToggle"> Install RSAT tools (all)</label>
         <div class="params" id="rsatParams">
           <p class="muted">Installs every available RSAT (Remote Server Administration Tools) capability - AD DS, DNS, DHCP, Group Policy, Hyper-V, and the rest - via Windows's own Add-WindowsCapability, not Chocolatey. No per-tool picker; this is all of them. Each missing capability downloads from Windows Update, so this can take a while on a fresh machine.</p>
+        </div>
+      </div>
+
+      <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="dockerToggle"> Install Docker + Docker Compose (Linux hosts)</label>
+        <div class="params" id="dockerParams">
+          <div class="row"><label for="dockerUsers">Users for the docker + sudo groups</label><input type="text" id="dockerUsers" value="theoneakta" placeholder="e.g. theoneakta, jdoe"></div>
+          <p class="muted">Ubuntu and Rocky Linux. Installs Docker Engine and the Compose plugin (<code>docker compose</code>) from Docker's own repositories, starts Docker at boot, and adds the users above (comma-separated) to the <code>docker</code> group and the sudo group (<code>sudo</code> on Ubuntu, <code>wheel</code> on Rocky). A user that doesn't exist yet is created without a password - set one before they use sudo. Windows hosts in the selection are not affected.</p>
         </div>
       </div>
 
@@ -522,6 +532,7 @@ toggleParams('gitToggle', 'gitParams');
 toggleParams('wslToggle', 'wslParams');
 toggleParams('win11debloatToggle', 'win11debloatParams');
 toggleParams('rsatToggle', 'rsatParams');
+toggleParams('dockerToggle', 'dockerParams');
 
 let hostsCache = [];
 
@@ -535,7 +546,8 @@ async function loadHosts() {
     row.className = 'row';
     row.style.marginLeft = '1.5rem';
     row.innerHTML = `<label><input type="checkbox" class="hostCheck" value="${h.name}" disabled>
-      ${h.name} ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>
+      ${h.name} <span class="badge neutral">${h.os === 'linux' ? 'Linux' : 'Windows'}</span>
+      ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>
       <button class="testHostBtn" data-host="${h.name}">Test</button>
       <span class="testHostStatus muted" data-host="${h.name}"></span>`;
     list.appendChild(row);
@@ -583,7 +595,7 @@ function renderHostTest(container, data) {
   box.className = 'hostTestBox';
   box.appendChild(badgeRow('Ping', data.ping));
   box.appendChild(badgeRow(`Port ${data.port.port}`, data.port));
-  box.appendChild(badgeRow('WinRM / credentials', data.winrm, { inlineDetail: false }));
+  box.appendChild(badgeRow(data.check_label || 'WinRM / credentials', data.winrm, { inlineDetail: false }));
   const summary = document.createElement('p');
   summary.className = 'muted';
   summary.textContent = data.summary;
@@ -624,7 +636,8 @@ async function addHost() {
   $('addHostStatus').textContent = 'Adding...';
   try {
     const res = await fetch('/api/hosts', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name }),
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, os: $('newHostOs').value }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed');
@@ -867,8 +880,9 @@ async function startInstallRun() {
   const wantsWsl = $('wslToggle').checked;
   const wantsWin11Debloat = $('win11debloatToggle').checked;
   const wantsRsat = $('rsatToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT).');
+  const wantsDocker = $('dockerToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsDocker) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, Docker).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -906,6 +920,10 @@ async function startInstallRun() {
   }
   if ($('rsatToggle').checked) {
     body.rsat = true;
+  }
+  if (wantsDocker) {
+    body.docker = true;
+    body.docker_users = $('dockerUsers').value.split(',').map(s => s.trim()).filter(Boolean);
   }
 
   const btns = document.querySelectorAll('.runInstallBtn');

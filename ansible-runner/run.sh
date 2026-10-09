@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # On-demand Ansible runner with Ansible Vault support.
 #
-#   ./run.sh install_software.yml [ansible-playbook args]
+#   ./run.sh install.yml [ansible-playbook args]   (Windows + Linux hosts; install_software.yml = Windows only)
 #   ./run.sh --ping                      win_ping the windows group
 #   ./run.sh --shell                     bash in the container
 #   ./run.sh --build                     (re)build image
@@ -32,6 +32,9 @@
 #   --wsl-user <name>                    also provision the WSL distro(s) for this Windows user (repeatable)
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
+#   --docker                             Linux hosts: install Docker Engine + the Compose plugin
+#   --docker-user <name>                 Linux hosts: add this user to the docker + sudo groups (repeatable;
+#                                        default theoneakta)
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
 #   --cis-os <windows11|windows2019|windows2022|windows2025>  default: windows11
@@ -120,6 +123,7 @@ YML
     PASSTHRU=()
     WSL_DISTROS=()
     WSL_TARGET_USERS=()
+    DOCKER_USERS=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --wazuh-manager)               EXTRA_VARS+=(-e "wazuh_manager=$2"); shift 2 ;;
@@ -137,6 +141,8 @@ YML
         --wsl-user)                    WSL_TARGET_USERS+=("$2"); shift 2 ;;
         --win11debloat)                EXTRA_VARS+=(-e "win11debloat_enabled=true"); shift ;;
         --rsat)                        EXTRA_VARS+=(-e "rsat_enabled=true"); shift ;;
+        --docker)                      EXTRA_VARS+=(-e "docker_enabled=true"); shift ;;
+        --docker-user)                 DOCKER_USERS+=("$2"); shift 2 ;;
         --cis-os)                      CIS_OS="$2"; shift 2 ;;
         --cis-level)                   CIS_LEVEL_ID="$2"; shift 2 ;;
         --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); shift ;;
@@ -153,6 +159,10 @@ YML
         users_json=$(printf '"%s",' "${WSL_TARGET_USERS[@]}"); users_json="[${users_json%,}]"
       fi
       EXTRA_VARS+=(-e "{\"wsl_enabled\": true, \"wsl_distros_selected\": $distros_json, \"wsl_target_users\": $users_json}")
+    fi
+    if [[ ${#DOCKER_USERS[@]} -gt 0 ]]; then
+      docker_users_json=$(printf '"%s",' "${DOCKER_USERS[@]}")
+      EXTRA_VARS+=(-e "{\"docker_users\": [${docker_users_json%,}]}")
     fi
     if [[ -n "${CIS_OS:-}" || -n "${CIS_LEVEL_ID:-}" ]]; then
       # Keep in sync with CIS_PROFILES in gui/app.py (the single source of

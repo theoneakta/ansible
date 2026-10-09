@@ -1,4 +1,4 @@
-"""Small web GUI for running install_software.yml against Windows hosts.
+"""Small web GUI for running the install playbooks against Windows and Linux hosts.
 
 Runs entirely inside the `gui` container (see docker-compose.yml) alongside
 the same Ansible stack used by run.sh - nothing here executes on the host.
@@ -33,7 +33,9 @@ INVENTORY_DIR = BASE / "inventory"
 HOSTS_FILE = INVENTORY_DIR / "hosts.yml"
 GROUP_VAULT = INVENTORY_DIR / "group_vars" / "windows" / "vault.yml"
 HOST_VARS_DIR = INVENTORY_DIR / "host_vars"
-PLAYBOOK = "playbooks/install_software.yml"
+PLAYBOOK = "playbooks/install_software.yml"  # holds choco_packages, read/edited below
+# What the Install buttons run: install_software.yml (Windows) + linux_software.yml (Linux).
+INSTALL_PLAYBOOK = "playbooks/install.yml"
 DATA_DIR = pathlib.Path("/ansible/gui-data")
 DB_PATH = DATA_DIR / "history.db"
 VAULT_PASS_FILE = pathlib.Path("/run/secrets/vault_pass")
@@ -299,35 +301,53 @@ def init_db():
 init_db()
 
 
+# Inventory groups the GUI manages, and the OS each one means.
+HOST_GROUPS = ("windows", "linux")
+
+
 def list_hosts() -> list[dict]:
     data = yaml.safe_load(HOSTS_FILE.read_text()) or {}
-    try:
-        hosts = list(data["all"]["children"]["windows"]["hosts"].keys())
-    except (KeyError, TypeError):
-        hosts = []
-    return [
-        {"name": str(h), "has_credential_override": (HOST_VARS_DIR / str(h) / "vault.yml").exists()}
-        for h in hosts
-    ]
+    hosts = []
+    for group in HOST_GROUPS:
+        try:
+            names = list((data["all"]["children"][group]["hosts"] or {}).keys())
+        except (KeyError, TypeError, AttributeError):
+            names = []
+        hosts += [
+            {"name": str(h), "os": group,
+             "has_credential_override": (HOST_VARS_DIR / str(h) / "vault.yml").exists()}
+            for h in names
+        ]
+    return hosts
+
+
+def host_os(name: str) -> Optional[str]:
+    return next((h["os"] for h in list_hosts() if h["name"] == name), None)
 
 
 HOST_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
 
 
-def add_host_to_inventory(name: str) -> None:
+def add_host_to_inventory(name: str, os_group: str = "windows") -> None:
     if not HOST_NAME_RE.match(name):
         raise HTTPException(400, "Invalid host name/IP - use letters, numbers, dots, and hyphens only.")
+    if os_group not in HOST_GROUPS:
+        raise HTTPException(400, f"Unknown OS '{os_group}' - expected one of {', '.join(HOST_GROUPS)}.")
     if name in {h["name"] for h in list_hosts()}:
         raise HTTPException(400, f"Host '{name}' is already in the inventory.")
 
+    # Text edit rather than a YAML round-trip, so comments in hosts.yml survive:
+    # insert under the group's own "hosts:" line, adding the group if missing.
     text = HOSTS_FILE.read_text()
-    match = re.search(r"^([ \t]*)hosts:[ \t]*\r?\n", text, flags=re.MULTILINE)
-    if not match:
-        raise HTTPException(500, "Could not find a 'hosts:' section in inventory/hosts.yml.")
-
-    entry_indent = match.group(1) + "  "
-    insert_at = match.end()
-    new_text = text[:insert_at] + f"{entry_indent}{name}:\n" + text[insert_at:]
+    group = re.search(rf"^([ \t]*){os_group}:[ \t]*\r?\n([ \t]*)hosts:[ \t]*\r?\n", text, flags=re.MULTILINE)
+    if group:
+        entry_indent = group.group(2) + "  "
+        insert_at = group.end()
+        new_text = text[:insert_at] + f"{entry_indent}{name}:\n" + text[insert_at:]
+    else:
+        if not re.search(r"^  children:[ \t]*\r?$", text, flags=re.MULTILINE):
+            raise HTTPException(500, "Could not find 'all: children:' in inventory/hosts.yml.")
+        new_text = text.rstrip("\n") + f"\n    {os_group}:\n      hosts:\n        {name}:\n"
     HOSTS_FILE.write_text(new_text)
 
 
@@ -381,7 +401,43 @@ def check_winrm(host: str) -> dict:
     return {"ok": proc.returncode == 0, "detail": output[-1500:] or "(no output)"}
 
 
+def check_ssh(host: str) -> dict:
+    if not has_vault_pass():
+        return {"ok": False, "detail": "No vault password file on the server - cannot authenticate."}
+    # Linux hosts use the Windows group's vault account (group_vars/linux/vars.yml),
+    # which linux_software.yml loads itself - an ad-hoc command has to pass it.
+    cmd = ["ansible", host, "-m", "ansible.builtin.ping", "-e", f"@{GROUP_VAULT.relative_to(BASE)}"] \
+        + vault_password_args()
+    env = os.environ.copy()
+    env.setdefault("HOME", "/tmp")
+    env.setdefault("ANSIBLE_LOCAL_TEMP", "/tmp/.ansible/tmp")
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE), env=env, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "SSH check timed out after 30 seconds."}
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return {"ok": proc.returncode == 0, "detail": output[-1500:] or "(no output)"}
+
+
+def test_linux_host(host: str) -> dict:
+    ping = check_ping(host)
+    tcp = check_tcp_port(host, 22)
+    ssh = check_ssh(host)
+    if ssh["ok"]:
+        summary = "Connected successfully - SSH, credentials and sudo are working."
+    elif not tcp["ok"]:
+        summary = ("Host looks unreachable on the network (no ping reply, SSH port closed)." if ping["ok"] is False
+                   else "Network reachable but SSH (port 22) is closed - check sshd and the firewall.")
+    else:
+        summary = "SSH port is open but the connection failed - likely the credentials or sudo. See details below."
+    # Same keys as the Windows test ("winrm" = the connection check), plus its label.
+    return {"host": host, "ping": ping, "port": {**tcp, "port": 22}, "winrm": ssh,
+            "check_label": "SSH / credentials", "summary": summary}
+
+
 def test_host(host: str) -> dict:
+    if host_os(host) == "linux":
+        return test_linux_host(host)
     port = get_winrm_port()
     ping = check_ping(host)
     tcp = check_tcp_port(host, port)
@@ -569,6 +625,7 @@ def api_hosts():
 
 class HostIn(BaseModel):
     name: str
+    os: str = "windows"  # inventory group: "windows" or "linux"
 
 
 @app.post("/api/hosts")
@@ -576,8 +633,8 @@ def api_add_host(body: HostIn):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Host name/IP is required.")
-    add_host_to_inventory(name)
-    return {"ok": True, "name": name}
+    add_host_to_inventory(name, body.os)
+    return {"ok": True, "name": name, "os": body.os}
 
 
 @app.post("/api/hosts/{name}/test")
@@ -715,6 +772,8 @@ class RunIn(BaseModel):
     wsl_target_users: list[str] = []  # also provision selected distro(s) for these specific Windows users
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
     rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
+    docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
+    docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
 
 
 def build_extra_vars(body: RunIn) -> dict:
@@ -761,7 +820,17 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["win11debloat_enabled"] = True
     if body.rsat:
         extra_vars["rsat_enabled"] = True
+    if body.docker:
+        extra_vars["docker_enabled"] = True
+        users = [u for u in body.docker_users if LINUX_USER_RE.match(u)]
+        if len(users) != len(body.docker_users):
+            raise HTTPException(400, "Invalid Linux user name - use lower-case letters, digits, '-', '_' and '.'.")
+        if users:
+            extra_vars["docker_users"] = users
     return extra_vars
+
+
+LINUX_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 
 
 def run_log_path(run_id: int) -> pathlib.Path:
@@ -847,7 +916,7 @@ def api_run(body: RunIn):
     if not has_vault_pass():
         raise HTTPException(400, "No vault password file on the server - cannot authenticate to hosts.")
     extra_vars = build_extra_vars(body)
-    cmd = ["ansible-playbook", PLAYBOOK]
+    cmd = ["ansible-playbook", INSTALL_PLAYBOOK]
     if body.hosts:
         cmd += ["--limit", ",".join(body.hosts)]
     if extra_vars:
@@ -1178,8 +1247,11 @@ def api_image_status():
         "settings": {k: v for k, v in settings.items() if k != "images"},
         "images": {
             i: {**p, "wim": _wim_status(i)} if p.get("os", "windows") != "linux"
-            else {**p, "published": (PXE_DATA / "linux" / i / "images" / "pxeboot" / "vmlinuz").exists()
-                  and (PXE_DATA / "ks" / f"{i}.ks").exists()}
+            # image_publish_linux.yml writes the marker last (older Rocky
+            # publishes predate it: their kernel + kickstart count too).
+            else {**p, "published": (PXE_DATA / "linux" / i / ".published").exists()
+                  or ((PXE_DATA / "linux" / i / "images" / "pxeboot" / "vmlinuz").exists()
+                      and (PXE_DATA / "ks" / f"{i}.ks").exists())}
             for i, p in images.items()
         },
         "token_set": bool(proxmox_secret()),

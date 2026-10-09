@@ -14,10 +14,10 @@ set -eu
 : "${PXE_SUBNET:?set PXE_SUBNET in .env, e.g. 192.168.3.0}"
 export PXE_HTTP_PORT="${PXE_HTTP_PORT:-8092}"
 export PXE_SERVER_IP PXE_SMB_PASSWORD PXE_SUBNET
-# Deployable images: "<image_id>=<menu label>[=linux];..." - image_id matches
+# Deployable images: "<image_id>=<menu label>[=linux|ubuntu];..." - image_id matches
 # the keys under `images:` in inventory/image.yml. Windows images deploy
-# <image_id>.wim through WinPE; "=linux" ones network-install from linux/<id>.
-PXE_IMAGES="${PXE_IMAGES:-win11=Windows 11 Pro;win2025=Windows Server 2025;rocky10=Rocky Linux 10=linux}"
+# <image_id>.wim through WinPE; "=linux" (Rocky) and "=ubuntu" ones network-install from linux/<id>.
+PXE_IMAGES="${PXE_IMAGES:-win11=Windows 11 Pro;win2025=Windows Server 2025;rocky10=Rocky Linux 10=linux;ubuntu2604=Ubuntu 26.04 Server=ubuntu;ubuntu2604-desktop=Ubuntu 26.04 Desktop=ubuntu}"
 
 mkdir -p /data/images /data/winpe /data/hosts /data/linux /data/ks /srv/http/scripts
 chmod 755 /srv/http
@@ -38,7 +38,19 @@ items=/tmp/menu-items; targets=/tmp/deploy-targets; : > "$items"; : > "$targets"
 echo "$PXE_IMAGES" | tr ';' '\n' | while IFS='=' read -r id label kind; do
   [ -n "$id" ] || continue
   printf ':deploy-%s\necho\n' "$id" >> "$targets"
-  if [ "${kind:-windows}" = linux ]; then
+  if [ "${kind:-windows}" = ubuntu ]; then
+    # Subiquity: kernel/initrd from the tree, then it downloads the whole ISO
+    # (url=, held in RAM - so 8 GB+ RAM on the target) and installs with the
+    # autoinstall answer file from ks/<id>/ (NoCloud over HTTP).
+    printf 'item deploy-%s Deploy %s  (ERASES the largest disk)\n' "$id" "$label" >> "$items"
+    printf '%s\n' \
+      "echo This ERASES the largest disk on this machine and installs $label." \
+      "prompt --key y --timeout 30000 Press 'y' within 30 seconds to continue, anything else to go back... || goto menu" \
+      "kernel \${base}/linux/$id/casper/vmlinuz initrd=initrd ip=dhcp url=\${base}/linux/$id/install.iso autoinstall ds=nocloud;s=\${base}/ks/$id/ cloud-config-url=/dev/null || goto failed" \
+      "initrd \${base}/linux/$id/casper/initrd || goto failed" \
+      "boot || goto failed" \
+      "" >> "$targets"
+  elif [ "${kind:-windows}" = linux ]; then
     printf 'item deploy-%s Deploy %s  (ERASES the first disk)\n' "$id" "$label" >> "$items"
     printf '%s\n' \
       "echo This ERASES the first disk on this machine and installs $label." \

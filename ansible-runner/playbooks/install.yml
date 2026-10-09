@@ -1,0 +1,9 @@
+---
+# What the GUI's Install buttons (and `./run.sh install.yml`) run: the
+# Windows play and the Linux play in one go. Each only targets its own
+# inventory group, so --limit can mix Windows and Linux hosts freely.
+- name: Windows hosts
+  ansible.builtin.import_playbook: install_software.yml
+
+- name: Linux hosts
+  ansible.builtin.import_playbook: linux_software.yml
