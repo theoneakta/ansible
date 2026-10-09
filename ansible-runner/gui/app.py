@@ -1009,6 +1009,52 @@ for _key, _label, _role, _prefix, _glob in [
     }
 
 
+# Linux: ansible-lockdown roles, playbooks/cis_hardening_linux.yml. Verified
+# against each role's source (October 2026): the same 7 sections everywhere,
+# <prefix>_section1..7 unpadded, controls in tasks/section_N/*.yml, and each
+# control tagged with its own level only - so a Level 2 run asks for both.
+# Ubuntu 26.04: no role yet (ansible-lockdown/UBUNTU26-CIS was empty).
+CIS_LINUX_PLAYBOOK = "playbooks/cis_hardening_linux.yml"
+_LINUX_LEVELS = [
+    {"id": "1-server", "label": "Level 1 - Server", "tags": ["level1-server"]},
+    {"id": "2-server", "label": "Level 2 - Server", "tags": ["level1-server", "level2-server"]},
+    {"id": "1-workstation", "label": "Level 1 - Workstation (desktop)", "tags": ["level1-workstation"]},
+    {"id": "2-workstation", "label": "Level 2 - Workstation (desktop)",
+     "tags": ["level1-workstation", "level2-workstation"]},
+]
+_LINUX_SECTIONS = [
+    {"id": "1", "label": "Initial Setup"},
+    {"id": "2", "label": "Services"},
+    {"id": "3", "label": "Network"},
+    # Off by default in cis_hardening_linux.yml (default-deny inbound would
+    # cut off host-networked services); only applied when picked here.
+    {"id": "4", "label": "Host Based Firewall (off unless selected)"},
+    {"id": "5", "label": "Access Control"},
+    {"id": "6", "label": "Logging and Auditing"},
+    {"id": "7", "label": "System Maintenance"},
+]
+for _key, _label, _role, _prefix in [
+    ("ubuntu2404", "Ubuntu 24.04", "UBUNTU24-CIS", "ubtu24cis"),
+    ("ubuntu2204", "Ubuntu 22.04", "UBUNTU22-CIS", "ubtu22cis"),
+    ("rocky10", "Rocky / RHEL / Alma 10", "RHEL10-CIS", "rhel10cis"),
+    ("rocky9", "Rocky / RHEL / Alma 9", "RHEL9-CIS", "rhel9cis"),
+    ("rocky8", "Rocky / RHEL / Alma 8", "RHEL8-CIS", "rhel8cis"),
+    ("debian13", "Debian 13", "DEBIAN13-CIS", "deb13cis"),
+    ("debian12", "Debian 12", "DEBIAN12-CIS", "deb12cis"),
+    ("debian11", "Debian 11", "DEBIAN11-CIS", "deb11cis"),
+]:
+    CIS_PROFILES[_key] = {
+        "label": _label,
+        "role": _role,
+        "var_prefix": _prefix,
+        "section_width": 1,
+        "control_glob": "tasks/section_{n}/*.yml",
+        "levels": _LINUX_LEVELS,
+        "sections": _LINUX_SECTIONS,
+        "playbook": CIS_LINUX_PLAYBOOK,
+    }
+
+
 class CisRunIn(BaseModel):
     hosts: list[str] = []
     os: str = "windows11"  # key into CIS_PROFILES
@@ -1096,7 +1142,7 @@ def api_cis_run(body: CisRunIn):
     if body.audit_only:
         extra_vars.update({"audit_only": True, "setup_audit": True, "run_audit": True})
 
-    cmd = ["ansible-playbook", CIS_PLAYBOOK, "--tags", ",".join(level["tags"])]
+    cmd = ["ansible-playbook", profile.get("playbook", CIS_PLAYBOOK), "--tags", ",".join(level["tags"])]
     if body.hosts:
         cmd += ["--limit", ",".join(body.hosts)]
     cmd += ["-e", json.dumps(extra_vars)]

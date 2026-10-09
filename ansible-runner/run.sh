@@ -39,6 +39,8 @@
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
 #   --cis-os <windows11|windows2019|windows2022|windows2025>  default: windows11
+#   --cis-os <ubuntu2404|ubuntu2204|rocky10|rocky9|rocky8|debian13|debian12|debian11>  with cis_hardening_linux.yml
+#                                         levels: 1-server, 2-server, 1-workstation, 2-workstation
 #   --cis-level <id>                     windows11: 1 or 2
 #                                         servers:   1-dc, 1-member, 1-standalone, 2-dc, or 2-standalone
 #   --cis-audit-only                     report what would change without making changes
@@ -177,7 +179,16 @@ YML
         windows2019) CIS_ROLE=Windows-2019-CIS ;;
         windows2022) CIS_ROLE=Windows-2022-CIS ;;
         windows2025) CIS_ROLE=Windows-2025-CIS ;;
-        *) echo "Unknown --cis-os '$CIS_OS' (expected windows11, windows2019, windows2022, or windows2025)" >&2; exit 1 ;;
+        # Linux - use with cis_hardening_linux.yml
+        ubuntu2404)  CIS_ROLE=UBUNTU24-CIS ;;
+        ubuntu2204)  CIS_ROLE=UBUNTU22-CIS ;;
+        rocky10)     CIS_ROLE=RHEL10-CIS ;;
+        rocky9)      CIS_ROLE=RHEL9-CIS ;;
+        rocky8)      CIS_ROLE=RHEL8-CIS ;;
+        debian13)    CIS_ROLE=DEBIAN13-CIS ;;
+        debian12)    CIS_ROLE=DEBIAN12-CIS ;;
+        debian11)    CIS_ROLE=DEBIAN11-CIS ;;
+        *) echo "Unknown --cis-os '$CIS_OS' (expected windows11, windows2019, windows2022, windows2025, ubuntu2404, ubuntu2204, rocky8/9/10 or debian11/12/13)" >&2; exit 1 ;;
       esac
       case "$CIS_OS:$CIS_LEVEL_ID" in
         windows11:1)     CIS_TAGS="level1-corporate-enterprise-environment,level1-bitlocker" ;;
@@ -187,6 +198,10 @@ YML
         *:1-standalone)  CIS_TAGS="level1-memberserver" ;;
         *:2-dc)          CIS_TAGS="level2-domaincontroller" ;;
         *:2-standalone)  CIS_TAGS="level2-memberserver" ;;
+        *:1-server)      CIS_TAGS="level1-server" ;;
+        *:2-server)      CIS_TAGS="level1-server,level2-server" ;;
+        *:1-workstation) CIS_TAGS="level1-workstation" ;;
+        *:2-workstation) CIS_TAGS="level1-workstation,level2-workstation" ;;
         *) echo "Unknown --cis-level '$CIS_LEVEL_ID' for --cis-os '$CIS_OS'" >&2; exit 1 ;;
       esac
       EXTRA_VARS+=(-e "cis_role=$CIS_ROLE")

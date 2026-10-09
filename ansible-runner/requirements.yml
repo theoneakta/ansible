@@ -18,3 +18,38 @@ roles:
     src: https://github.com/ansible-lockdown/Windows-2025-CIS.git
     scm: git
     version: main
+  # Linux (playbooks/cis_hardening_linux.yml). The RHEL roles also cover
+  # Rocky/Alma of the same major version. No Ubuntu 26.04 role yet
+  # (ansible-lockdown/UBUNTU26-CIS was still empty in October 2026).
+  - name: UBUNTU22-CIS
+    src: https://github.com/ansible-lockdown/UBUNTU22-CIS.git
+    scm: git
+    version: main
+  - name: UBUNTU24-CIS
+    src: https://github.com/ansible-lockdown/UBUNTU24-CIS.git
+    scm: git
+    version: main
+  - name: RHEL8-CIS
+    src: https://github.com/ansible-lockdown/RHEL8-CIS.git
+    scm: git
+    version: main
+  - name: RHEL9-CIS
+    src: https://github.com/ansible-lockdown/RHEL9-CIS.git
+    scm: git
+    version: main
+  - name: RHEL10-CIS
+    src: https://github.com/ansible-lockdown/RHEL10-CIS.git
+    scm: git
+    version: main
+  - name: DEBIAN11-CIS
+    src: https://github.com/ansible-lockdown/DEBIAN11-CIS.git
+    scm: git
+    version: main
+  - name: DEBIAN12-CIS
+    src: https://github.com/ansible-lockdown/DEBIAN12-CIS.git
+    scm: git
+    version: main
+  - name: DEBIAN13-CIS
+    src: https://github.com/ansible-lockdown/DEBIAN13-CIS.git
+    scm: git
+    version: main

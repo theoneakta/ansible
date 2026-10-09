@@ -409,7 +409,7 @@
     <section class="tabPanel" id="tab-cis">
       <div class="panelHead"><h2>CIS Benchmark Hardening</h2><p>Applies an ansible-lockdown CIS role to the selected host(s).</p></div>
       <div class="warning">
-        <strong>This changes real security settings</strong> on the selected host(s) - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the same WinRM access this tool depends on) or break older software. Uses <a href="https://github.com/ansible-lockdown" target="_blank" rel="noopener">ansible-lockdown's</a> CIS roles - read the relevant role's own docs first, and test on a non-critical PC before applying for real.
+        <strong>This changes real security settings</strong> on the selected host(s) - password/lockout policy, audit policy, services, network protocols, and more. Some controls can affect remote management itself (the WinRM or SSH access this tool depends on) or break older software. On Linux, the host firewall section stays off unless you pick it under "Specific sections" (it blocks every service not explicitly allowed), and Docker hosts keep IP forwarding. Uses <a href="https://github.com/ansible-lockdown" target="_blank" rel="noopener">ansible-lockdown's</a> CIS roles - read the relevant role's own docs first, and test on a non-critical PC before applying for real.
       </div>
       <div class="card">
         <div class="row"><label for="cisOs">Target OS</label><select id="cisOs"></select></div>

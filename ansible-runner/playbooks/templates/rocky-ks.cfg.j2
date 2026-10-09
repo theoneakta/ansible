@@ -65,6 +65,12 @@ EOF
 # live. Packer finds the VM's IP through that agent.
 dnf -y install qemu-guest-agent cloud-init
 
+# Keep SSH password logins on clones of this template: Rocky's cloud-init
+# turns them off on first boot (ssh_pwauth: 0), and the ansible-runner
+# toolkit logs in with a password - a clone refused it, offering only
+# publickey (confirmed live).
+printf 'ssh_pwauth: true\n' > /etc/cloud/cloud.cfg.d/99-ansible-runner.cfg
+
 # Packer's provisioner needs passwordless sudo; removed again by its last step.
 echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/99-packer-build
 chmod 440 /etc/sudoers.d/99-packer-build
