@@ -129,8 +129,9 @@ source "proxmox-iso" "ubuntu" {
   communicator = "ssh"
   ssh_username = var.ssh_username
   ssh_password = var.ssh_password
-  # The desktop variant downloads and installs a few thousand packages.
-  ssh_timeout = "90m"
+  # The desktop variant downloads and installs a few thousand packages, on
+  # storage that can be slow (VM disks on the TrueNAS over iSCSI).
+  ssh_timeout = "180m"
 }
 
 build {

@@ -17,12 +17,12 @@ autoinstall:
   timezone: {{ image_linux_timezone }}
   # IPv6 off everywhere: no IPv6 on the interface here, and disabled in the
   # kernel itself (ipv6.disable=1, late-commands below).
+  # The installer itself always uses networkd: the live-server ISO has no
+  # NetworkManager, and renderer: NetworkManager here made its `netplan apply`
+  # fail at the very start of the install (confirmed live, desktop build).
+  # The desktop switches to NetworkManager in late-commands instead.
   network:
     version: 2
-{% if img.desktop | default(false) %}
-    # The desktop manages networking with NetworkManager (Settings, tray).
-    renderer: NetworkManager
-{% endif %}
     ethernets:
       wired:
         match:
@@ -67,6 +67,17 @@ autoinstall:
       sed -i 's/^GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="ipv6.disable=1 /' /target/etc/default/grub
     - |-
       curtin in-target --target=/target -- update-grub
+{% if img.desktop | default(false) %}
+    # Desktop: hand networking to NetworkManager (Settings, tray icon), which
+    # ubuntu-desktop installed; it brings the wired port up with DHCP by
+    # itself. IPv6 stays off through the kernel option above.
+    - |-
+      rm -f /target/etc/netplan/*.yaml
+    - |-
+      printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > /target/etc/netplan/01-network-manager-all.yaml
+    - |-
+      chmod 600 /target/etc/netplan/01-network-manager-all.yaml
+{% endif %}
 {% if ks_mode == 'build' %}
     # Packer's provisioner needs passwordless sudo; removed again by its last step.
     - |-
