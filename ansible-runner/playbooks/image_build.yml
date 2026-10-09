@@ -43,11 +43,12 @@
     packer_dir: "{{ playbook_dir }}/packer/{{ image_distro }}"
     ks_path: "/tmp/ks-{{ image_id }}.cfg"
     packer_log: "/ansible/gui-data/packer-build-{{ image_id }}.log"
-    # The local admin every deployed PC gets - the same account the rest of
-    # this toolkit connects as, so a freshly deployed PC is manageable from
-    # the GUI straight away. Override per build if wanted.
-    image_admin_user: "{{ vault_win_user }}"
-    image_admin_password: "{{ vault_win_password }}"
+    # The local admin every deployed PC gets: vault_image_admin_user/_password
+    # when set - kept separate on purpose, so images keep their account
+    # (theoneakta) even when the login this toolkit manages hosts with
+    # changes - else the group login. Override per build if wanted.
+    image_admin_user: "{{ vault_image_admin_user | default(vault_win_user) }}"
+    image_admin_password: "{{ vault_image_admin_password | default(vault_win_password) }}"
     proxmox_headers:
       Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
 

@@ -37,8 +37,8 @@
     pxe_data: /ansible/pxe
     iso_copy: "{{ pxe_data }}/iso/{{ img.iso.split('/') | last }}"
     tree: "{{ pxe_data }}/linux/{{ image_id }}"
-    image_admin_user: "{{ vault_win_user }}"
-    image_admin_password: "{{ vault_win_password }}"
+    image_admin_user: "{{ vault_image_admin_user | default(vault_win_user) }}"
+    image_admin_password: "{{ vault_image_admin_password | default(vault_win_password) }}"
 
   tasks:
     - name: Check this is a Linux image
