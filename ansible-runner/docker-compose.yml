@@ -19,6 +19,9 @@ services:
       context: .
       dockerfile: gui/Dockerfile
     image: ansible-gui:latest
+    # A real init as PID 1: uvicorn doesn't reap the processes its runs leave
+    # behind (ansible, ssh, packer) - 96 zombies after 8 hours, confirmed live.
+    init: true
     environment:
       HOME: /tmp
       ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
