@@ -1,0 +1,159 @@
+---
+# CIS Benchmark hardening for Linux hosts (inventory group "linux"), via
+# ansible-lockdown's roles - the Linux counterpart of cis_hardening.yml:
+#   UBUNTU22-CIS, UBUNTU24-CIS            Ubuntu 22.04 / 24.04
+#   RHEL8-CIS, RHEL9-CIS, RHEL10-CIS      RHEL / Rocky / Alma 8, 9, 10
+#   DEBIAN11-CIS, DEBIAN12-CIS, DEBIAN13-CIS
+# Ubuntu 26.04 has no role yet (ansible-lockdown/UBUNTU26-CIS was empty in
+# October 2026), and each role refuses any OS version but its own.
+#
+# WARNING: this changes real security settings (kernel modules, services,
+# sysctl, PAM/password policy, sshd, auditd, file permissions...). Level 2 is
+# stricter. Try it on a test machine before a server you rely on, and pick
+# the level that matches the machine: "server" or "workstation" (desktop).
+#
+# Levels are --tags (a Level 2 run is Level 1 + Level 2 controls - the roles
+# tag each control with its own level only): level1-server,
+# level1-workstation, level2-server, level2-workstation. Sections are
+# <prefix>_section1..7 booleans (unpadded), single controls
+# <prefix>_rule_<x_y_z>. The GUI's CIS section builds all of these (see
+# CIS_PROFILES in gui/app.py); on the CLI:
+#   ./run.sh cis_hardening_linux.yml --cis-os rocky10 --cis-level 1-server --limit 192.168.3.150
+#
+# Run against one OS family per run: cis_role names a single role.
+
+- name: Apply CIS Benchmark hardening (Linux)
+  hosts: linux
+  become: true
+  # Facts after the sudo.ws check below - gathering them needs become, which
+  # times out on sudo-rs hosts until then.
+  gather_facts: false
+  vars:
+    cis_role: RHEL10-CIS
+
+    # ------------------------------------------------------------------
+    # Safety defaults - the Linux side of cis_hardening.yml's
+    # win_skip_for_test list: controls that would cut this toolkit off from
+    # the host, or break what these hosts run. Each is a normal role
+    # variable, so a run can override it (-e ...).
+    # ------------------------------------------------------------------
+
+    # disruption_high gates the controls the role's authors flag as likely to
+    # break a running system (removing packages, enforcing mount options,
+    # ...). Off by default here - the RHEL and Debian roles already default
+    # to off, the Ubuntu roles to on.
+    ubtu22cis_disruption_high: false
+    ubtu24cis_disruption_high: false
+    rhel8cis_disruption_high: false
+    rhel9cis_disruption_high: false
+    rhel10cis_disruption_high: false
+    deb11cis_disruption_high: false
+    deb12cis_disruption_high: false
+    deb13cis_disruption_high: false
+
+    # IPv6 is turned off on every machine this toolkit manages
+    # (linux_software.yml, the images): tell the roles it isn't needed, which
+    # makes them disable it too instead of hardening it.
+    ubtu22cis_ipv6_required: false
+    ubtu24cis_ipv6_required: false
+    rhel8cis_ipv6_required: false
+    rhel9cis_ipv6_required: false
+    rhel10cis_ipv6_required: false
+    deb11cis_ipv6_required: false
+    deb12cis_ipv6_required: false
+    deb13cis_ipv6_required: false
+
+    # sshd AllowUsers: the RHEL9/10 roles default it to the connecting
+    # account only, which would lock every other account out of SSH. Empty =
+    # no AllowUsers line (the Ubuntu/Debian roles' default too).
+    rhel8cis_sshd_allowusers: ""
+    rhel9cis_sshd_allowusers: ""
+    rhel10cis_sshd_allowusers: ""
+
+    # The RHEL roles build a custom authselect (PAM) profile and refuse to
+    # run while it still has their placeholder name ("You still have the
+    # default name for your authselect profile" - confirmed live, RHEL10).
+    rhel8cis_authselect_custom_profile_name: cis_ansible_runner
+    rhel9cis_authselect_custom_profile_name: cis_ansible_runner
+    rhel10cis_authselect_custom_profile_name: cis_ansible_runner
+    # GRUB password (1.4.1) stays off (the roles' default, *_set_boot_pass:
+    # false): with one set, nobody can edit the boot entry from the Proxmox
+    # console without it.
+
+    # Section 4 (host-based firewall) is off unless picked explicitly on the
+    # GUI's "sections" mode or with -e <prefix>_section4=true: it turns on
+    # ufw/firewalld/nftables with a default-deny inbound policy, which cuts
+    # off every service not explicitly allowed - e.g. Emby and ntopng run with
+    # host networking on the Docker hosts (192.168.3.7/.8).
+    ubtu22cis_section4: false
+    ubtu24cis_section4: false
+    rhel8cis_section4: false
+    rhel9cis_section4: false
+    rhel10cis_section4: false
+    deb11cis_section4: false
+    deb12cis_section4: false
+    deb13cis_section4: false
+
+  pre_tasks:
+    # Same login handling as linux_software.yml: the host's own vault login
+    # if it has one, else the group default (loaded only then - play-level
+    # vars_files would override every host's own).
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+      tags: always
+
+    # Ubuntu 25.10+ ships sudo-rs as sudo, whose prompt Ansible never sees -
+    # use the classic sudo.ws wherever it exists (see linux_software.yml).
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+      tags: always
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+      tags: always
+
+    - name: Gather facts (the roles need them)
+      ansible.builtin.setup:
+      tags: always
+
+    # "Ensure IP forwarding is disabled" (3.3.1) and its packet-redirect
+    # siblings would break container networking: Docker, Podman and libvirt
+    # need forwarding. The roles skip them on a router (<prefix>_is_router),
+    # so declare these hosts one.
+    - name: Check for container / VM runtimes that need IP forwarding
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/usr/bin/docker, /usr/bin/podman, /usr/sbin/libvirtd]
+      register: forwarding_runtimes
+      tags: always
+
+    - name: Keep IP forwarding on where a runtime needs it
+      ansible.builtin.set_fact:
+        "{{ cis_role | lower | replace('ubuntu', 'ubtu') | replace('debian', 'deb') | replace('-cis', 'cis') }}_is_router": true
+      when: forwarding_runtimes.results | selectattr('stat.exists') | list | length > 0
+      tags: always
+
+    - name: Report the runtime check
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'IP forwarding kept on (found ' ~ (forwarding_runtimes.results | selectattr('stat.exists')
+          | map(attribute='item') | join(', ')) ~ ')' if forwarding_runtimes.results | selectattr('stat.exists')
+          | list else 'No container/VM runtime found - IP forwarding gets disabled per CIS.' }}
+      tags: always
+
+  tasks:
+    # include_role is dynamic: it doesn't inherit the CLI's --tags filter,
+    # so it needs tags: always itself and leaves the real level filtering to
+    # each task inside the role (same as cis_hardening.yml).
+    - name: "Include the {{ cis_role }} role"
+      ansible.builtin.include_role:
+        name: "{{ cis_role }}"
+      tags: always

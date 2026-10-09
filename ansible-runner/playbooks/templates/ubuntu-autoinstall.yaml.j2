@@ -84,6 +84,11 @@ autoinstall:
       echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/99-packer-build
     - |-
       chmod 440 /target/etc/sudoers.d/99-packer-build
+    # Clones of the template: keep SSH password logins (cloud-init can turn
+    # them off on first boot; the toolkit logs in with a password - a Rocky
+    # clone refused it, confirmed live).
+    - |-
+      printf 'ssh_pwauth: true\n' > /target/etc/cloud/cloud.cfg.d/99-ansible-runner.cfg
 {% else %}
     # PXE installs onto a Proxmox VM get the guest agent too, so Proxmox shows
     # the IP and can shut it down cleanly. Physical machines don't need it.

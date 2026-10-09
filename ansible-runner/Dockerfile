@@ -24,7 +24,8 @@ RUN ansible-galaxy collection install \
         community.windows \
         chocolatey.chocolatey \
         ansible.posix \
-        community.general
+        community.general \
+        community.crypto
 
 WORKDIR /ansible
 COPY ansible.cfg /ansible/ansible.cfg
