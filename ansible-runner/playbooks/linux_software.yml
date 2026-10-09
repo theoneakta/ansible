@@ -16,8 +16,6 @@
   # "all hosts" shouldn't have to reach every Linux host for nothing.
   gather_facts: false
   become: true
-  vars_files:
-    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
 
   vars:
     # IPv6 is turned off on every managed machine, on every run - same as the
@@ -31,6 +29,16 @@
     # distro's sudo group (Ubuntu "sudo", Rocky "wheel"). A user that doesn't
     # exist yet is created - with no password, so set one before using sudo.
     docker_users: [theoneakta]
+
+  pre_tasks:
+    # The login (vault_win_user/vault_win_password) comes from the host's own
+    # inventory/host_vars/<host>/vault.yml when it has one - inventory loads
+    # that by itself - otherwise from the group default, which only the
+    # windows group loads. Load the default only for hosts without their own:
+    # a play-level vars_files would override every host's own login.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
 
   tasks:
     # Ubuntu 25.10+ makes sudo-rs the default sudo, and Ansible's become never

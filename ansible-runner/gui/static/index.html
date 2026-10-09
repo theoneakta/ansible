@@ -277,9 +277,9 @@
         <div class="row">
           <label for="newHost">Add host (name or IP)</label>
           <input type="text" id="newHost" placeholder="192.168.3.18">
-          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option></select>
+          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option><option value="ssh">SSH only - no installs (NAS, appliance)</option></select>
         </div>
-        <p class="muted">Linux hosts are reached over SSH with the same account as the Windows hosts (Credentials tab), using sudo.</p>
+        <p class="muted">Linux hosts are reached over SSH with the same account as the Windows hosts (Credentials tab, or a per-host override), using sudo. "SSH only" hosts are never touched by the install playbooks - connection tests only.</p>
         <div class="actionBar">
           <button class="primary" id="addHostBtn">Add host</button>
           <span id="addHostStatus" class="muted"></span>
@@ -546,7 +546,7 @@ async function loadHosts() {
     row.className = 'row';
     row.style.marginLeft = '1.5rem';
     row.innerHTML = `<label><input type="checkbox" class="hostCheck" value="${h.name}" disabled>
-      ${h.name} <span class="badge neutral">${h.os === 'linux' ? 'Linux' : 'Windows'}</span>
+      ${h.name} <span class="badge neutral">${h.os === 'linux' ? 'Linux' : h.os === 'ssh' ? 'SSH only' : 'Windows'}</span>
       ${h.has_credential_override ? '<span class="muted">(has its own credentials)</span>' : ''}</label>
       <button class="testHostBtn" data-host="${h.name}">Test</button>
       <span class="testHostStatus muted" data-host="${h.name}"></span>`;
