@@ -59,16 +59,24 @@ autoinstall:
     # Packer finds the VM's IP through the guest agent.
     - qemu-guest-agent
 {% endif %}
+  # Each command is a literal block (|-), never a plain YAML string: the
+  # sudoers line's "NOPASSWD: ALL" made it a mapping and the installer
+  # stopped with "Malformed autoinstall in 'late-commands'" (confirmed live).
   late-commands:
-    - sed -i 's/^GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="ipv6.disable=1 /' /target/etc/default/grub
-    - curtin in-target --target=/target -- update-grub
+    - |-
+      sed -i 's/^GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="ipv6.disable=1 /' /target/etc/default/grub
+    - |-
+      curtin in-target --target=/target -- update-grub
 {% if ks_mode == 'build' %}
     # Packer's provisioner needs passwordless sudo; removed again by its last step.
-    - echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/99-packer-build
-    - chmod 440 /target/etc/sudoers.d/99-packer-build
+    - |-
+      echo '{{ image_admin_user }} ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/99-packer-build
+    - |-
+      chmod 440 /target/etc/sudoers.d/99-packer-build
 {% else %}
     # PXE installs onto a Proxmox VM get the guest agent too, so Proxmox shows
     # the IP and can shut it down cleanly. Physical machines don't need it.
-    - if [ "$(systemd-detect-virt)" = kvm ]; then curtin in-target --target=/target -- apt-get install -y qemu-guest-agent; fi
+    - |-
+      if [ "$(systemd-detect-virt)" = kvm ]; then curtin in-target --target=/target -- apt-get install -y qemu-guest-agent; fi
 {% endif %}
   shutdown: reboot
