@@ -33,6 +33,25 @@
     docker_users: [theoneakta]
 
   tasks:
+    # Ubuntu 25.10+ makes sudo-rs the default sudo, and Ansible's become never
+    # sees its password prompt ("Timeout waiting for privilege escalation
+    # prompt" - confirmed live on Ubuntu 26.04). Those releases still ship
+    # the classic sudo as sudo.ws: use it wherever it exists.
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      # A task var, not `become: false`: the inventory's ansible_become
+      # variable outranks the keyword.
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
     # sysctl takes effect immediately and persists (/etc/sysctl.d). The PXE
     # Rocky image also boots with ipv6.disable=1.
     - name: Turn IPv6 off
