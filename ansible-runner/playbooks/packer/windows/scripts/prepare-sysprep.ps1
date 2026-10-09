@@ -8,15 +8,19 @@ $ErrorActionPreference = 'Stop'
 #    (setup-winrm-ssl.ps1) without anyone logging on. A SYSTEM scheduled task
 #    rather than SetupComplete.cmd, which Windows skips on PCs activated with
 #    an OEM firmware key - exactly the PCs this image is meant for.
-#    Re-runs every 5 minutes until it succeeds, then deletes itself.
+#    Runs at startup, then every 5 minutes until it succeeds, then deletes
+#    itself. The repetition hangs off the startup trigger, so nothing fires
+#    on this build VM (its next boot is the deployed PC's): a separate
+#    "once, now, repeat every 5 minutes" trigger ran firstboot.ps1 here,
+#    5 minutes in - it reconfigured WinRM under Packer ("connection reset by
+#    peer") and deleted itself from the image - confirmed live on Server 2025.
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Windows\Setup\Scripts\firstboot.ps1'
-$triggers = @(
-    New-ScheduledTaskTrigger -AtStartup
-    New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
-)
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$trigger.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration (New-TimeSpan -Days 365)).Repetition
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
-Register-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Action $action -Trigger $triggers -Settings $settings `
+Register-ScheduledTask -TaskName 'FirstBoot-AnsibleWinRM' -Action $action -Trigger $trigger -Settings $settings `
     -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
 
 # 1b. IPv6 off on every interface (Microsoft's documented DisabledComponents
