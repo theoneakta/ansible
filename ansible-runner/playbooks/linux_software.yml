@@ -45,6 +45,19 @@
     # release instead (https://github.com/irino/softflowd).
     softflowd_version: "1.1.1"
 
+    # Wazuh agent, from Wazuh's own repository - same settings as the Windows
+    # hosts (install_software.yml); installed when wazuh_manager is set.
+    wazuh_manager: ""
+    wazuh_manager_port: "1514"
+    wazuh_protocol: "tcp"
+    wazuh_registration_password: ""
+    wazuh_group: ""
+    wazuh_agent_name: ""
+    # An agent must not be newer than its manager - pinned to the manager's
+    # version (wazuh/wazuh-manager:4.14.4 on 192.168.3.8), and held there so
+    # a system update doesn't move it. Raise it when the manager is upgraded.
+    wazuh_agent_version: "4.14.4"
+
   pre_tasks:
     # The login (vault_win_user/vault_win_password) comes from the host's own
     # inventory/host_vars/<host>/vault.yml when it has one - inventory loads
@@ -324,3 +337,121 @@
               softflowd exporting NetFlow v9 for
               {{ softflowd_interface or ansible_facts['default_ipv4']['interface'] }}
               to {{ softflowd_collector }}.
+
+    - name: Wazuh agent
+      when: wazuh_manager | length > 0
+      block:
+        - name: Gather facts (distribution)
+          ansible.builtin.setup:
+            gather_subset: [min]
+
+        - name: Check the distribution is supported
+          ansible.builtin.assert:
+            that: ansible_facts['os_family'] in ['Debian', 'RedHat']
+            fail_msg: "Wazuh agent: only Ubuntu/Debian and Rocky/RHEL are handled here."
+            quiet: true
+
+        - name: Wazuh repository (Rocky / RHEL)
+          when: ansible_facts['os_family'] == 'RedHat'
+          block:
+            - name: Wazuh's signing key
+              ansible.builtin.rpm_key:
+                key: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+
+            # Left disabled: used only for this install, so a plain
+            # "dnf upgrade" never moves the agent past the manager.
+            - name: Wazuh's dnf repository (disabled - used only here)
+              ansible.builtin.yum_repository:
+                name: wazuh
+                description: Wazuh repository
+                baseurl: https://packages.wazuh.com/4.x/yum/
+                gpgkey: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+                gpgcheck: true
+                enabled: false
+
+            - name: Install the agent (enrolls with the manager on first start)
+              ansible.builtin.dnf:
+                name: "wazuh-agent-{{ wazuh_agent_version }}-1"
+                enablerepo: wazuh
+                allow_downgrade: true
+              environment: &wazuh_env
+                WAZUH_MANAGER: "{{ wazuh_manager }}"
+                WAZUH_MANAGER_PORT: "{{ wazuh_manager_port }}"
+                WAZUH_PROTOCOL: "{{ wazuh_protocol }}"
+                WAZUH_REGISTRATION_PASSWORD: "{{ wazuh_registration_password }}"
+                WAZUH_AGENT_GROUP: "{{ wazuh_group }}"
+                WAZUH_AGENT_NAME: "{{ wazuh_agent_name or ansible_facts['nodename'] }}"
+              register: wazuh_pkg_rh
+
+        - name: Wazuh repository (Ubuntu / Debian)
+          when: ansible_facts['os_family'] == 'Debian'
+          block:
+            - name: Make sure the apt keyrings folder exists
+              ansible.builtin.file:
+                path: /etc/apt/keyrings
+                state: directory
+                mode: "0755"
+
+            - name: Wazuh's signing key
+              ansible.builtin.get_url:
+                url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+                dest: /etc/apt/keyrings/wazuh.asc
+                mode: "0644"
+
+            - name: Wazuh's apt repository
+              ansible.builtin.apt_repository:
+                repo: "deb [signed-by=/etc/apt/keyrings/wazuh.asc] https://packages.wazuh.com/4.x/apt/ stable main"
+                filename: wazuh
+                state: present
+
+            - name: Install the agent (enrolls with the manager on first start)
+              ansible.builtin.apt:
+                name: "wazuh-agent={{ wazuh_agent_version }}-1"
+                allow_downgrade: true
+                update_cache: true
+              environment: *wazuh_env
+              register: wazuh_pkg_deb
+
+            - name: Hold the agent at this version (no upgrade past the manager)
+              ansible.builtin.dpkg_selections:
+                name: wazuh-agent
+                selection: hold
+
+        # The package only writes the manager address on a fresh install - a
+        # changed wazuh_manager would otherwise never reach an existing agent.
+        - name: Point the agent at the manager
+          ansible.builtin.replace:
+            path: /var/ossec/etc/ossec.conf
+            regexp: '<address>[^<]*</address>'
+            replace: '<address>{{ wazuh_manager }}</address>'
+          register: wazuh_conf
+
+        - name: Start the agent now and at boot
+          ansible.builtin.systemd_service:
+            name: wazuh-agent
+            state: "{{ 'restarted' if (wazuh_conf is changed or wazuh_pkg_rh is changed or wazuh_pkg_deb is changed) else 'started' }}"
+            enabled: true
+            daemon_reload: true
+
+        - name: Wait for it to connect to the manager (up to 2 minutes)
+          ansible.builtin.command: grep -c "Connected to the server" /var/ossec/logs/ossec.log
+          register: wazuh_connected
+          until: wazuh_connected.rc == 0
+          retries: 24
+          delay: 5
+          changed_when: false
+          failed_when: false
+
+        - name: Agent's last log lines (not connected)
+          ansible.builtin.command: tail -n 8 /var/ossec/logs/ossec.log
+          register: wazuh_log
+          changed_when: false
+          when: wazuh_connected.rc != 0
+
+        - name: Report Wazuh
+          ansible.builtin.debug:
+            msg: >-
+              {{ 'Wazuh agent ' ~ wazuh_agent_version ~ ' connected to ' ~ wazuh_manager ~ ':' ~ wazuh_manager_port
+                 if wazuh_connected.rc == 0 else
+                 'Wazuh agent installed but NOT connected to ' ~ wazuh_manager ~ ' yet: ' ~ (wazuh_log.stdout_lines | default([]) | join(' | ')) }}
+          failed_when: wazuh_connected.rc != 0
