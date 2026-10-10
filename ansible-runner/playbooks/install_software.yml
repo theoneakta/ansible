@@ -125,13 +125,12 @@
       - { name: vscode,           label: VS Code,                         category: dev }
       - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
-      # PotPlayer's installer (NSIS + UAC plugin) never finishes unattended:
-      # "/S" sat >10 min doing nothing both as the WinRM account and as
-      # SYSTEM (192.168.3.17, Oct 2026) - so it fails after 10 min with a
-      # clear message instead of holding the run for 45. Install it by hand.
+      # PotPlayer's installer (NSIS + UAC plugin) hangs forever over WinRM
+      # and as SYSTEM (>10 min, 192.168.3.17, Oct 2026) but installs in
+      # seconds from an admin desktop session -> interactive (see the task).
       - { name: potplayer,        label: PotPlayer,                       category: multimedia, ignore_checksums: true,
-          verify: 'C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe', timeout: 600,
-          manual: "PotPlayer's installer can't run unattended - on the PC, in an admin terminal: choco install potplayer --force -y" }
+          verify: 'C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe', timeout: 600, interactive: true,
+          manual: "needs a signed-in admin at the PC (or there, in an admin terminal: choco install potplayer -y --ignore-checksums)" }
       - { name: powershell-core,  label: PowerShell 7,                    category: dev }
       - { name: powertoys,        label: PowerToys,                       category: tools }
       - { name: rambox,           label: Rambox,                          category: internet }
@@ -222,7 +221,7 @@
         ignore_checksums: "{{ item.ignore_checksums | default(false) }}"
       vars:
         _choco_missing: "{{ (choco_verify.results | default([])) | rejectattr('skipped', 'defined') | rejectattr('stat.exists') | map(attribute='item.name') | list }}"
-      loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
+      loop: "{{ (choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list)) | rejectattr('interactive', 'defined') | list }}"
       loop_control:
         label: "{{ item.label }}"
       when: install_packages | bool
@@ -235,6 +234,64 @@
       poll: 15
       register: choco_results
       ignore_errors: true   # one bad package ID shouldn't stop the rest
+
+    # Packages whose installer only works in a signed-in desktop session
+    # (`interactive: true` - e.g. PotPlayer: NSIS + UAC plugin, hangs forever
+    # over WinRM and as SYSTEM, installs in seconds from an admin desktop).
+    # Run through a one-shot scheduled task as whoever is signed in at the
+    # console, "only when logged on" (their open session - no password
+    # stored) with highest privileges. The WinRM account never logs on
+    # interactively. Nobody signed in, or not an admin -> skipped with a note.
+    - name: Install packages that need a signed-in desktop session
+      ansible.windows.win_powershell:
+        parameters:
+          Package: "{{ item.name }}"
+          Verify: "{{ item.verify | default('') }}"
+          IgnoreChecksums: "{{ item.ignore_checksums | default(false) | bool }}"
+          TimeoutSec: "{{ item.timeout | default(1800) | int }}"
+        script: |
+          param([string]$Package, [string]$Verify, [bool]$IgnoreChecksums, [int]$TimeoutSec)
+          $Ansible.Changed = $false
+          $user = (Get-CimInstance Win32_ComputerSystem).UserName
+          if (-not $user) { $Ansible.Failed = $true; return "skipped: nobody is signed in at the console - sign in and re-run, or install $Package by hand" }
+          $admins = Get-LocalGroupMember -SID S-1-5-32-544 -ErrorAction SilentlyContinue | ForEach-Object Name
+          if ($admins -and $user -notin $admins) { $Ansible.Failed = $true; return "skipped: $user (signed in) is not a local administrator" }
+          $missing = $Verify -and -not (Test-Path -LiteralPath $Verify)
+          $listed = [bool](choco list $Package --exact --limit-output)
+          if ($listed -and -not $missing) { $verb = 'upgrade' } else { $verb = 'install' }
+          $chocoArgs = @($verb, $Package, '-y', '--no-progress', '--limit-output', "--timeout=$TimeoutSec")
+          if ($IgnoreChecksums) { $chocoArgs += '--ignore-checksums' }
+          if ($listed -and $missing) { $chocoArgs += '--force' }   # stale "installed" record
+          $dir = 'C:\ProgramData\ansible-runner'; New-Item -ItemType Directory -Force $dir | Out-Null
+          $log = Join-Path $dir "choco-$Package.log"; Remove-Item $log -ErrorAction SilentlyContinue
+          $choco = (Get-Command choco).Source
+          $cmd = "& '$choco' $($chocoArgs -join ' ') *> '$log'; exit `$LASTEXITCODE"
+          $name = "ansible-runner choco $Package"
+          Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$cmd`""
+          $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSec + 120))
+          Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings | Out-Null
+          try {
+            Start-ScheduledTask -TaskName $name
+            $deadline = (Get-Date).AddSeconds($TimeoutSec + 180)
+            do { Start-Sleep 5; $t = Get-ScheduledTask -TaskName $name } while ($t.State -in 'Running', 'Queued' -and (Get-Date) -lt $deadline)
+            $rc = (Get-ScheduledTaskInfo -TaskName $name).LastTaskResult
+            if ($t.State -eq 'Running') { Stop-ScheduledTask -TaskName $name; $rc = 'timeout' }
+          } finally {
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+          }
+          $out = if (Test-Path $log) { Get-Content $log -Tail 8 } else { @() }
+          $ok = ($rc -in 0, 1641, 3010) -and (-not $Verify -or (Test-Path -LiteralPath $Verify))
+          $Ansible.Changed = $ok -and ($out -match '(installed|upgraded) [1-9][0-9]*/[0-9]+ packages').Count -gt 0
+          if (-not $ok) { $Ansible.Failed = $true }
+          "choco $verb as $user -> exit $rc"; $out
+      loop: "{{ (choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list)) | selectattr('interactive', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.label }}"
+      when: install_packages | bool
+      register: choco_interactive_results
+      ignore_errors: true
 
     - name: Check installed WSL distros
       # Skipped entirely when wsl_target_users is set: that means "install
@@ -563,8 +620,8 @@
 
     - name: Report packages that failed
       ansible.builtin.debug:
-        msg: "FAILED: {{ item.item.label }} ({{ item.item.name }}) - {{ item.item.manual | default('check package ID') }}"
-      loop: "{{ choco_results.results }}"
+        msg: "FAILED: {{ item.item.label }} ({{ item.item.name }}) - {{ (item.output | default([]) | first | default('')) ~ ' - ' if item.output | default([]) else '' }}{{ item.item.manual | default('check package ID') }}"
+      loop: "{{ (choco_results.results | default([])) + (choco_interactive_results.results | default([])) }}"
       loop_control:
         label: "{{ item.item.name }}"
       when: item.failed | default(false)
