@@ -341,7 +341,9 @@
       <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="wazuhToggle"> Install Wazuh agent</label>
         <div class="params" id="wazuhParams">
-          <div class="row"><label for="wazuhManager">Manager IP/FQDN *</label><input type="text" id="wazuhManager"></div>
+          <div class="row"><label for="wazuhManager">Manager IP/FQDN *</label><input type="text" id="wazuhManager">
+            <button type="button" id="wazuhSaveDefaultBtn">Save as default</button></div>
+          <p class="muted" style="margin:.2rem 0 .6rem;">Manager, port, protocol and group are remembered on the server (saved on every run, or with "Save as default") and filled in here next time.</p>
           <div class="row"><label for="wazuhPort">Port</label><input type="text" id="wazuhPort" placeholder="1514"></div>
           <div class="row"><label for="wazuhProtocol">Protocol</label>
             <select id="wazuhProtocol"><option value="">(default tcp)</option><option value="tcp">tcp</option><option value="udp">udp</option></select>
@@ -593,6 +595,28 @@ function toggleParams(toggleId, paramsId) {
   sync();
 }
 toggleParams('wazuhToggle', 'wazuhParams');
+
+// Remembered settings (server-side, gui/data/defaults.json).
+async function loadDefaults() {
+  try {
+    const d = await fetch('/api/defaults').then(r => r.json());
+    const w = d.wazuh || {};
+    if (!$('wazuhManager').value) $('wazuhManager').value = w.manager || '';
+    if (!$('wazuhPort').value) $('wazuhPort').value = w.port || '';
+    if (w.protocol) $('wazuhProtocol').value = w.protocol;
+    if (!$('wazuhGroup').value) $('wazuhGroup').value = w.group || '';
+  } catch (e) { /* no defaults - fields stay empty */ }
+}
+$('wazuhSaveDefaultBtn').addEventListener('click', async () => {
+  const res = await fetch('/api/defaults/wazuh', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({manager: $('wazuhManager').value.trim(), port: $('wazuhPort').value.trim(),
+                          protocol: $('wazuhProtocol').value, group: $('wazuhGroup').value.trim()}),
+  });
+  const data = await res.json();
+  alert(res.ok ? `Saved: Wazuh manager ${data.wazuh.manager}:${data.wazuh.port || 1514} is now the default.` : 'Error: ' + (data.detail || 'not saved'));
+});
+loadDefaults();
 toggleParams('tailscaleToggle', 'tailscaleParams');
 toggleParams('gitToggle', 'gitParams');
 toggleParams('wslToggle', 'wslParams');

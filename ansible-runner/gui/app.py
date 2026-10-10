@@ -834,6 +834,44 @@ class RunIn(BaseModel):
     softflowd_collector: Optional[str] = None  # host:port, default 192.168.3.8:2055 (netflow2ng)
 
 
+# Settings the GUI remembers between runs (gui/data/defaults.json on the
+# server) - e.g. the Wazuh manager: set once, pre-filled after that. Never
+# secrets (no registration password) and nothing per-host (no agent name).
+DEFAULTS_PATH = DATA_DIR / "defaults.json"
+DEFAULTS = {"wazuh": {"manager": "192.168.3.8", "port": "1514", "protocol": "", "group": ""}}
+
+
+def load_defaults() -> dict:
+    saved = {}
+    try:
+        saved = json.loads(DEFAULTS_PATH.read_text())
+    except (OSError, ValueError):
+        pass
+    return {k: {**v, **saved.get(k, {})} for k, v in DEFAULTS.items()}
+
+
+def save_defaults(section: str, values: dict) -> None:
+    current = load_defaults()
+    current[section] = {k: str(values.get(k, current[section].get(k, ""))) for k in DEFAULTS[section]}
+    DEFAULTS_PATH.write_text(json.dumps(current, indent=2))
+
+
+@app.get("/api/defaults")
+def api_defaults():
+    return load_defaults()
+
+
+@app.post("/api/defaults/{section}")
+def api_defaults_save(section: str, values: dict):
+    if section not in DEFAULTS:
+        raise HTTPException(404, f"No remembered settings called '{section}'.")
+    manager = str(values.get("manager", ""))
+    if section == "wazuh" and not (_IP_RE.match(manager) or HOST_NAME_RE.match(manager)):
+        raise HTTPException(400, "Manager must be an IP address or a host name.")
+    save_defaults(section, values)
+    return load_defaults()
+
+
 def build_extra_vars(body: RunIn) -> dict:
     # Native Python types (bool/list/str), not pre-stringified - api_run sends
     # this whole dict as a single `-e <json>` argument, which is the only
@@ -850,6 +888,8 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["wsl_enabled"] = True
         extra_vars["wsl_distros_selected"] = body.wsl_distros
     if body.wazuh and body.wazuh.manager:
+        save_defaults("wazuh", {"manager": body.wazuh.manager, "port": body.wazuh.port or "",
+                                "protocol": body.wazuh.protocol or "", "group": body.wazuh.group or ""})
         extra_vars["wazuh_manager"] = body.wazuh.manager
         if body.wazuh.port:
             extra_vars["wazuh_manager_port"] = body.wazuh.port
