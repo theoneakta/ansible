@@ -9,6 +9,7 @@ import os
 import pathlib
 import re
 import secrets
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -62,6 +63,9 @@ TASK_KIND = {
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 run_lock = threading.Lock()
+# The GUI run in progress (its own process group, so a kill takes ansible's
+# forks, ssh and packer with it) and whether it was killed from the GUI.
+current_run = {"proc": None, "run_id": None, "killed": False}
 
 app = FastAPI()
 
@@ -912,17 +916,23 @@ def _execute_run(run_id: int, cmd: list[str], env: dict, timeout: int) -> None:
             # get scheduled promptly (e.g. while the main thread is busy
             # serving frequent /api/run/{id}/log polls), which can disrupt
             # the run partway through. Redirect to /dev/null instead.
-            subprocess.run(
+            proc = subprocess.Popen(
                 cmd, cwd=str(BASE), env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=timeout,
+                start_new_session=True,
             )
+            current_run.update(proc=proc, run_id=run_id, killed=False)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _kill_group(proc.pid)
             finished = datetime.now(timezone.utc).isoformat()
             finalize_run(run_id, finished, "timeout", f"Run exceeded {timeout // 60} minute timeout", {}, {})
             return
 
         finished = datetime.now(timezone.utc).isoformat()
+        if current_run["killed"]:
+            finalize_run(run_id, finished, "killed", "Killed from the Activity tab (Kill all jobs).", {}, {})
+            return
         result_path = run_result_path(run_id)
         if result_path.exists():
             data = json.loads(result_path.read_text())
@@ -939,7 +949,78 @@ def _execute_run(run_id: int, cmd: list[str], env: dict, timeout: int) -> None:
 
         finalize_run(run_id, finished, overall_status, error, stats, per_host)
     finally:
+        current_run.update(proc=None, run_id=None)
         run_lock.release()
+
+
+def _kill_group(pid: int) -> None:
+    """SIGTERM a process group, SIGKILL whatever is left after 5 s."""
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    if pgid == os.getpgid(0):  # never the GUI itself
+        os.kill(pid, signal.SIGKILL)
+        return
+    for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, 0)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        for _ in range(wait * 10):
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return
+            threading.Event().wait(0.1)
+
+
+_JOB_RE = re.compile(r"(^|/)(ansible-playbook|ansible|packer)( |$)")
+
+
+def _stray_jobs() -> list[dict]:
+    """ansible / ansible-playbook / packer processes in this container that
+    aren't the GUI's run - e.g. started by hand with docker exec. Only the
+    top one of each process group (the rest go with it)."""
+    me, groups = os.getpgid(0), {}
+    gui_run = current_run["proc"].pid if current_run["proc"] else None
+    for p in pathlib.Path("/proc").glob("[0-9]*"):
+        try:
+            args = (p / "cmdline").read_bytes().split(b"\0")
+            pid = int(p.name)
+            pgid = os.getpgid(pid)
+        except (OSError, ValueError):
+            continue
+        line = " ".join(a.decode(errors="replace") for a in args if a)
+        # python3 /usr/local/bin/ansible-playbook ... -> look at the first two words
+        if pgid in (me, gui_run) or not any(_JOB_RE.search(a.decode(errors="replace")) for a in args[:2] if a):
+            continue
+        if pgid not in groups or pid < groups[pgid]["pid"]:
+            groups[pgid] = {"pid": pid, "cmd": line[:200]}
+    return list(groups.values())
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    proc = current_run["proc"]
+    return {"gui_run": current_run["run_id"] if proc and proc.poll() is None else None,
+            "other": _stray_jobs()}
+
+
+@app.post("/api/jobs/kill_all")
+def api_jobs_kill_all():
+    """Stop the GUI run in progress and any other ansible/packer job in the
+    container. Packer VMs it was building stay on Proxmox (template ids 9xxx)."""
+    killed = []
+    proc = current_run["proc"]
+    if proc and proc.poll() is None:
+        current_run["killed"] = True
+        _kill_group(proc.pid)
+        killed.append(f"GUI run #{current_run['run_id']}")
+    for job in _stray_jobs():
+        _kill_group(job["pid"])
+        killed.append(job["cmd"])
+    return {"killed": killed}
 
 
 def _start_run(cmd: list[str], hosts: list[str], extra_vars: dict, timeout: int = 1800) -> int:
