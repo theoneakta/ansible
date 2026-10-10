@@ -125,7 +125,13 @@
       - { name: vscode,           label: VS Code,                         category: dev }
       - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
-      - { name: potplayer,        label: PotPlayer,                       category: multimedia, ignore_checksums: true }
+      # PotPlayer's installer (NSIS + UAC plugin) never finishes unattended:
+      # "/S" sat >10 min doing nothing both as the WinRM account and as
+      # SYSTEM (192.168.3.17, Oct 2026) - so it fails after 10 min with a
+      # clear message instead of holding the run for 45. Install it by hand.
+      - { name: potplayer,        label: PotPlayer,                       category: multimedia, ignore_checksums: true,
+          verify: 'C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe', timeout: 600,
+          manual: "PotPlayer's installer can't run unattended - on the PC, in an admin terminal: choco install potplayer --force -y" }
       - { name: powershell-core,  label: PowerShell 7,                    category: dev }
       - { name: powertoys,        label: PowerToys,                       category: tools }
       - { name: rambox,           label: Rambox,                          category: internet }
@@ -195,11 +201,27 @@
         state: present
       when: install_packages | bool
 
+    # A hung or interrupted install can leave Chocolatey saying "installed"
+    # with nothing on disk - every later run then skips it. Packages with a
+    # `verify` file get checked, and reinstalled (forced) when it's missing.
+    - name: Check that packages Chocolatey may list as installed really are
+      ansible.windows.win_stat:
+        path: "{{ item.verify }}"
+      loop: "{{ (choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list)) | selectattr('verify', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.label }}"
+      register: choco_verify
+      when: install_packages | bool
+
     - name: Install / upgrade packages to latest
       chocolatey.chocolatey.win_chocolatey:
         name: "{{ item.name }}"
         state: latest
+        force: "{{ item.name in _choco_missing }}"
+        timeout: "{{ item.timeout | default(2700) }}"
         ignore_checksums: "{{ item.ignore_checksums | default(false) }}"
+      vars:
+        _choco_missing: "{{ (choco_verify.results | default([])) | rejectattr('skipped', 'defined') | rejectattr('stat.exists') | map(attribute='item.name') | list }}"
       loop: "{{ choco_packages if not choco_packages_selected else (choco_packages | selectattr('name', 'in', choco_packages_selected) | list) }}"
       loop_control:
         label: "{{ item.label }}"
@@ -541,7 +563,7 @@
 
     - name: Report packages that failed
       ansible.builtin.debug:
-        msg: "FAILED: {{ item.item.label }} ({{ item.item.name }}) - check package ID"
+        msg: "FAILED: {{ item.item.label }} ({{ item.item.name }}) - {{ item.item.manual | default('check package ID') }}"
       loop: "{{ choco_results.results }}"
       loop_control:
         label: "{{ item.item.name }}"
