@@ -58,6 +58,16 @@
     # a system update doesn't move it. Raise it when the manager is upgraded.
     wazuh_agent_version: "4.14.4"
 
+    # Tailscale: joins only when asked for this run (GUI "Join Tailscale
+    # tailnet" / --tailscale-join) - a stored key alone never joins. The key
+    # defaults to the one in the vault (vault_tailscale_authkey, Credentials
+    # tab), like the Windows hosts.
+    tailscale_join_enabled: false
+    # Unlike Windows, subnet routes are NOT accepted by default: on Linux a
+    # route advertised for the host's own LAN (192.168.3.0/24) takes over its
+    # LAN traffic - replies to SSH (Ansible) would go into the tunnel.
+    tailscale_accept_routes: false
+
   pre_tasks:
     # The login (vault_win_user/vault_win_password) comes from the host's own
     # inventory/host_vars/<host>/vault.yml when it has one - inventory loads
@@ -455,3 +465,101 @@
                  if wazuh_connected.rc == 0 else
                  'Wazuh agent installed but NOT connected to ' ~ wazuh_manager ~ ' yet: ' ~ (wazuh_log.stdout_lines | default([]) | join(' | ')) }}
           failed_when: wazuh_connected.rc != 0
+
+    - name: Tailscale
+      when: tailscale_join_enabled | bool
+      block:
+        - name: Auth key from the vault (unless this run gives one)
+          ansible.builtin.include_vars:
+            file: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+            name: tailscale_group_vault
+          when: (tailscale_authkey | default('')) | length == 0
+          no_log: true
+
+        - name: Check there is an auth key
+          ansible.builtin.assert:
+            that: (tailscale_authkey | default(tailscale_group_vault.vault_tailscale_authkey | default(''), true)) | length > 0
+            fail_msg: "No Tailscale auth key - store one on the Credentials tab, or give one for this run."
+            quiet: true
+
+        - name: Gather facts (distribution)
+          ansible.builtin.setup:
+            gather_subset: [min]
+
+        - name: Tailscale's dnf repository (Rocky / RHEL)
+          ansible.builtin.get_url:
+            url: "https://pkgs.tailscale.com/stable/rhel/{{ ansible_facts['distribution_major_version'] }}/tailscale.repo"
+            dest: /etc/yum.repos.d/tailscale.repo
+            mode: "0644"
+          when: ansible_facts['os_family'] == 'RedHat'
+
+        - name: Tailscale's apt repository (Ubuntu / Debian)
+          when: ansible_facts['os_family'] == 'Debian'
+          block:
+            - name: Tailscale's signing key
+              ansible.builtin.get_url:
+                url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+                dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+                mode: "0644"
+            - name: Tailscale's repository
+              ansible.builtin.get_url:
+                url: "https://pkgs.tailscale.com/stable/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.tailscale-keyring.list"
+                dest: /etc/apt/sources.list.d/tailscale.list
+                mode: "0644"
+
+        - name: Install Tailscale
+          ansible.builtin.package:
+            name: tailscale
+            update_cache: "{{ ansible_facts['os_family'] == 'Debian' }}"
+
+        - name: Start tailscaled now and at boot
+          ansible.builtin.systemd_service:
+            name: tailscaled
+            state: started
+            enabled: true
+
+        - name: Already joined?
+          ansible.builtin.command: tailscale ip -4
+          register: tailscale_ip
+          changed_when: false
+          failed_when: false
+
+        # The key goes through a root-only temp file, not the command line,
+        # so it never shows in the process list.
+        - name: Join the tailnet
+          when: tailscale_ip.rc != 0
+          block:
+            - name: Key file (root only, removed right after)
+              ansible.builtin.copy:
+                dest: /root/.tailscale-authkey
+                content: "{{ tailscale_authkey | default(tailscale_group_vault.vault_tailscale_authkey, true) }}"
+                mode: "0600"
+              no_log: true
+            - name: tailscale up
+              ansible.builtin.command: >-
+                tailscale up --auth-key=file:/root/.tailscale-authkey
+                --accept-routes={{ tailscale_accept_routes | bool | lower }} --timeout=90s
+              register: tailscale_up
+              changed_when: tailscale_up.rc == 0
+              failed_when: false
+            - name: Join failed
+              ansible.builtin.fail:
+                msg: >-
+                  tailscale up failed: {{ tailscale_up.stderr | regex_replace('tskey-[A-Za-z0-9-]+', 'tskey-***') }}
+                  {{ '- the stored auth key is expired or revoked: create a new one in the Tailscale admin console
+                  (Settings > Keys, reusable) and save it on the Credentials tab.' if 'invalid key' in tailscale_up.stderr else '' }}
+              when: tailscale_up.rc != 0
+          always:
+            - name: Remove the key file
+              ansible.builtin.file:
+                path: /root/.tailscale-authkey
+                state: absent
+
+        - name: Tailnet address
+          ansible.builtin.command: tailscale ip -4
+          register: tailscale_ip_after
+          changed_when: false
+
+        - name: Report Tailscale
+          ansible.builtin.debug:
+            msg: "Tailscale {{ 'joined' if tailscale_ip.rc != 0 else 'already joined' }}: {{ tailscale_ip_after.stdout }}"
