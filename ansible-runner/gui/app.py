@@ -1478,6 +1478,49 @@ def api_sniff(body: SniffIn):
     return {"run_id": run_id, "status": "running"}
 
 
+VPN_PLAYBOOK = "playbooks/opnsense_pia.yml"
+_CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$")
+
+
+class VpnIn(BaseModel):
+    firewall: str = "192.168.3.1"  # OPNsense, an "ssh" host with a root login
+    login_host: str = "privateinternetaccess.com"  # "web" host holding the PIA login
+    region: str = "ca_toronto"
+    instance: str = "toronto"
+    wg_port: int = 51815
+    hosts: list[str] = []
+    bypass: list[str] = ["192.168.0.0/16", "172.16.0.0/12", "100.64.0.0/10"]
+    killswitch: bool = True
+    dns: bool = True
+    state: str = "present"  # present | absent
+
+
+@app.post("/api/vpn")
+def api_vpn(body: VpnIn):
+    """PIA WireGuard on OPNsense for the chosen hosts - playbooks/opnsense_pia.yml."""
+    if not has_vault_pass():
+        raise HTTPException(400, "No vault password file on the server.")
+    if body.state not in ("present", "absent"):
+        raise HTTPException(400, "State must be present or absent.")
+    if host_os(body.firewall) != "ssh":
+        raise HTTPException(400, f"{body.firewall} isn't an 'SSH only' host - add it on the Hosts tab with its root login.")
+    if host_os(body.login_host) != "web":
+        raise HTTPException(400, f"{body.login_host} isn't a 'Web login' host - add the PIA login on the Hosts tab.")
+    if not re.match(r"^[a-z0-9_]{2,40}$", body.region) or not re.match(r"^[a-z0-9]{1,12}$", body.instance) \
+            or not 1024 < body.wg_port < 65536:
+        raise HTTPException(400, "Region id (e.g. ca_toronto), tunnel name (short, lowercase) or port is invalid.")
+    if (body.state == "present" and not body.hosts) or not all(_IP_RE.match(h) for h in body.hosts) \
+            or not all(_CIDR_RE.match(n) for n in body.bypass):
+        raise HTTPException(400, "Hosts must be IPv4 addresses (at least one) and bypass networks CIDRs.")
+    extra_vars = {"pia_opnsense": body.firewall, "pia_login_host": body.login_host, "pia_region": body.region,
+                  "pia_instance": body.instance, "pia_wg_port": body.wg_port, "pia_hosts": body.hosts,
+                  "pia_bypass": body.bypass, "pia_killswitch": body.killswitch, "pia_dns": body.dns,
+                  "pia_state": body.state}
+    cmd = ["ansible-playbook", VPN_PLAYBOOK, "-e", json.dumps(extra_vars)] + vault_password_args()
+    run_id = _start_run(cmd, [body.firewall], {"vpn": body.state, **extra_vars}, timeout=1200)
+    return {"run_id": run_id, "status": "running"}
+
+
 def _start_image_run(playbook: str, body: ImageRunIn, action: str, timeout: int) -> dict:
     if not has_vault_pass():
         raise HTTPException(400, "No vault password file on the server.")

@@ -1,0 +1,245 @@
+# PIA (Private Internet Access) WireGuard VPN on an OPNsense firewall, for a
+# chosen set of LAN hosts only, with a kill switch.
+#
+#   LAN host in pia_hosts --> OPNsense --route-to--> wgN (PIA region) --> internet
+#                                   \--WAN: blocked (kill switch)
+#
+# What it sets up:
+#   1. On the firewall (root over SSH - the firewall is an "SSH only" host
+#      with a per-host root login on the Credentials tab):
+#      - FingerlessGlov3s/OPNsensePIAWireguard (script, PIA CA, configd action)
+#        in /conf, and its root-only config: PIA login + the API key of its
+#        own restricted API user "WireguardAPI". The script creates/updates
+#        the WireGuard instance "pia-<pia_instance>" and picks a PIA server.
+#   2. Through the OPNsense API (the root web login, playbooks/files/opnsense_pia_api.py):
+#      the tunnel's interface (enabled, MSS clamped), gateway, a cron job that
+#      keeps the tunnel up, aliases PIA_Hosts / PIA_Bypass, a pass rule that
+#      routes PIA_Hosts through the tunnel (except to PIA_Bypass) and tags
+#      their packets, a WAN-out block on that tag (kill switch: if the tunnel
+#      is down, they get nothing - never the bare WAN), and their DNS
+#      redirected to PIA's resolver.
+#   3. Clears the hosts' existing connections, so nothing keeps going out the
+#      WAN on an old state.
+#
+# Re-running it updates in place (hosts, region, ...). It recognises the
+# setup made by hand on 192.168.3.1 in October 2026 (same names).
+#
+# Run:  ./run.sh opnsense_pia.yml -e '{"pia_hosts": ["192.168.3.4", "192.168.3.5"]}'
+#       ./run.sh opnsense_pia.yml -e pia_state=absent       (remove it all)
+
+- name: PIA WireGuard on OPNsense
+  hosts: "{{ pia_opnsense | default('192.168.3.1') }}"
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python3
+    pia_state: present
+    pia_login_host: privateinternetaccess.com   # "web" host holding the PIA login
+    pia_region: ca_toronto                      # /conf/PIAWireguard.py --listregions
+    pia_instance: toronto                       # short name: instance pia-<name>, gateway WAN_PIA_<NAME>_IPv4
+    pia_wg_port: 51815                          # local WireGuard port for this instance
+    pia_hosts: []                               # LAN addresses sent through PIA
+    pia_bypass: ["192.168.0.0/16", "172.16.0.0/12", "100.64.0.0/10"]   # reached directly
+    pia_killswitch: true
+    pia_dns: true                               # their DNS -> PIA's resolver, through the tunnel
+    pia_mss: 1380
+    pia_release: "26.7.3_8-1"
+    pia_raw: "https://raw.githubusercontent.com/FingerlessGlov3s/OPNsensePIAWireguard/{{ pia_release }}"
+    # The API helper runs on the controller with the controller's Python.
+    local: &local
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    api_env: &api_env
+      OPN_URL: "https://{{ inventory_hostname }}"
+      OPN_USER: "{{ vault_win_user }}"
+      OPN_PASS: "{{ vault_win_password }}"
+      PIA_PARAMS: "{{ pia_params | to_json }}"
+    pia_params:
+      instance: "pia-{{ pia_instance }}"
+      instance_short: "{{ pia_instance }}"
+      hosts: "{{ pia_hosts }}"
+      bypass: "{{ pia_bypass }}"
+      killswitch: "{{ pia_killswitch | bool }}"
+      dns: "{{ pia_dns | bool }}"
+      mss: "{{ pia_mss | int }}"
+
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - pia_state in ['present', 'absent']
+          - pia_instance is match('^[a-z0-9]{1,12}$')
+          - pia_region is match('^[a-z0-9_]{2,40}$')
+          - pia_wg_port | int > 1024 and pia_wg_port | int < 65536
+          - pia_state == 'absent' or pia_hosts | length > 0
+          - pia_hosts | select('match', '^\d{1,3}(\.\d{1,3}){3}$') | list | length == pia_hosts | length
+          - pia_bypass | select('match', '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') | list | length == pia_bypass | length
+          - vault_win_user is defined
+        fail_msg: >-
+          Bad parameters, or no root login for {{ inventory_hostname }} (add it on the Hosts tab as
+          "SSH only" with a per-host root login). Hosts are IPv4 addresses, bypass networks CIDRs,
+          the instance a short lowercase name (e.g. toronto).
+        quiet: true
+
+    # ------------------------------------------------------------- present
+    - name: Apply
+      when: pia_state == 'present'
+      block:
+        - name: PIA login (the "{{ pia_login_host }}" web host)
+          ansible.builtin.include_vars:
+            file: "{{ playbook_dir }}/../inventory/host_vars/{{ pia_login_host }}/vault.yml"
+            name: pia_login
+          no_log: true
+
+        - name: Current script config on the firewall
+          ansible.builtin.slurp:
+            src: /conf/PIAWireguard.json
+          register: pia_current
+          failed_when: false
+          no_log: true
+
+        - name: The script's API user (WireguardAPI) - a key is created only when none is known
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/files/opnsense_pia_api.py", apiuser]
+          environment: "{{ api_env | combine({'PIA_NEED_KEY': '1' if _known_key == '' else '0'}) }}"
+          vars:
+            <<: *local
+            _known_key: "{{ vault_opnsense_pia_api_key | default((pia_current.content | default('e30=') | b64decode | from_json).opnsenseKey | default('')) }}"
+          delegate_to: localhost
+          register: pia_user
+          changed_when: ((pia_user.stdout or "{}") | from_json).changed | default(false)
+          failed_when: false
+          no_log: true
+
+        - name: API user result
+          ansible.builtin.fail:
+            msg: "{{ ((pia_user.stdout or '{}') | from_json).msg | default(pia_user.stderr_lines[-5:]) }}"
+          when: pia_user.rc != 0
+
+        - name: Script, PIA CA certificate, configd action
+          ansible.builtin.get_url:
+            url: "{{ pia_raw }}/{{ item.src }}"
+            dest: "{{ item.dest }}"
+            mode: "{{ item.mode }}"
+          loop:
+            - {src: PIAWireguard.py, dest: /conf/PIAWireguard.py, mode: "0700"}
+            - {src: ca.rsa.4096.crt, dest: /conf/ca.rsa.4096.crt, mode: "0644"}
+            - {src: actions_piawireguard.conf, dest: /usr/local/opnsense/service/conf/actions.d/actions_piawireguard.conf, mode: "0644"}
+          register: pia_files
+
+        - name: Script config (PIA login + API key - root only)
+          ansible.builtin.copy:
+            dest: /conf/PIAWireguard.json
+            mode: "0600"
+            content: "{{ cfg | to_nice_json }}\n"
+          vars:
+            _old: "{{ pia_current.content | default('e30=') | b64decode | from_json }}"
+            _new_key: "{{ (pia_user.stdout | from_json).result }}"
+            cfg:
+              opnsenseURL: "https://127.0.0.1:443"
+              opnsenseKey: "{{ _new_key.key | default(vault_opnsense_pia_api_key | default(_old.opnsenseKey)) }}"
+              opnsenseSecret: "{{ _new_key.secret | default(vault_opnsense_pia_api_secret | default(_old.opnsenseSecret)) }}"
+              piaUsername: "{{ pia_login.vault_win_user }}"
+              piaPassword: "{{ pia_login.vault_win_password }}"
+              opnsenseWGPrefixName: pia
+              # Read unconditionally by release 26.7.3_8-1 (KeyError without it);
+              # null = the tunnel itself leaves by the default WAN.
+              tunnelGateway: null
+              instances: "{{ {pia_instance: {'regionId': pia_region, 'dipToken': '', 'dip': false,
+                              'portForward': false, 'opnsenseWGPort': pia_wg_port | string}} }}"
+          register: pia_cfg
+          no_log: true
+
+        - name: Reload configd (new action)
+          ansible.builtin.command: service configd restart
+          when: pia_files is changed
+
+        - name: Bring the tunnel up (or check it) - PIA script
+          ansible.builtin.shell: |
+            out=$(/conf/PIAWireguard.py {{ '--changeserver ' ~ pia_instance if pia_cfg is changed else '' }} 2>&1); rc=$?
+            # Its output can hold the PIA token - only harmless lines are shown.
+            printf '%s\n' "$out" | grep -viE 'token|password|secret|key|signature' | tail -n 25
+            exit $rc
+          register: pia_run
+          changed_when: pia_cfg is changed
+
+        - name: Script output
+          ansible.builtin.debug:
+            var: pia_run.stdout_lines
+
+        - name: Interface, gateway, monitor job, aliases, rules, DNS (OPNsense API)
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/files/opnsense_pia_api.py", configure]
+          environment: *api_env
+          vars: *local
+          delegate_to: localhost
+          register: pia_api
+          changed_when: ((pia_api.stdout or "{}") | from_json).changed | default(false)
+          failed_when: false
+          no_log: true
+
+        - name: What changed
+          ansible.builtin.debug:
+            msg: "{{ _r.log | default([]) + ([_r.msg] if _r.msg is defined else []) + (pia_api.stderr_lines[-5:] if not pia_api.stdout else []) or ['nothing - already as asked'] }}"
+          vars: {_r: "{{ (pia_api.stdout or '{}') | from_json }}"}
+          failed_when: pia_api.rc != 0
+
+    # -------------------------------------------------------------- absent
+    - name: Remove
+      when: pia_state == 'absent'
+      block:
+        - name: Rules, DNS redirect, aliases, monitor job, gateway, interface, WireGuard instance (OPNsense API)
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/files/opnsense_pia_api.py", remove]
+          environment: *api_env
+          vars: *local
+          delegate_to: localhost
+          register: pia_api
+          changed_when: ((pia_api.stdout or "{}") | from_json).changed | default(false)
+          failed_when: false
+          no_log: true
+
+        - name: What was removed
+          ansible.builtin.debug:
+            msg: "{{ _r.log | default([]) + ([_r.msg] if _r.msg is defined else []) + (pia_api.stderr_lines[-5:] if not pia_api.stdout else []) or ['nothing - not set up'] }}"
+          vars: {_r: "{{ (pia_api.stdout or '{}') | from_json }}"}
+          failed_when: pia_api.rc != 0
+
+        - name: Remove the PIA script and its config
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /conf/PIAWireguard.py
+            - /conf/PIAWireguard.json
+            - /conf/ca.rsa.4096.crt
+            - /usr/local/opnsense/service/conf/actions.d/actions_piawireguard.conf
+          register: pia_files
+
+        - name: Reload configd
+          ansible.builtin.command: service configd restart
+          when: pia_files is changed
+
+    # -------------------------------------------------------------- always
+    - name: Clear the hosts' connections (no old WAN states left)
+      ansible.builtin.command: "pfctl -k {{ item }}"
+      loop: "{{ pia_hosts }}"
+      when: pia_api is changed
+      changed_when: true
+
+    - name: Tunnel gateway status (waits up to 2 minutes for it to come online)
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/opnsense_pia_api.py", status]
+      environment: *api_env
+      vars: *local
+      delegate_to: localhost
+      when: pia_state == 'present'
+      register: pia_status
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Tunnel
+      ansible.builtin.debug:
+        msg: "{{ ((pia_status.stdout or '{}') | from_json).result | default(pia_status.stderr_lines[-5:]) }}"
+      when: pia_state == 'present'
+      failed_when: (((pia_status.stdout or '{}') | from_json).result | default({})).status | default('') != 'Online'

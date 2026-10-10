@@ -260,6 +260,10 @@
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path><path d="M8 11h6M11 8v6"></path></svg>
       Network Capture
     </button>
+    <button class="navItem" data-tab="vpn">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"></path><path d="m9 12 2 2 4-4"></path></svg>
+      VPN (OPNsense)
+    </button>
     <div class="navDivider"></div>
     <button class="navItem" data-tab="activity">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 8 4-16 2 8h6"></path></svg>
@@ -510,6 +514,27 @@
         <div class="actionBar">
           <button class="primary" id="sniffApplyBtn">Set up capture</button>
           <button id="sniffRemoveBtn">Remove capture</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ VPN (OPNsense PIA) ============ -->
+    <section class="tabPanel" id="tab-vpn">
+      <div class="panelHead"><h2>VPN (OPNsense)</h2><p>Send chosen LAN hosts through PIA WireGuard on the firewall, with a kill switch.</p></div>
+      <div class="card">
+        <div class="row"><label for="vpnFirewall">OPNsense firewall (SSH-only host)</label><input type="text" id="vpnFirewall" value="192.168.3.1"></div>
+        <div class="row"><label for="vpnLogin">PIA login (web host)</label><input type="text" id="vpnLogin" value="privateinternetaccess.com"></div>
+        <div class="row"><label for="vpnRegion">PIA region id</label><input type="text" id="vpnRegion" value="ca_toronto" placeholder="e.g. ca_toronto, ca_montreal, us_east"></div>
+        <div class="row"><label for="vpnInstance">Tunnel name</label><input type="text" id="vpnInstance" value="toronto" placeholder="short, lowercase"></div>
+        <div class="row"><label for="vpnPort">Local WireGuard port</label><input type="number" id="vpnPort" value="51815"></div>
+        <div class="row"><label for="vpnHosts">Hosts through the VPN (IPs)</label><input type="text" id="vpnHosts" value="192.168.3.4, 192.168.3.5" placeholder="comma-separated"></div>
+        <div class="row"><label for="vpnBypass">Reached directly (networks)</label><input type="text" id="vpnBypass" value="192.168.0.0/16, 172.16.0.0/12, 100.64.0.0/10" placeholder="comma-separated CIDRs"></div>
+        <div class="row"><label><input type="checkbox" id="vpnKill" checked> Kill switch - if the tunnel is down, these hosts get no internet (never the bare WAN)</label></div>
+        <div class="row"><label><input type="checkbox" id="vpnDns" checked> Their DNS to PIA's resolver, through the tunnel (no DNS leak)</label></div>
+        <p class="muted">Installs the OPNsensePIAWireguard script on the firewall with the PIA login from the vault, and through the OPNsense API: the tunnel interface and gateway, a monitor job (every 5 min, keeps it up), aliases <code>PIA_Hosts</code> / <code>PIA_Bypass</code>, a rule routing those hosts through the tunnel and a WAN block for them (kill switch), placed before "Default allow LAN". Re-applying updates it in place - e.g. to add a host or change region. Needs the firewall on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login, and the PIA login as a "Web login" host. Region ids: <code>/conf/PIAWireguard.py --listregions</code> on the firewall.</p>
+        <div class="actionBar">
+          <button class="primary" id="vpnApplyBtn">Apply VPN</button>
+          <button id="vpnRemoveBtn">Remove VPN</button>
         </div>
       </div>
     </section>
@@ -1254,6 +1279,39 @@ async function startSniffRun(state) {
 }
 $('sniffApplyBtn').addEventListener('click', () => startSniffRun('present'));
 $('sniffRemoveBtn').addEventListener('click', () => startSniffRun('absent'));
+
+async function startVpnRun(state) {
+  if (state === 'absent' && !confirm('Remove the PIA VPN from the firewall (rules, kill switch, tunnel, script)? The hosts go back to the normal WAN.')) return;
+  const btns = [$('vpnApplyBtn'), $('vpnRemoveBtn')];
+  const list = id => $(id).value.split(',').map(s => s.trim()).filter(Boolean);
+  btns.forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/vpn', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        firewall: $('vpnFirewall').value.trim(),
+        login_host: $('vpnLogin').value.trim(),
+        region: $('vpnRegion').value.trim(),
+        instance: $('vpnInstance').value.trim(),
+        wg_port: parseInt($('vpnPort').value, 10),
+        hosts: list('vpnHosts'),
+        bypass: list('vpnBypass'),
+        killswitch: $('vpnKill').checked,
+        dns: $('vpnDns').checked,
+        state,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start');
+    await watchRun(data.run_id);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+$('vpnApplyBtn').addEventListener('click', () => startVpnRun('present'));
+$('vpnRemoveBtn').addEventListener('click', () => startVpnRun('absent'));
 
 async function loadHistory() {
   const runs = await fetch('/api/history').then(r => r.json());
