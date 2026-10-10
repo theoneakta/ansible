@@ -1,0 +1,7 @@
+# Local Claude Code state - holds keys and API tokens, never commit
+.claude/
+
+# Secrets anywhere in the tree
+.vault_pass
+*.key
+.ssh/
