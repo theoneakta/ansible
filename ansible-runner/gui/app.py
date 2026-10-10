@@ -304,7 +304,10 @@ init_db()
 # Inventory groups the GUI manages, and the OS each one means. "ssh" is for
 # machines reached over SSH that no install playbook may touch (a NAS, an
 # appliance): connection tests and read-only checks only.
-HOST_GROUPS = ("windows", "linux", "ssh")
+# "web" is a web application's login (e.g. ntopng.aktasolutions.com): the
+# vault keeps the URL's credentials for read-only checks through its API;
+# nothing connects to it over SSH or WinRM and no playbook targets it.
+HOST_GROUPS = ("windows", "linux", "ssh", "web")
 
 
 def list_hosts() -> list[dict]:
@@ -445,7 +448,46 @@ def test_linux_host(host: str) -> dict:
             "check_label": "SSH / credentials", "summary": summary}
 
 
+_LOGIN_PAGE_RE = re.compile(r"login|signin|sign_in|auth", re.IGNORECASE)
+
+
+def test_web_host(host: str) -> dict:
+    """DNS + HTTPS reachability, then the stored login: a valid one gets the
+    page (2xx), a bad or missing one is redirected to the app's login page or
+    refused (401/403) - e.g. ntopng: 200 vs 302 to /lua/login.lua."""
+    url = f"https://{host}/"
+    try:
+        addrs = sorted({a[4][0] for a in socket.getaddrinfo(host, 443)})
+        dns = {"ok": True, "detail": "Resolves to " + ", ".join(addrs[:3])}
+    except OSError as e:
+        dns = {"ok": False, "detail": f"Does not resolve: {e}"}
+    try:
+        plain = requests.get(url, timeout=10, allow_redirects=False)
+        reach = {"ok": True, "detail": f"HTTPS answered {plain.status_code}.", "port": 443}
+    except requests.RequestException as e:
+        reach = {"ok": False, "detail": f"No HTTPS answer: {e}", "port": 443}
+    creds = read_vault(HOST_VARS_DIR / host / "vault.yml") if (HOST_VARS_DIR / host / "vault.yml").exists() else {}
+    if not creds.get("vault_win_user"):
+        login = {"ok": False, "detail": "No login stored - set a per-host override on the Credentials tab."}
+    elif not reach["ok"]:
+        login = {"ok": None, "detail": "Not tried - the site isn't reachable."}
+    else:
+        r = requests.get(url, auth=(creds["vault_win_user"], creds.get("vault_win_password", "")),
+                         timeout=10, allow_redirects=False)
+        location = r.headers.get("location", "")
+        ok = 200 <= r.status_code < 300 or (300 <= r.status_code < 400 and not _LOGIN_PAGE_RE.search(location))
+        login = {"ok": ok, "detail": f"With the stored login ({creds['vault_win_user']}): {r.status_code}"
+                                     + (f" -> {location}" if location else "")}
+    summary = ("Reachable and the stored login works." if login["ok"]
+               else "Login failed - check the user/password on the Credentials tab." if reach["ok"] and creds.get("vault_win_user")
+               else dns["detail"] if not dns["ok"] else reach["detail"] if not reach["ok"] else login["detail"])
+    return {"host": host, "ping": dns, "ping_label": "DNS", "port": reach, "winrm": login,
+            "check_label": "Web login", "summary": summary}
+
+
 def test_host(host: str) -> dict:
+    if host_os(host) == "web":
+        return test_web_host(host)
     if host_os(host) in ("linux", "ssh"):
         return test_linux_host(host)
     port = get_winrm_port()

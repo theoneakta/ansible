@@ -1,0 +1,6 @@
+# Web app logins (e.g. ntopng.aktasolutions.com): the site is https://<name>/,
+# its login is vault_win_user / vault_win_password in the host's own
+# host_vars/<name>/vault.yml (Credentials tab, per-host override). Used for
+# read-only checks through the app's API; nothing connects to these hosts
+# over SSH or WinRM and no playbook targets this group.
+ansible_connection: local
