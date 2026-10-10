@@ -254,7 +254,7 @@
     </button>
     <button class="navItem" data-tab="image">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"></rect><path d="M8 20h8M12 16v4"></path><path d="M12 7v5m0 0-2-2m2 2 2-2"></path></svg>
-      Windows Image
+      Images
     </button>
     <button class="navItem" data-tab="sniff">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path><path d="M8 11h6M11 8v6"></path></svg>
@@ -433,7 +433,7 @@
 
     <!-- ============ WINDOWS IMAGE ============ -->
     <section class="tabPanel" id="tab-image">
-      <div class="panelHead"><h2>Windows Images</h2><p>Build Windows images (Windows 11 Pro, Windows Server 2025, ...) on Proxmox with Packer, capture them, and deploy them to PCs over PXE.</p></div>
+      <div class="panelHead"><h2>Images</h2><p>Build Windows and Linux images on Proxmox with Packer and put them on the PXE server: Windows images are captured to a WIM (deployed through WinPE), Linux images are published as an automated network install. Every image in the list below can be deployed from the PXE boot menu once it shows "on PXE".</p></div>
 
       <div class="card">
         <div class="row"><label>Status</label><span id="imgStatus" class="muted">Loading...</span></div>
@@ -453,7 +453,7 @@
         <div class="actionBar">
           <button id="imgSaveBtn">Save settings</button>
           <button class="primary" id="imgBuildBtn">Build image</button>
-          <button class="primary" id="imgCaptureBtn">Capture to WIM</button>
+          <button class="primary" id="imgCaptureBtn">Capture to PXE (WIM)</button>
           <span id="imgSaveStatus" class="muted"></span>
         </div>
       </div>
@@ -1103,17 +1103,19 @@ function renderImageProfile() {
   // on the PXE server instead, and edition/product key don't apply.
   const linux = p.os === 'linux';
   document.querySelectorAll('#tab-image .winOnly').forEach(el => { el.style.display = linux ? 'none' : ''; });
-  $('imgCaptureBtn').textContent = linux ? 'Publish to PXE' : 'Capture to WIM';
+  // Both end on the PXE server: Windows by capturing the template to a WIM
+  // (deployed through WinPE), Linux by publishing the installer + answer file.
+  $('imgCaptureBtn').textContent = linux ? 'Publish to PXE' : 'Capture to PXE (WIM)';
   if (linux) {
     $('imgWimStatus').innerHTML = p.published
-      ? ` <span class="badge ok">published for PXE install</span>`
-      : ` <span class="badge neutral">not published yet</span>`;
+      ? ` <span class="badge ok">on PXE: network install published</span>`
+      : ` <span class="badge neutral">not on PXE yet - publish it</span>`;
     return;
   }
   const w = p.wim || {};
   $('imgWimStatus').innerHTML = w.exists
-    ? ` <span class="badge ok">${id}.wim ${w.size_gb} GB, ${new Date(w.modified).toLocaleString()}</span>`
-    : ` <span class="badge neutral">not captured yet</span>`;
+    ? ` <span class="badge ok">on PXE: ${id}.wim (${w.size_gb} GB, captured ${new Date(w.modified).toLocaleString()})</span>`
+    : ` <span class="badge neutral">not on PXE yet - capture it</span>`;
 }
 
 async function loadImageStatus() {
