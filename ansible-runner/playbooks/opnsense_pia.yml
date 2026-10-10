@@ -193,16 +193,16 @@
           environment: *api_env
           vars: *local
           delegate_to: localhost
-          register: pia_api
-          changed_when: ((pia_api.stdout or "{}") | from_json).changed | default(false)
+          register: pia_rm
+          changed_when: ((pia_rm.stdout or "{}") | from_json).changed | default(false)
           failed_when: false
           no_log: true
 
         - name: What was removed
           ansible.builtin.debug:
-            msg: "{{ _r.log | default([]) + ([_r.msg] if _r.msg is defined else []) + (pia_api.stderr_lines[-5:] if not pia_api.stdout else []) or ['nothing - not set up'] }}"
-          vars: {_r: "{{ (pia_api.stdout or '{}') | from_json }}"}
-          failed_when: pia_api.rc != 0
+            msg: "{{ _r.log | default([]) + ([_r.msg] if _r.msg is defined else []) + (pia_rm.stderr_lines[-5:] if not pia_rm.stdout else []) or ['nothing - not set up'] }}"
+          vars: {_r: "{{ (pia_rm.stdout or '{}') | from_json }}"}
+          failed_when: pia_rm.rc != 0
 
         - name: Remove the PIA script and its config
           ansible.builtin.file:
@@ -223,7 +223,7 @@
     - name: Clear the hosts' connections (no old WAN states left)
       ansible.builtin.command: "pfctl -k {{ item }}"
       loop: "{{ pia_hosts }}"
-      when: pia_api is changed
+      when: pia_api is changed or pia_rm is changed
       changed_when: true
 
     - name: Tunnel gateway status (waits up to 2 minutes for it to come online)

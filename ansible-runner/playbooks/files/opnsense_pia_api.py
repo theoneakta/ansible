@@ -81,10 +81,29 @@ def saved(out, what):
         fail(f"{what}: {out}")
 
 
+def _norm(v):
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    v = str(v)
+    return ",".join(sorted(x.strip() for x in re.split(r"[,\n]", v))) if ("," in v or "\n" in v) else v
+
+
+def same(row, item, prefix=""):
+    """Search rows show booleans as True/False, nested fields as "a.b" and
+    lists comma-separated - compare what we'd send in that form."""
+    for k, v in item.items():
+        if isinstance(v, dict):
+            if not same(row, v, f"{prefix}{k}."):
+                return False
+        elif prefix + k not in row or _norm(row[prefix + k]) != _norm(v):
+            return False
+    return True
+
+
 def upsert(s, base, key, match_field, match_value, item, search="search_rule", add="add_rule", setp="set_rule"):
     """Create the item, or update it in place if one with that field value exists."""
     row = next((r for r in s.search(f"{base}/{search}") if r.get(match_field) == match_value), None)
-    if row and all(k in row and str(row[k]) == str(v) for k, v in item.items()):
+    if row and same(row, item):
         return row["uuid"]
     if row:
         saved(s.call("POST", f"{base}/{setp}/{row['uuid']}", {key: item}), f"update {match_value}")
@@ -265,8 +284,9 @@ def configure(s):
             saved(s.call("POST", "/api/firewall/d_nat/add_rule", {"rule": rule}), f"add {desc}")
             log(f"added: {desc}")
         elif on:
-            saved(s.call("POST", f"/api/firewall/d_nat/set_rule/{rows[0]['uuid']}", {"rule": rule}), f"update {desc}")
-            log(f"updated: {desc}")
+            if not same(rows[0], rule):
+                saved(s.call("POST", f"/api/firewall/d_nat/set_rule/{rows[0]['uuid']}", {"rule": rule}), f"update {desc}")
+                log(f"updated: {desc}")
         else:
             for r in rows:
                 saved(s.call("POST", f"/api/firewall/d_nat/del_rule/{r['uuid']}", {}), f"delete {desc}")
