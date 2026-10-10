@@ -1181,10 +1181,22 @@ def api_cis_run(body: CisRunIn):
         # the role's own default (on), so this stays small regardless of how
         # many hundred controls a section actually has.
         extra_vars[f"{profile['var_prefix']}_rule_{control_id.replace('.', '_')}"] = False
+    tags = list(level["tags"])
     if body.audit_only:
         extra_vars.update({"audit_only": True, "setup_audit": True, "run_audit": True})
+    if profile.get("playbook") == CIS_LINUX_PLAYBOOK:
+        # The Linux roles audit the levels switched on in <prefix>_level_1/_2
+        # (both on by default), not the --tags - so match the chosen level.
+        extra_vars[f"{profile['var_prefix']}_level_1"] = True
+        extra_vars[f"{profile['var_prefix']}_level_2"] = body.cis_level.startswith("2")
+        if body.audit_only:
+            # Their audit, and the audit_only stop before any remediation,
+            # live in tasks tagged only run_audit. Filtered to the level's
+            # tags alone, both were skipped and an "audit only" run hardened
+            # the host for real (130 changes on 192.168.3.150, confirmed).
+            tags.append("run_audit")
 
-    cmd = ["ansible-playbook", profile.get("playbook", CIS_PLAYBOOK), "--tags", ",".join(level["tags"])]
+    cmd = ["ansible-playbook", profile.get("playbook", CIS_PLAYBOOK), "--tags", ",".join(tags)]
     if body.hosts:
         cmd += ["--limit", ",".join(body.hosts)]
     cmd += ["-e", json.dumps(extra_vars)]

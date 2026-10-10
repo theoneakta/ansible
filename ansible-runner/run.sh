@@ -150,7 +150,7 @@ YML
         --docker-user)                 DOCKER_USERS+=("$2"); shift 2 ;;
         --cis-os)                      CIS_OS="$2"; shift 2 ;;
         --cis-level)                   CIS_LEVEL_ID="$2"; shift 2 ;;
-        --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); shift ;;
+        --cis-audit-only)              EXTRA_VARS+=(-e "audit_only=true" -e "setup_audit=true" -e "run_audit=true"); CIS_AUDIT_ONLY=1; shift ;;
         *) PASSTHRU+=("$1"); shift ;;
       esac
     done
@@ -205,6 +205,14 @@ YML
         *) echo "Unknown --cis-level '$CIS_LEVEL_ID' for --cis-os '$CIS_OS'" >&2; exit 1 ;;
       esac
       EXTRA_VARS+=(-e "cis_role=$CIS_ROLE")
+      if [[ "$CIS_OS" != windows* ]]; then
+        # Linux roles: audit the chosen level (their <prefix>_level_1/_2 vars),
+        # and audit-only needs the run_audit tag - the audit and the stop
+        # before remediation are tagged only that (see api_cis_run in gui/app.py).
+        prefix=$(echo "$CIS_ROLE" | tr "[:upper:]" "[:lower:]" | sed -e "s/ubuntu/ubtu/; s/debian/deb/; s/-cis$/cis/")
+        EXTRA_VARS+=(-e "${prefix}_level_1=true" -e "${prefix}_level_2=$([[ $CIS_LEVEL_ID == 2-* ]] && echo true || echo false)")
+        [[ -n "${CIS_AUDIT_ONLY:-}" ]] && CIS_TAGS="$CIS_TAGS,run_audit"
+      fi
       PASSTHRU+=(--tags "$CIS_TAGS")
     fi
     "${RUN[@]}" ansible "playbooks/${pb}" "${PASSTHRU[@]}" "${EXTRA_VARS[@]}" "${VAULT_ARGS[@]}"
