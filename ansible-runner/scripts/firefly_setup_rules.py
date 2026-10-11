@@ -11,6 +11,7 @@ Rules fire on NEW transactions only ("store-journal"), so a tag changed later -
 by hand, or by the Paperless bridge from a receipt - is never reverted.
 
 Decisions (2026-10-11, the user): business = the software/hosting tools below, the
+Revenu Quebec payments from the Akta Solutions account,
 BMO business plan fee, restaurant bills over $200, and ESI Technologies income.
 Everything else is personal (Home Depot too). Amazon follows its Paperless receipt.
 """
@@ -30,10 +31,11 @@ CATEGORIES = [
     ("Transfers between own accounts", ["^TF"]),   # ^ = description starts with
     ("Credit card payments", ["MBNA", "CAPITAL ONE", "NATIONAL BNK MC", "CARTES AMEX", "VISA DESJARDINS"]),
     ("Loans & Financing", ["EASYFINANCIAL", "CONSUMER LOANS", "FORD CREDIT", "FAIRSTONE", "FINANCEIT", "AFFIRM", "KLARNA", "PAYIN4"]),
-    ("Income", ["ESITECHNOLOGIES", "CISSS", "PAYROLL", "PAIE/"]),
+    ("Income", ["ESITECHNOLOGIES", "CISSS", "PAYROLL", "PAIE/", "DEPOT CHEQUES"]),
     ("Software & Hosting", ["QUICKBOOKS", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "GOOGLE SMART", "G1SK"]),
     ("Subscriptions & Streaming", ["NETFLIX", "SPOTIFY", "UBERONE", "SCENTBIRD", "AYLO", "PAYPAL X.", "GOOGLE GOOGLE", "ADOBE"]),
-    ("Housing", ["EQUITABLE BANK", "HYDRO QUEBEC", "HYDRO-QUEBEC", "VEXTERMINATION", "VERTDURE"]),
+    ("Housing", ["EQUITABLE BANK", "HYDRO QUEBEC", "HYDRO-QUEBEC", "VEXTERMINATION", "VERTDURE",
+                 "ENTREPRISES LIM", "L EXPERT DEPANN"]),   # Entreprises Limoges = home renovation (the user)
     ("Phone & Internet", ["BELL", "VIRGIN PLUS", "VIDEOTRON", "FIZZ"]),
     ("Insurance", ["INS/ASS", "RBCASSU", "ASSURANCE"]),
     ("Education", ["COLL GE", "COLLEGE", "ECOLE"]),
@@ -43,10 +45,14 @@ CATEGORIES = [
     ("Gambling", ["LOTO-QUEBEC"]),
     ("Entertainment", ["BILLETTERIE", "FAMOUS PLAYER", "CINEPLEX", "CINEMA"]),
     ("Pets", ["PATTES & GRIFFE", "MONDOU", "PET"]),
+    ("Memberships", ["CAAQUEBEC", "CAA QUEBEC"]),
+    ("Discounts", ["REDUCTION "]),
+    ("Pending", ["PROVISOIR"]),   # bank holds not yet final
     ("Restaurants & Fast food", ["MCDONALDS", "STARBUCKS", "TIM HORTONS", "UBEREATS", "FIVE GUYS", "RESTAURANT", "TIKI MING",
                                  "CARLOS AND PEPE", "SCORES", "SEL POIVRE", "LE CREME", "A&W", "SUBWAY", "ST-HUBERT",
                                  "STH 2", "WENDYS", "HARVEYS", "FRITOU", "HEART&CROWN", "MENCHIE", "KINTON", "TIME OUT", "COQ GARE",
-                                 "BROADHEAD", "DEPANNEUR"]),
+                                 "BROADHEAD", "DEPANNEUR", "THAI EXPRESS", "PACINI", "SECOND CUP",
+                                 "PRESOTEA", "BYTOWN CATER", "LA PREP", "ROCK N DELI", "JLIEU"]),
     ("Groceries", ["IGA", "METRO ", "MAXI", "SUPER C", "PROVIGO", "BOULANGERIE", "WALMART", "COSTCO WHOLESALE", "FARM BOY"]),
     ("Transport", ["PETRO-CANADA", "COSTCO ESSENCE", "ESSO", "SHELL", "ULTRAMAR", "UBERTRIP", "UBER TRIP", "OPUS",
                    "ELECTRIFY", "CIRCUIT ELECTRIQUE", "STATIONNEMENT"]),
@@ -58,6 +64,9 @@ CATEGORIES = [
 ]
 BUSINESS_TOOLS = ["QUICKBOOKS", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "FRAIS DE PROGRAMME"]
 BUSINESS_INCOME = ["ESITECHNOLOGIES"]
+# Paid from an Akta Solutions account = company taxes (GST/QST, source deductions, corporate tax) - the user, 2026-10-11
+BUSINESS_FROM_COMPANY = ["RQ CODE", "REVENU QUEBEC"]
+COMPANY_ACCOUNT = "Akta Solutions"
 BUSINESS_MEAL_OVER = "200"
 
 # Subscriptions: name, typical amount, repeat (weekly/monthly/...), skip (2-weekly = weekly skip 1), last seen, match fragments
@@ -132,6 +141,25 @@ def act(kind, value=None):
     return a
 
 
+def group_subscriptions_by_account(ff, bills):
+    """Group each subscription (Firefly "object group" = a heading on the Subscriptions page)
+    under the account its linked payments come from, and say so in its notes."""
+    for name, bill_id in bills.items():
+        accounts = {}
+        for g in ff.all(f"/api/v1/bills/{bill_id}/transactions"):
+            for s in g["attributes"]["transactions"]:
+                acct = s["source_name"] if s["type"] == "withdrawal" else s["destination_name"]
+                accounts[acct] = accounts.get(acct, 0) + 1
+        if not accounts:
+            continue
+        main_acct = max(accounts, key=accounts.get)
+        also = [a for a in accounts if a != main_acct]
+        note = f"Paid from: {main_acct}" + (f" (also: {', '.join(also)})" if also else "") + \
+               ".\nCreated by ansible-runner scripts/firefly_setup_rules.py from the transactions seen Aug-Oct 2026."
+        ff.req("PUT", f"/api/v1/bills/{bill_id}", json={"object_group_title": main_acct, "notes": note})
+        print(f"subscription '{name}' -> {main_acct}" + (f" (also {also})" if also else ""))
+
+
 def main():
     ff = FF3()
     have = {c["attributes"]["name"] for c in ff.all("/api/v1/categories")}
@@ -177,6 +205,10 @@ def main():
          [act("remove_tag", "personal"), act("add_tag", "business")])
     rule("2 business or personal", "Business income", [trig("description_contains", f) for f in BUSINESS_INCOME],
          [act("remove_tag", "personal"), act("add_tag", "business")])
+    for frag in BUSINESS_FROM_COMPANY:
+        rule("2 business or personal", f"Business taxes: {frag} from the company account",
+             [trig("description_contains", frag), trig("source_account_contains", COMPANY_ACCOUNT)],
+             [act("remove_tag", "personal"), act("add_tag", "business")], strict=True)
     rule("2 business or personal", f"Business meals over ${BUSINESS_MEAL_OVER}",
          [trig("category_is", "Restaurants & Fast food"), trig("amount_more", BUSINESS_MEAL_OVER)],
          [act("remove_tag", "personal"), act("add_tag", "business")], strict=True)
@@ -184,6 +216,8 @@ def main():
     for name, *_x, frags in SUBSCRIPTIONS:
         rule("3 subscriptions", name, [trig("description_contains", f) for f in frags], [act("link_to_bill", name)], stop=False)
     print(f"rules rebuilt: {len(CATEGORIES)} category, 4 business/personal, {len(SUBSCRIPTIONS)} subscription")
+
+    group_subscriptions_by_account(ff, bills)
 
     if "--apply-existing" in sys.argv:
         for title in ("1 categories", "2 business or personal", "3 subscriptions"):
