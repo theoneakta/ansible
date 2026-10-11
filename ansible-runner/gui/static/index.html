@@ -301,10 +301,11 @@
       <div class="panelHead"><h2>Credentials</h2><p>Stored encrypted with Ansible Vault. Never displayed back once saved.</p></div>
       <div class="card">
         <div class="row"><label for="credTarget">Apply to</label><select id="credTarget"></select></div>
-        <div class="row"><label for="credUser">Windows username</label><input type="text" id="credUser" placeholder="administrator"></div>
-        <div class="row"><label for="credPass">Windows password</label><input type="password" id="credPass"></div>
+        <div class="row"><label for="credUser">Username</label><input type="text" id="credUser" placeholder="administrator / root / web login"></div>
+        <div class="row"><label for="credPass">Password</label><input type="password" id="credPass"></div>
+        <div class="row"><label for="credApiToken">API token</label><input type="password" id="credApiToken" placeholder="optional - e.g. a web app's API / setup token"></div>
         <div class="row"><label for="credTailscale">Tailscale auth key</label><input type="text" id="credTailscale" placeholder="tskey-auth-..."></div>
-        <p class="muted">Tailscale key is the default for all runs unless a run overrides it.</p>
+        <p class="muted">Leave a field empty to keep what is stored. The API token is for web apps that use one instead of (or besides) a login - Firefly III, SimpleFIN, ... Tailscale key is the default for all runs unless a run overrides it.</p>
         <div class="actionBar">
           <button class="primary" id="saveCredsBtn">Save to vault</button>
           <span id="credStatus" class="muted"></span>
@@ -897,6 +898,7 @@ $('saveCredsBtn').addEventListener('click', async () => {
     username: $('credUser').value || null,
     password: $('credPass').value || null,
     tailscale_authkey: $('credTailscale').value || null,
+    api_token: $('credApiToken').value || null,
   };
   $('credStatus').textContent = 'Saving...';
   try {
@@ -906,7 +908,7 @@ $('saveCredsBtn').addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed');
     $('credStatus').textContent = `Saved to ${data.file}`;
-    $('credUser').value = ''; $('credPass').value = ''; $('credTailscale').value = '';
+    $('credUser').value = ''; $('credPass').value = ''; $('credTailscale').value = ''; $('credApiToken').value = '';
     loadHosts();
   } catch (e) {
     $('credStatus').textContent = 'Error: ' + e.message;

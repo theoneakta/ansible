@@ -747,6 +747,7 @@ class CredentialsIn(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     tailscale_authkey: Optional[str] = None
+    api_token: Optional[str] = None  # web apps with an API/setup token (vault_api_token)
 
 
 @app.post("/api/credentials")
@@ -763,6 +764,8 @@ def api_set_credentials(body: CredentialsIn):
         existing["vault_win_password"] = body.password
     if body.tailscale_authkey:
         existing["vault_tailscale_authkey"] = body.tailscale_authkey
+    if body.api_token:
+        existing["vault_api_token"] = body.api_token.strip()
 
     if not existing:
         raise HTTPException(400, "Nothing to save - provide at least one field.")
