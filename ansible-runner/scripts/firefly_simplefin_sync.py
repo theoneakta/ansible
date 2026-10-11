@@ -5,9 +5,10 @@ Runs inside the ansible-gui container (so it can read the vault):
     docker exec -w /ansible ansible-gui-1 python3 scripts/firefly_simplefin_sync.py [--dry-run]
 Scheduled from the `claude` user's crontab on 192.168.3.8.
 
-Secrets come from inventory/host_vars/fin.aktasolutions.com/vault.yml:
-    vault_api_token             Firefly III personal access token
-    vault_simplefin_access_url  SimpleFIN access URL (from a claimed setup token)
+Secrets come from the vault (ansible-runner "web" hosts):
+    fin.aktasolutions.com      vault_api_token             Firefly III personal access token
+    beta-bridge.simplefin.org  vault_simplefin_access_url  SimpleFIN access URL (claimed from the
+                               setup token pasted in that host's API token field)
 
 Each run asks SimpleFIN for the last LOOKBACK_DAYS and creates in Firefly every
 transaction it doesn't have yet - matched on SimpleFIN's transaction id, stored
@@ -33,6 +34,7 @@ sys.path.insert(0, "/ansible")
 from gui.app import HOST_VARS_DIR, read_vault  # noqa: E402
 
 FIREFLY = "http://192.168.3.8:8080"
+SIMPLEFIN_HOST = "beta-bridge.simplefin.org"   # vault entry holding the SimpleFIN access URL
 LOOKBACK_DAYS = 45          # SimpleFIN's recommended maximum per request
 TZ = ZoneInfo("America/Toronto")   # bank days, as BMO shows them
 TAG_IMPORTED = "simplefin"
@@ -108,9 +110,12 @@ def ensure_account(ff, existing, sf_acc, name, tag):
 
 
 def main():
-    v = read_vault(HOST_VARS_DIR / "fin.aktasolutions.com" / "vault.yml")
-    ff = Firefly(v["vault_api_token"])
-    accounts = simplefin_accounts(v["vault_simplefin_access_url"])
+    ff = Firefly(read_vault(HOST_VARS_DIR / "fin.aktasolutions.com" / "vault.yml")["vault_api_token"])
+    sf = read_vault(HOST_VARS_DIR / SIMPLEFIN_HOST / "vault.yml")
+    if not sf.get("vault_simplefin_access_url"):
+        log(f"no SimpleFIN access yet - paste a setup token in the API token field of {SIMPLEFIN_HOST} and claim it")
+        return 1
+    accounts = simplefin_accounts(sf["vault_simplefin_access_url"])
     total = sum(len(a.get("transactions", [])) for a in accounts)
     if not total:
         newest = max((int(a.get("balance-date", 0)) for a in accounts), default=0)
