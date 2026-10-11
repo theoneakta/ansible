@@ -18,7 +18,10 @@ found in its OCR text (lines with "total"/"montant"/"amount due" first).
 On a match (link mode - files stay only in Paperless):
   Firefly   : the transaction's external URL -> the Paperless document
   Paperless : "Firefly transaction" field -> the transaction, "Amount" filled in,
-              tags in-firefly + business/personal (copied from the transaction)
+              tags in-firefly + business/personal
+  business/personal: if the receipt is tagged business or personal in Paperless, the
+  transaction gets that tag (Amazon orders bought for Akta Solutions); otherwise the
+  receipt takes the transaction's tag.
 A document still unmatched after GIVE_UP_DAYS gets the "unmatched" tag.
 """
 import re
@@ -139,11 +142,17 @@ def main():
             amt, t = best
             tx_url = f"{FIREFLY_PUBLIC}/transactions/show/{t['group']}"
             log(f"doc {doc['id']} '{doc['title']}' {amt:.2f} -> Firefly #{t['group']} {t['date']} '{t['desc']}'")
+            # business/personal: a tag set on the receipt in Paperless wins (e.g. an Amazon order
+            # bought for Akta Solutions); otherwise the receipt takes the transaction's tag.
+            doc_kind = next((k for k in ("business", "personal") if tags[k] in doc["tags"]), None)
+            tx_tags = list(t["tags"])
+            if doc_kind:
+                tx_tags = [x for x in tx_tags if x not in ("business", "personal")] + [doc_kind]
             ff.write("PUT", f"/api/v1/transactions/{t['group']}",
-                     {"transactions": [{"transaction_journal_id": t["id"], "external_url": doc_url}]})
+                     {"transactions": [{"transaction_journal_id": t["id"], "external_url": doc_url, "tags": tx_tags}]})
             cfs = [cf for cf in doc.get("custom_fields", []) if cf["field"] not in (fields.get("Amount"), fields.get("Firefly transaction"))]
             cfs += [{"field": fields["Firefly transaction"], "value": tx_url}, {"field": fields["Amount"], "value": f"CAD{amt:.2f}"}]
-            new_tags = set(doc["tags"]) | {tags["in-firefly"]} | {tags[x] for x in ("business", "personal") if x in t["tags"]}
+            new_tags = set(doc["tags"]) | {tags["in-firefly"]} | {tags[x] for x in ("business", "personal") if x in tx_tags}
             pl.write("PATCH", f"/api/documents/{doc['id']}/", {"tags": sorted(new_tags), "custom_fields": cfs})
             used.add(doc_url)
             linked += 1
