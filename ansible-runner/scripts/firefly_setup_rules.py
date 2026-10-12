@@ -32,18 +32,22 @@ CATEGORIES = [
     ("Credit card payments", ["MBNA", "CAPITAL ONE", "NATIONAL BNK MC", "CARTES AMEX", "VISA DESJARDINS"]),
     ("Loans & Financing", ["EASYFINANCIAL", "CONSUMER LOANS", "FORD CREDIT", "FAIRSTONE", "FINANCEIT", "AFFIRM", "KLARNA", "PAYIN4"]),
     ("Income", ["ESITECHNOLOGIES", "CISSS", "PAYROLL", "PAIE/", "DEPOT CHEQUES"]),
-    ("Software & Hosting", ["QUICKBOOKS", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "GOOGLE SMART", "G1SK"]),
-    ("Subscriptions & Streaming", ["NETFLIX", "SPOTIFY", "UBERONE", "SCENTBIRD", "AYLO", "PAYPAL X.", "GOOGLE GOOGLE", "ADOBE"]),
+    ("Software & Hosting", ["QUICKBOOKS", "INTUIT", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "GOOGLE SMART", "G1SK",
+                            "CLOUDFLARE", "GITHUB", "DIGITALOCEAN", "OVH", "SSL2BUY", "DEVELOPER IN A BOX", "J2 GLOBAL",
+                            "VERIFONE", "ENCORE SOFTWARE"]),
+    ("Subscriptions & Streaming", ["NETFLIX", "SPOTIFY", "UBERONE", "SCENTBIRD", "AYLO", "PAYPAL X.", "GOOGLE GOOGLE", "ADOBE",
+                                   "^GOOGLE", "NABU CASA", "PRIVATE INTERNET ACCESS", "KNOWLEDGE SPOT"]),
     ("Housing", ["EQUITABLE BANK", "HYDRO QUEBEC", "HYDRO-QUEBEC", "VEXTERMINATION", "VERTDURE",
                  "ENTREPRISES LIM", "L EXPERT DEPANN"]),   # Entreprises Limoges = home renovation (the user)
     ("Phone & Internet", ["BELL", "VIRGIN PLUS", "VIDEOTRON", "FIZZ"]),
     ("Insurance", ["INS/ASS", "RBCASSU", "ASSURANCE"]),
-    ("Education", ["COLL GE", "COLLEGE", "ECOLE"]),
+    ("Education", ["COLL GE", "COLLEGE", "ECOLE", "UDEMY"]),
     ("Savings & Investments", ["KALEIDO", "BMO INV"]),
     ("Taxes", ["RQ CODE", "REVENU QUEBEC"]),
     ("Bank fees", ["FRAIS DE PROGRAMME", "PROGRAMME PRIVILEGE", "INTEREST"]),
     ("Gambling", ["LOTO-QUEBEC"]),
-    ("Entertainment", ["BILLETTERIE", "FAMOUS PLAYER", "CINEPLEX", "CINEMA"]),
+    ("Entertainment", ["BILLETTERIE", "FAMOUS PLAYER", "CINEPLEX", "CINEMA", "BLIZZARD", "NINTENDO"]),
+    ("Donations", ["GIVING FUND"]),
     ("Pets", ["PATTES & GRIFFE", "MONDOU", "PET"]),
     ("Memberships", ["CAAQUEBEC", "CAA QUEBEC"]),
     ("Discounts", ["REDUCTION "]),
@@ -53,16 +57,20 @@ CATEGORIES = [
                                  "STH 2", "WENDYS", "HARVEYS", "FRITOU", "HEART&CROWN", "MENCHIE", "KINTON", "TIME OUT", "COQ GARE",
                                  "BROADHEAD", "DEPANNEUR", "THAI EXPRESS", "PACINI", "SECOND CUP",
                                  "PRESOTEA", "BYTOWN CATER", "LA PREP", "ROCK N DELI", "JLIEU"]),
-    ("Groceries", ["IGA", "METRO ", "MAXI", "SUPER C", "PROVIGO", "BOULANGERIE", "WALMART", "COSTCO WHOLESALE", "FARM BOY"]),
+    ("Groceries", ["IGA", "METRO ", "MAXI", "SUPER C", "PROVIGO", "BOULANGERIE", "WALMART", "COSTCO WHOLESALE", "FARM BOY", "INSTACART", "HELLOFRESH",
+                   "TOO GOOD TO GO"]),
     ("Transport", ["PETRO-CANADA", "COSTCO ESSENCE", "ESSO", "SHELL", "ULTRAMAR", "UBERTRIP", "UBER TRIP", "OPUS",
-                   "ELECTRIFY", "CIRCUIT ELECTRIQUE", "STATIONNEMENT"]),
-    ("Health & Pharmacy", ["JEAN COUTU", "PHARMAPRIX", "UNIPRIX", "PR L'ASSOMPTION"]),
+                   "ELECTRIFY", "CIRCUIT ELECTRIQUE", "STATIONNEMENT", "UBER HOLDINGS", "CARFAX"]),
+    ("Health & Pharmacy", ["JEAN COUTU", "PHARMAPRIX", "UNIPRIX", "PR L'ASSOMPTION", "EYEBUYDIRECT", "CPAP"]),
     ("Shopping", ["AMZN", "AMAZON", "NIKE", "MICHAEL KORS", "URBAN PLANET", "GAMESTOP", "HOME DEPOT", "CANAC", "PARTY EXPERT",
                   "EBAY", "TIGRE GEANT", "RUDSAK", "SHEIN", "INSTANTINK", "GALERIES",
-                  "DOLLARAMA", "LOULOU", "BOUTIQUE", "HAIRGAMES", "STUDIO"]),
+                  "DOLLARAMA", "LOULOU", "BOUTIQUE", "HAIRGAMES", "STUDIO", "BEST BUY", "LACOSTE", "STRUCTUBE",
+                  "ALIPAY", "ETSY", "RONA", "BATTERYCLERK", "ECOMY", "SHENZHEN", "ELECTRONIQUE ADDISON", "TECHBUYER",
+                  "DOPE TECH", "NEXXBASE", "FITNESS A RABAIS", "DHL"]),
     ("E-transfers", ["VIR INTERAC"]),
 ]
-BUSINESS_TOOLS = ["QUICKBOOKS", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "FRAIS DE PROGRAMME"]
+BUSINESS_TOOLS = ["QUICKBOOKS", "INTUIT", "ANTHROPIC", "IONOS", "INFOMANIAK", "MICROSOFT", "SIMPLEFIN", "FRAIS DE PROGRAMME",
+                  "CLOUDFLARE", "GITHUB", "DIGITALOCEAN", "OVH", "SSL2BUY", "DEVELOPER IN A BOX", "J2 GLOBAL"]
 BUSINESS_INCOME = ["ESITECHNOLOGIES"]
 # Paid from an Akta Solutions account = company taxes (GST/QST, source deductions, corporate tax) - the user, 2026-10-11
 BUSINESS_FROM_COMPANY = ["RQ CODE", "REVENU QUEBEC"]
@@ -71,7 +79,7 @@ BUSINESS_MEAL_OVER = "200"
 
 # Subscriptions: name, typical amount, repeat (weekly/monthly/...), skip (2-weekly = weekly skip 1), last seen, match fragments
 SUBSCRIPTIONS = [
-    ("QuickBooks", 40.24, "monthly", 0, "2026-10-06", ["QUICKBOOKS"]),
+    ("QuickBooks", 40.24, "monthly", 0, "2026-10-06", ["QUICKBOOKS", "INTUIT"]),
     ("Anthropic Claude", 32.19, "monthly", 0, "2026-10-01", ["ANTHROPIC"]),
     ("Microsoft", 13.11, "monthly", 0, "2026-09-18", ["MICROSOFT"]),
     ("Infomaniak", 7.94, "monthly", 0, "2026-09-18", ["INFOMANIAK"]),
@@ -82,7 +90,7 @@ SUBSCRIPTIONS = [
     ("Netflix", 27.58, "monthly", 0, "2026-09-29", ["NETFLIX"]),
     ("Spotify", 27.58, "monthly", 0, "2026-10-06", ["SPOTIFY"]),
     ("Uber One", 11.49, "monthly", 0, "2026-10-02", ["UBERONE"]),
-    ("Google (PayPal)", 3.21, "monthly", 0, "2026-10-02", ["GOOGLE GOOGLE"]),
+    ("Google (PayPal)", 3.21, "monthly", 0, "2026-10-02", ["GOOGLE GOOGLE", "^GOOGLE"]),
     ("X Premium", 35.95, "monthly", 0, "2026-09-18", ["PAYPAL X."]),
     ("AYLO", 51.35, "monthly", 0, "2026-10-06", ["AYLO"]),
     ("Adobe", 37.93, "monthly", 0, "2026-09-18", ["ADOBE"]),
@@ -100,6 +108,17 @@ SUBSCRIPTIONS = [
     ("Fondation Kaleido (RESP)", 274.04, "monthly", 0, "2026-09-15", ["KALEIDO"]),
     ("BMO investments", 75.00, "monthly", 0, "2026-09-15", ["BMO INV"]),
     ("Revenu Quebec payments", 170.00, "weekly", 1, "2026-10-03", ["RQ CODE"]),
+    # Seen in the PayPal history 2023 - Jan 2025 (yearly ones, and ones that stopped: active=False)
+    ("Cloudflare domains", 15.00, "half-year", 0, "2025-01-02", ["CLOUDFLARE"]),
+    ("Private Internet Access VPN", 111.08, "yearly", 0, "2024-03-08", ["PRIVATE INTERNET ACCESS"]),
+    ("Verifone software licence", 159.99, "yearly", 0, "2024-11-21", ["VERIFONE"]),
+    ("OVH hosting", 3.04, "monthly", 0, "2025-01-30", ["OVH"]),
+    ("Nabu Casa (Home Assistant Cloud)", 10.01, "monthly", 0, "2024-08-08", ["NABU CASA"], False),
+    ("GitHub", 14.00, "monthly", 0, "2024-08-28", ["GITHUB"], False),
+    ("Developer In A Box", 21.50, "monthly", 0, "2025-01-12", ["DEVELOPER IN A BOX"], False),
+    ("j2 Global (eFax)", 34.65, "monthly", 0, "2024-11-25", ["J2 GLOBAL"], False),
+    ("HelloFresh", 92.49, "weekly", 0, "2023-09-07", ["HELLOFRESH"], False),
+    ("Knowledge Spot", 7.00, "weekly", 0, "2024-01-07", ["KNOWLEDGE SPOT"], False),
 ]
 
 
@@ -169,9 +188,9 @@ def main():
             print("category created:", name)
 
     bills = {b["attributes"]["name"]: b["id"] for b in ff.all("/api/v1/bills")}
-    for name, amt, freq, skip, last, _ in SUBSCRIPTIONS:
+    for name, amt, freq, skip, last, _, *active in SUBSCRIPTIONS:
         body = {"name": name, "amount_min": f"{amt * 0.9:.2f}", "amount_max": f"{amt * 1.1:.2f}", "date": last,
-                "repeat_freq": freq, "skip": skip, "currency_code": "CAD", "active": True,
+                "repeat_freq": freq, "skip": skip, "currency_code": "CAD", "active": active[0] if active else True,
                 "notes": "Created by ansible-runner scripts/firefly_setup_rules.py from the transactions seen Aug-Oct 2026."}
         if name in bills:
             ff.req("PUT", f"/api/v1/bills/{bills[name]}", json=body)
@@ -213,7 +232,7 @@ def main():
          [trig("category_is", "Restaurants & Fast food"), trig("amount_more", BUSINESS_MEAL_OVER)],
          [act("remove_tag", "personal"), act("add_tag", "business")], strict=True)
 
-    for name, *_x, frags in SUBSCRIPTIONS:
+    for name, _a, _f, _s, _l, frags, *_active in SUBSCRIPTIONS:
         rule("3 subscriptions", name, [trig("description_contains", f) for f in frags], [act("link_to_bill", name)], stop=False)
     print(f"rules rebuilt: {len(CATEGORIES)} category, 4 business/personal, {len(SUBSCRIPTIONS)} subscription")
 
