@@ -33,6 +33,8 @@ MAX_AGE = 7 * 86400
 
 # key -> (HardeningKitty list base name, role, {level: (role level tags, extra name filter)})
 PROFILES = {
+    "windows11home": ("finding_list_cis_microsoft_windows_11_enterprise_24h2", "Windows-11-CIS", {
+        "1-personal": ({"level1-corporate-enterprise-environment"}, "personal")}),
     "windows11": ("finding_list_cis_microsoft_windows_11_enterprise_24h2", "Windows-11-CIS", {
         "1-personal": ({"level1-corporate-enterprise-environment"}, "personal"),
         "1": ({"level1-corporate-enterprise-environment"}, None),
