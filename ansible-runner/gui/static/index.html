@@ -436,8 +436,11 @@
       </div>
       <div class="actionBar">
         <button class="primary" id="cisRunBtn">Run CIS hardening</button>
-        <button id="cisBundleBtn" title="Everything to run this CIS on a machine without the runner: role, collections, offline audit, install-ansible.sh and run-cis.sh (audit or apply)">Download offline bundle</button>
-        <span id="cisBundleStatus" class="muted"></span>
+      </div>
+      <div class="card" style="margin-top:1rem;">
+        <h3 style="margin:0 0 .3rem;">Offline bundles - run CIS without this runner</h3>
+        <p class="muted" style="margin:0 0 .6rem;">One download per OS: the CIS role, its collections and the audit tool (works offline), with <code>install-ansible.sh</code> and <code>run-cis.sh audit|apply [level]</code> - same safety settings as here. Copy it to the machine, then <code>tar xzf</code> it and read <code>README.txt</code>. Linux only (Windows needs a control machine).</p>
+        <div id="cisBundleList"></div>
       </div>
     </section>
 
@@ -1097,12 +1100,12 @@ async function loadCisOptions() {
   cisProfiles = await fetch('/api/cis/options').then(r => r.json());
   const osSel = $('cisOs');
   osSel.innerHTML = Object.entries(cisProfiles).map(([key, p]) => `<option value="${key}">${p.label}</option>`).join('');
+  renderCisBundles();
   renderCisLevelAndSections();
 }
 
 function renderCisLevelAndSections() {
   const profile = cisProfiles[$('cisOs').value];
-  $('cisBundleBtn').style.display = (profile.role || '').startsWith('Windows') ? 'none' : '';
   $('cisLevelOptions').innerHTML = profile.levels.map((l, i) =>
     `<label style="min-width:auto; margin-right:1rem;"><input type="radio" name="cisLevel" value="${l.id}" ${i === 0 ? 'checked' : ''}> ${l.label}</label>`
   ).join('');
@@ -1138,20 +1141,28 @@ async function toggleCisControls(sectionId) {
 
 $('cisOs').addEventListener('change', renderCisLevelAndSections);
 
-// Standalone bundle (Linux): built on the server the first time (downloads the audit tool once), then cached.
-$('cisBundleBtn').addEventListener('click', async () => {
-  const os = $('cisOs').value, btn = $('cisBundleBtn');
-  btn.disabled = true; $('cisBundleStatus').textContent = 'Building the bundle (first time can take a minute)...';
+// Offline CIS bundles: one row per Linux profile (built on the server on first download, then cached)
+function renderCisBundles() {
+  const linux = Object.entries(cisProfiles).filter(([, p]) => p.playbook);
+  $('cisBundleList').innerHTML = linux.map(([key, p]) => `
+    <div class="row" style="gap:.8rem; align-items:center;">
+      <span style="min-width:15rem;"><strong>${p.label}</strong> <span class="muted">(${p.role})</span></span>
+      <button type="button" class="cisBundleBtn" data-os="${key}">Download cis-${key}.tar.gz</button>
+      <span class="muted cisBundleStatus" data-os="${key}"></span>
+    </div>`).join('');
+}
+$('cisBundleList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.cisBundleBtn'); if (!btn) return;
+  const os = btn.dataset.os, status = document.querySelector(`.cisBundleStatus[data-os="${os}"]`);
+  btn.disabled = true; status.textContent = 'Preparing (first time about 30 s)...';
   try {
     const res = await fetch(`/api/cis/bundle/${os}`);
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-    const blob = await res.blob();
-    const a = document.createElement('a');
+    const blob = await res.blob(), a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = `cis-${os}.tar.gz`; a.click();
-    $('cisBundleStatus').textContent = `Downloaded cis-${os}.tar.gz (${(blob.size / 1048576).toFixed(1)} MB) - see README.txt inside.`;
-  } catch (e) {
-    $('cisBundleStatus').textContent = 'Error: ' + e.message;
-  } finally { btn.disabled = false; }
+    status.textContent = `Downloaded (${(blob.size / 1048576).toFixed(1)} MB)`;
+  } catch (err) { status.textContent = 'Error: ' + err.message; }
+  finally { btn.disabled = false; }
 });
 $('cisSectionsList').addEventListener('click', (e) => {
   if (e.target.classList.contains('cisExpandBtn')) toggleCisControls(e.target.dataset.section);

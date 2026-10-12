@@ -22,6 +22,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 import yaml
@@ -37,7 +38,11 @@ def _role_meta(role_dir: pathlib.Path) -> dict:
     text = "\n".join(p.read_text(errors="ignore") for p in sorted((role_dir / "defaults").rglob("*.yml")))
     get = lambda key: (re.search(rf"^{key}:\s*['\"]?([^'\"\n]+)", text, re.M) or [None, None])[1]
     release = re.search(r"^audit_bin_version:\s*\n(?:\s+.*\n)*?\s+release:\s*['\"]?([^'\"\n]+)", text, re.M)
-    return {"benchmark": get("benchmark"), "benchmark_version": get("benchmark_version"),
+    version = get("benchmark_version")
+    # each role names its audit branch itself: "benchmark_{{ benchmark_version }}" (most) or
+    # "benchmark-{{ benchmark_version }}" (UBUNTU22-CIS)
+    branch = (get("audit_git_version") or "benchmark_{{ benchmark_version }}").replace("{{ benchmark_version }}", version or "")
+    return {"benchmark": get("benchmark"), "benchmark_version": version, "audit_branch": branch,
             "goss_release": release.group(1).strip() if release else "v0.5.0"}
 
 
@@ -193,8 +198,17 @@ def build(key: str, profile: dict, playbook_path: pathlib.Path, out_dir: pathlib
     cache = out_dir / "cache"
     goss = _download(f"https://github.com/krameff/goss/releases/download/{meta['goss_release']}/goss-linux-amd64",
                      cache / f"goss-{meta['goss_release']}-linux-amd64")
-    audit_tgz = _download(f"https://codeload.github.com/ansible-lockdown/{bench}-Audit/tar.gz/refs/heads/benchmark_{bver}",
-                          cache / f"{bench}-Audit-benchmark_{bver}.tar.gz")
+    audit_tgz = None
+    for branch in (meta["audit_branch"], f"benchmark_{bver}", f"benchmark-{bver}", "latest", "main"):
+        try:
+            audit_tgz = _download(f"https://codeload.github.com/ansible-lockdown/{bench}-Audit/tar.gz/refs/heads/{branch}",
+                                  cache / f"{bench}-Audit-{branch}.tar.gz")
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+    if audit_tgz is None:
+        raise FileNotFoundError(f"no audit content found for {bench} {bver}")
     top = f"cis-{key}"
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp) / top
