@@ -439,7 +439,7 @@
       </div>
       <div class="card" style="margin-top:1rem;">
         <h3 style="margin:0 0 .3rem;">Offline bundles - run CIS without this runner</h3>
-        <p class="muted" style="margin:0 0 .6rem;">One download per OS: the CIS role, its collections and the audit tool (works offline), with <code>install-ansible.sh</code> and <code>run-cis.sh audit|apply [level]</code> - same safety settings as here. Copy it to the machine, then <code>tar xzf</code> it and read <code>README.txt</code>. Linux only (Windows needs a control machine).</p>
+        <p class="muted" style="margin:0 0 .6rem;">One download per OS: the CIS role, its collections and the audit tool (works offline), with <code>install-ansible.sh</code> and <code>run-cis.sh audit|apply [level]</code> - same safety settings as here. Copy it to the machine, extract it (<code>tar xzf</code> / unzip) and read <code>README.txt</code>. Linux bundles use the same Ansible roles as this tab; Windows bundles use <a href="https://github.com/scipag/HardeningKitty" target="_blank" rel="noopener">HardeningKitty</a> (PowerShell, no Ansible) with the CIS lists filtered the same way - Windows 11 also has a <code>1-personal</code> level without the controls that broke the XPS (Microsoft-account sign-in, OneDrive/Outlook).</p>
         <div id="cisBundleList"></div>
       </div>
     </section>
@@ -1142,13 +1142,13 @@ async function toggleCisControls(sectionId) {
 $('cisOs').addEventListener('change', renderCisLevelAndSections);
 
 // Offline CIS bundles: one row per Linux profile (built on the server on first download, then cached)
-function renderCisBundles() {
-  const linux = Object.entries(cisProfiles).filter(([, p]) => p.playbook);
-  $('cisBundleList').innerHTML = linux.map(([key, p]) => `
+async function renderCisBundles() {
+  const bundles = await fetch('/api/cis/bundles').then(r => r.json());
+  $('cisBundleList').innerHTML = bundles.map(b => `
     <div class="row" style="gap:.8rem; align-items:center;">
-      <span style="min-width:15rem;"><strong>${p.label}</strong> <span class="muted">(${p.role})</span></span>
-      <button type="button" class="cisBundleBtn" data-os="${key}">Download cis-${key}.tar.gz</button>
-      <span class="muted cisBundleStatus" data-os="${key}"></span>
+      <span style="min-width:15rem;"><strong>${b.label}</strong> <span class="muted">(${b.engine}; levels ${b.levels.join(', ')})</span></span>
+      <button type="button" class="cisBundleBtn" data-os="${b.key}" data-file="${b.file}">Download ${b.file}</button>
+      <span class="muted cisBundleStatus" data-os="${b.key}"></span>
     </div>`).join('');
 }
 $('cisBundleList').addEventListener('click', async (e) => {
@@ -1159,7 +1159,7 @@ $('cisBundleList').addEventListener('click', async (e) => {
     const res = await fetch(`/api/cis/bundle/${os}`);
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
     const blob = await res.blob(), a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `cis-${os}.tar.gz`; a.click();
+    a.href = URL.createObjectURL(blob); a.download = btn.dataset.file; a.click();
     status.textContent = `Downloaded (${(blob.size / 1048576).toFixed(1)} MB)`;
   } catch (err) { status.textContent = 'Error: ' + err.message; }
   finally { btn.disabled = false; }
