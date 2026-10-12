@@ -1145,6 +1145,17 @@ CIS_PROFILES = {
     },
 }
 
+# Windows 11 Home / personal laptop: same role, Level 1 without the BitLocker controls (no BitLocker
+# on Home; on a laptop its startup-authentication settings can stop it booting without a PIN) and
+# without the controls that broke the XPS (cis_personal_pc in playbooks/cis_hardening.yml:
+# Microsoft-account sign-in, OneDrive/Outlook, NAS access).
+CIS_PROFILES["windows11home"] = {
+    **CIS_PROFILES["windows11"],
+    "label": "Windows 11 Home / personal laptop (like the XPS)",
+    "levels": [{"id": "1", "label": "Level 1 - personal PC / laptop", "tags": ["level1-corporate-enterprise-environment"]}],
+    "extra_vars": {"cis_personal_pc": True},
+}
+
 _SERVER_LEVELS = [
     {"id": "1-dc", "label": "Level 1 - Domain Controller", "tags": ["level1-domaincontroller"]},
     {"id": "1-member", "label": "Level 1 - Domain Member", "tags": ["level1-domainmember"]},
@@ -1329,6 +1340,7 @@ def api_cis_run(body: CisRunIn):
         raise HTTPException(400, f"Unknown level '{body.cis_level}' for {body.os}.")
 
     extra_vars: dict = {"cis_role": profile["role"]}
+    extra_vars.update(profile.get("extra_vars", {}))   # e.g. cis_personal_pc for Windows 11 Home
     if body.mode == "sections":
         if not body.sections:
             raise HTTPException(400, "Select at least one section, or switch to 'All'.")

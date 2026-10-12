@@ -38,7 +38,8 @@
 #                                        default theoneakta)
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
-#   --cis-os <windows11|windows2019|windows2022|windows2025>  default: windows11
+#   --cis-os <windows11|windows11home|windows2019|windows2022|windows2025>  default: windows11
+#                                        windows11home = Windows 11 Home / personal laptop (Level 1, no BitLocker, XPS exceptions)
 #   --cis-os <ubuntu2404|ubuntu2204|rocky10|rocky9|rocky8|debian13|debian12|debian11>  with cis_hardening_linux.yml
 #                                         levels: 1-server, 2-server, 1-workstation, 2-workstation
 #   --cis-level <id>                     windows11: 1 or 2
@@ -176,6 +177,7 @@ YML
       CIS_LEVEL_ID="${CIS_LEVEL_ID:-1}"
       case "$CIS_OS" in
         windows11)   CIS_ROLE=Windows-11-CIS ;;
+        windows11home) CIS_ROLE=Windows-11-CIS; EXTRA_VARS+=(-e cis_personal_pc=true) ;;   # Windows 11 Home / personal laptop
         windows2019) CIS_ROLE=Windows-2019-CIS ;;
         windows2022) CIS_ROLE=Windows-2022-CIS ;;
         windows2025) CIS_ROLE=Windows-2025-CIS ;;
@@ -188,11 +190,12 @@ YML
         debian13)    CIS_ROLE=DEBIAN13-CIS ;;
         debian12)    CIS_ROLE=DEBIAN12-CIS ;;
         debian11)    CIS_ROLE=DEBIAN11-CIS ;;
-        *) echo "Unknown --cis-os '$CIS_OS' (expected windows11, windows2019, windows2022, windows2025, ubuntu2404, ubuntu2204, rocky8/9/10 or debian11/12/13)" >&2; exit 1 ;;
+        *) echo "Unknown --cis-os '$CIS_OS' (expected windows11, windows11home, windows2019, windows2022, windows2025, ubuntu2404, ubuntu2204, rocky8/9/10 or debian11/12/13)" >&2; exit 1 ;;
       esac
       case "$CIS_OS:$CIS_LEVEL_ID" in
         windows11:1)     CIS_TAGS="level1-corporate-enterprise-environment,level1-bitlocker" ;;
         windows11:2)     CIS_TAGS="level2-high-security-sensitive-data-environment,level2-bitlocker" ;;
+        windows11home:1) CIS_TAGS="level1-corporate-enterprise-environment" ;;   # no BitLocker on Home
         *:1-dc)          CIS_TAGS="level1-domaincontroller" ;;
         *:1-member)      CIS_TAGS="level1-domainmember" ;;
         *:1-standalone)  CIS_TAGS="level1-memberserver" ;;

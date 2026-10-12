@@ -87,6 +87,20 @@
     win19cis_rule_18_4_1: false
     win22cis_rule_18_4_1: false
     win25cis_rule_18_4_1: false
+    # ---- Personal PC / laptop exceptions (Windows 11 only) ----
+    # Applied only when cis_personal_pc is true: the GUI's "Windows 11 Home / personal laptop" entry,
+    # run.sh --cis-os windows11home. Each was found breaking the XPS (192.168.3.17) - Microsoft-account
+    # sign-in, OneDrive/Outlook, NAS access; the reasons are below, control by control. The plain
+    # "Windows 11" entry applies them (full benchmark, minus the remote-management safety above).
+    cis_personal_pc: false
+    cis_personal_pc_exclusions:
+      - win11cis_rule_2_3_1_1
+      - win11cis_rule_18_9_28_1
+      - win11cis_rule_18_9_28_3
+      - win11cis_rule_18_9_28_4
+      - win11cis_rule_18_10_41_1
+      - win11cis_rule_2_3_11_7
+      - win11cis_rule_18_10_50_1
     # 2.3.1.1 ("Block Microsoft accounts") sets NoConnectedUser=3 under
     # HKLM:\Software\Microsoft\Windows\Currentversion\Policies\System -
     # Microsoft's documented value for "Users can't add or log on with
@@ -98,7 +112,7 @@
     # live. Windows-11-CIS only - not excluded on the server roles, where
     # blocking personal Microsoft accounts on a domain-joined member
     # server/DC is the actually-intended, appropriate use of this control.
-    win11cis_rule_2_3_1_1: false
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_2_3_1_1
     # A related cluster, same root cause as 2.3.1.1: these three are all
     # named "on domain-joined computers" but have NO discovered_domain_joined
     # guard in their tasks (unlike their siblings 18.9.28.5/6/7, which do),
@@ -115,9 +129,9 @@
     # are the same domain-only-in-name pattern, directly adjacent, and
     # plausibly compounding the same class of account-visibility issue -
     # excluded together rather than waiting to hit each one individually.
-    win11cis_rule_18_9_28_1: false
-    win11cis_rule_18_9_28_3: false
-    win11cis_rule_18_9_28_4: false
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_9_28_1
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_9_28_3
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_9_28_4
     # The actual, comprehensive cause of the persistent "Can't sign in with
     # a Microsoft account - This program is blocked by group policy
     # (0x800704ec)" dialog, which survived clearing all of the above.
@@ -131,7 +145,7 @@
     # Confirmed live: clearing this (and only this, at that point) let
     # Outlook sign in. Windows-11-CIS only, same domain-vs-personal-PC
     # reasoning as 2.3.1.1.
-    win11cis_rule_18_10_41_1: false
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_41_1
     # 2.3.11.7 ("Network security: LAN Manager authentication level") set to
     # "Send NTLMv2 response only. Refuse LM & NTLM" sets LmCompatibilityLevel=5,
     # the strictest of the six levels - and a classic, well-known cause of a
@@ -144,7 +158,7 @@
     # legitimate hardening control in general (unlike the others on this
     # list, which are bugs/scoping gaps), but not a fit for a home PC that
     # needs to talk to home-network devices like a NAS. Windows-11-CIS only.
-    win11cis_rule_2_3_11_7: false
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_2_3_11_7
     # 18.10.50.1 ("Prevent the usage of OneDrive for file storage") sets
     # HKLM:\Software\Policies\Microsoft\Windows\OneDrive\DisableFileSyncNGSC=1,
     # which disables the OneDrive sync client outright - the app won't open,
@@ -153,8 +167,14 @@
     # enterprises that forbid personal cloud storage; on a personal PC it just
     # removes OneDrive. Confirmed live: OneDrive failed to open after a CIS
     # run with DisableFileSyncNGSC=1 set. Windows-11-CIS only.
-    win11cis_rule_18_10_50_1: false
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_50_1
   pre_tasks:
+    - name: Personal PC / laptop - leave out the controls that broke the XPS
+      ansible.builtin.set_fact:
+        "{{ item }}": false
+      loop: "{{ cis_personal_pc_exclusions }}"
+      when: cis_personal_pc | bool
+      tags: always
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
     # order - e.g. Windows-11-CIS stops SSDPSRV (5.30) before upnphost
