@@ -1268,19 +1268,39 @@ def _discover_controls(role: str, control_glob: str, section_id: str, section_wi
     return [{"id": cid, "label": seen[cid]} for cid in sorted(seen, key=lambda s: [int(p) for p in s.split(".")])]
 
 
+@app.get("/api/cis/bundles")
+def api_cis_bundles():
+    """The offline bundles the CIS tab offers: Linux (Ansible role, .tar.gz) and Windows
+    (HardeningKitty, .zip)."""
+    from gui import cis_bundle_windows
+    out = []
+    for key, p in CIS_PROFILES.items():
+        if p.get("playbook") == CIS_LINUX_PLAYBOOK:
+            out.append({"key": key, "label": p["label"], "engine": f"{p['role']} (Ansible)", "file": f"cis-{key}.tar.gz",
+                        "levels": [lv["id"] for lv in p["levels"]]})
+        elif key in cis_bundle_windows.PROFILES:
+            out.append({"key": key, "label": p["label"], "engine": "HardeningKitty (PowerShell)", "file": f"cis-{key}.zip",
+                        "levels": list(cis_bundle_windows.PROFILES[key][2])})
+    return out
+
+
 @app.get("/api/cis/bundle/{os_key}")
 def api_cis_bundle(os_key: str):
-    """Standalone CIS bundle for a Linux profile (gui/cis_bundle.py): role, collections, offline audit,
-    install-ansible.sh and run-cis.sh - to run on a machine without this runner."""
-    from gui import cis_bundle
+    """Standalone CIS bundle, to run on a machine without this runner. Linux: the Ansible role,
+    collections, offline audit, install-ansible.sh, run-cis.sh (gui/cis_bundle.py). Windows:
+    HardeningKitty with filtered CIS lists and run-cis.ps1 (gui/cis_bundle_windows.py)."""
+    from gui import cis_bundle, cis_bundle_windows
     profile = CIS_PROFILES.get(os_key)
-    if not profile or profile.get("playbook") != CIS_LINUX_PLAYBOOK:
-        raise HTTPException(404, "Offline bundles exist for the Linux CIS profiles only (Windows needs a control machine).")
     try:
-        path = cis_bundle.build(os_key, profile, BASE / CIS_LINUX_PLAYBOOK, DATA_DIR / "cis-bundles")
+        if profile and profile.get("playbook") == CIS_LINUX_PLAYBOOK:
+            path = cis_bundle.build(os_key, profile, BASE / CIS_LINUX_PLAYBOOK, DATA_DIR / "cis-bundles")
+            return FileResponse(path, media_type="application/gzip", filename=path.name)
+        if profile and os_key in cis_bundle_windows.PROFILES:
+            path = cis_bundle_windows.build(os_key, profile["label"], DATA_DIR / "cis-bundles")
+            return FileResponse(path, media_type="application/zip", filename=path.name)
     except Exception as e:
         raise HTTPException(500, f"Could not build the bundle: {e}")
-    return FileResponse(path, media_type="application/gzip", filename=path.name)
+    raise HTTPException(404, f"No offline bundle for '{os_key}'.")
 
 
 @app.get("/api/cis/controls")
