@@ -1268,6 +1268,21 @@ def _discover_controls(role: str, control_glob: str, section_id: str, section_wi
     return [{"id": cid, "label": seen[cid]} for cid in sorted(seen, key=lambda s: [int(p) for p in s.split(".")])]
 
 
+@app.get("/api/cis/bundle/{os_key}")
+def api_cis_bundle(os_key: str):
+    """Standalone CIS bundle for a Linux profile (gui/cis_bundle.py): role, collections, offline audit,
+    install-ansible.sh and run-cis.sh - to run on a machine without this runner."""
+    from gui import cis_bundle
+    profile = CIS_PROFILES.get(os_key)
+    if not profile or profile.get("playbook") != CIS_LINUX_PLAYBOOK:
+        raise HTTPException(404, "Offline bundles exist for the Linux CIS profiles only (Windows needs a control machine).")
+    try:
+        path = cis_bundle.build(os_key, profile, BASE / CIS_LINUX_PLAYBOOK, DATA_DIR / "cis-bundles")
+    except Exception as e:
+        raise HTTPException(500, f"Could not build the bundle: {e}")
+    return FileResponse(path, media_type="application/gzip", filename=path.name)
+
+
 @app.get("/api/cis/controls")
 def api_cis_controls(os: str, section: str):
     profile = CIS_PROFILES.get(os)

@@ -55,6 +55,7 @@ COPY requirements.yml /ansible/requirements.yml
 RUN ansible-galaxy install -r /ansible/requirements.yml
 
 COPY gui/app.py /ansible/gui/app.py
+COPY gui/cis_bundle.py /ansible/gui/cis_bundle.py
 COPY gui/static /ansible/gui/static
 COPY gui/callback_plugins /ansible/gui/callback_plugins
 
