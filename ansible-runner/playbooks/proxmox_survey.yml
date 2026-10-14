@@ -1,0 +1,69 @@
+---
+# Read-only survey of a Proxmox node through its API: version, CPU, RAM,
+# storage, bridges and the VMs/templates on it. Changes nothing - for sizing
+# the RKE2 VMs before creating them. Uses the same token as image_build.yml
+# (proxmox_token_id in inventory/image.yml, vault_proxmox_token_secret).
+#
+# Run:  ./run.sh proxmox_survey.yml            (pve6 - proxmox_node)
+#       ./run.sh proxmox_survey.yml -e survey_node=pve5
+
+- name: Survey a Proxmox node
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/image.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+  vars:
+    survey_node: "{{ proxmox_node }}"
+    node_api: "{{ proxmox_api_url }}/nodes/{{ survey_node }}"
+    proxmox_headers:
+      Authorization: "PVEAPIToken={{ proxmox_token_id }}={{ vault_proxmox_token_secret | default('') }}"
+
+  tasks:
+    - name: Read the node's API
+      ansible.builtin.uri:
+        url: "{{ item.value }}"
+        headers: "{{ proxmox_headers }}"
+        validate_certs: "{{ proxmox_validate_certs }}"
+      loop: "{{ endpoints | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        endpoints:
+          version: "{{ proxmox_api_url }}/version"
+          status: "{{ node_api }}/status"
+          storage: "{{ node_api }}/storage"
+          network: "{{ node_api }}/network"
+          vms: "{{ node_api }}/qemu"
+      register: pve
+      # The token travels in the request headers.
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          version: "{{ r.version.version }}"
+          cpu: "{{ r.status.cpuinfo.model }} - {{ r.status.cpuinfo.sockets }} socket(s), {{ r.status.cpuinfo.cpus }} threads"
+          ram_gb: "{{ (r.status.memory.used / 2**30) | round(1) }} used / {{ (r.status.memory.total / 2**30) | round(1) }} total"
+          storage: >-
+            {{ r.storage | selectattr('active', 'defined') | map(attribute='storage') | zip(
+                 r.storage | selectattr('active', 'defined') | map(attribute='type'),
+                 r.storage | selectattr('active', 'defined') | map(attribute='avail') | map('int') | map('human_readable'),
+                 r.storage | selectattr('active', 'defined') | map(attribute='content'))
+               | map('join', ' | ') | list }}
+          bridges: >-
+            {{ r.network | selectattr('type', 'equalto', 'bridge') | map(attribute='iface') | zip(
+                 r.network | selectattr('type', 'equalto', 'bridge') | map(attribute='cidr', default='-'),
+                 r.network | selectattr('type', 'equalto', 'bridge') | map(attribute='bridge_vlan_aware', default=0) | map('regex_replace', '^1$', 'vlan-aware') | map('regex_replace', '^0$', ''))
+               | map('join', ' ') | list }}
+          vms: >-
+            {{ r.vms | sort(attribute='vmid') | map(attribute='vmid') | zip(
+                 r.vms | sort(attribute='vmid') | map(attribute='name'),
+                 r.vms | sort(attribute='vmid') | map(attribute='status'),
+                 r.vms | sort(attribute='vmid') | map(attribute='maxmem') | map('int') | map('human_readable'),
+                 r.vms | sort(attribute='vmid') | map(attribute='cpus'),
+                 r.vms | sort(attribute='vmid') | map(attribute='template', default=0) | map('regex_replace', '^1$', 'template') | map('regex_replace', '^0$', ''))
+               | map('join', ' ') | list }}
+      vars:
+        r: "{{ dict(pve.results | map(attribute='item.key') | zip(pve.results | map(attribute='json.data'))) }}"
