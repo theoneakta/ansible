@@ -101,6 +101,8 @@
       - win11cis_rule_18_10_41_1
       - win11cis_rule_2_3_11_7
       - win11cis_rule_18_10_50_1
+      - win11cis_rule_18_10_17_1
+      - win11cis_rule_18_10_65_2
     # 2.3.1.1 ("Block Microsoft accounts") sets NoConnectedUser=3 under
     # HKLM:\Software\Microsoft\Windows\Currentversion\Policies\System -
     # Microsoft's documented value for "Users can't add or log on with
@@ -168,12 +170,36 @@
     # removes OneDrive. Confirmed live: OneDrive failed to open after a CIS
     # run with DisableFileSyncNGSC=1 set. Windows-11-CIS only.
     #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_50_1
+    # 18.10.17.1 ("Enable App Installer" = Disabled) sets
+    # HKLM:\Software\Policies\Microsoft\Windows\AppInstaller\EnableAppInstaller=0,
+    # which turns winget off ("This operation is disabled by Group Policy") -
+    # and winget from the msstore source is how install_software.yml puts
+    # Store-only apps (HP Smart) on a PC. 18.10.65.2 ("Only display the
+    # private store") sets WindowsStore\RequirePrivateStoreOnly=1: with no
+    # company private store, the Microsoft Store can't install anything.
+    # User's call (2026-10-13): personal PCs keep the normal Store. The other
+    # App Installer controls (18.10.17.2-4: experimental features, hash
+    # override, ms-appinstaller: links) stay on. Excluding a rule only stops
+    # the role setting it, so the pre-task below also clears both values on a
+    # PC an earlier run already hardened.
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_17_1
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_65_2
   pre_tasks:
     - name: Personal PC / laptop - leave out the controls that broke the XPS
       ansible.builtin.set_fact:
         "{{ item }}": false
       loop: "{{ cis_personal_pc_exclusions }}"
       when: cis_personal_pc | bool
+      tags: always
+    - name: Personal PC / laptop - give back winget and the public Microsoft Store
+      ansible.windows.win_regedit:
+        path: "{{ item.path }}"
+        name: "{{ item.name }}"
+        state: absent
+      loop:
+        - { path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppInstaller', name: EnableAppInstaller }
+        - { path: 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore', name: RequirePrivateStoreOnly }
+      when: cis_personal_pc | bool   # only ever set for Windows 11 Home
       tags: always
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency

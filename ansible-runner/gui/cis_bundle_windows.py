@@ -66,7 +66,8 @@ SAFETY = re.compile(
 # playbook turns off for Windows 11 (LAN Manager level, OneDrive, consumer Microsoft accounts).
 PERSONAL = re.compile(r"Block Microsoft accounts|Block all consumer Microsoft account|Prevent the usage of OneDrive"
                       r"|account details on sign-in|enumerate connected users|Enumerate local users"
-                      r"|LAN Manager authentication level", re.I)
+                      r"|LAN Manager authentication level"
+                      r"|Enable App Installer$|Only display the private store", re.I)
 
 
 def _get(url: str, dest: pathlib.Path) -> pathlib.Path:
