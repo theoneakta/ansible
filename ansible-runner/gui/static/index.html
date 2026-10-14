@@ -396,6 +396,17 @@
       </div>
 
       <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="printerToggle"> Add network printer / HP Smart</label>
+        <div class="params" id="printerParams">
+          <p class="muted">Adds the printer driverless over IPP (Windows's built-in IPP class driver - nothing to download); skipped if a printer with that name already exists. HP Smart has no Chocolatey package: it comes from the Microsoft Store via winget, for whoever is signed in at the PC (someone must be signed in).</p>
+          <label><input type="checkbox" id="printerAdd" checked> Add the printer</label>
+          <label>Printer name <input id="printerName" value="HP OfficeJet 8010"></label>
+          <label>Printer address <input id="printerAddress" value="192.168.3.9"></label>
+          <label><input type="checkbox" id="hpSmart" checked> Install HP Smart (Microsoft Store)</label>
+        </div>
+      </div>
+
+      <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="softflowdToggle"> Install softflowd - NetFlow exporter (Linux hosts)</label>
         <div class="params" id="softflowdParams">
           <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.168.3.8:2055" placeholder="192.168.3.8:2055"></div>
@@ -628,6 +639,7 @@ toggleParams('gitToggle', 'gitParams');
 toggleParams('wslToggle', 'wslParams');
 toggleParams('win11debloatToggle', 'win11debloatParams');
 toggleParams('rsatToggle', 'rsatParams');
+toggleParams('printerToggle', 'printerParams');
 toggleParams('dockerToggle', 'dockerParams');
 toggleParams('softflowdToggle', 'softflowdParams');
 
@@ -1024,10 +1036,11 @@ async function startInstallRun() {
   const wantsWsl = $('wslToggle').checked;
   const wantsWin11Debloat = $('win11debloatToggle').checked;
   const wantsRsat = $('rsatToggle').checked;
+  const wantsPrinter = $('printerToggle').checked && ($('printerAdd').checked || $('hpSmart').checked);
   const wantsDocker = $('dockerToggle').checked;
   const wantsSoftflowd = $('softflowdToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsDocker && !wantsSoftflowd) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, Docker, softflowd).');
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsPrinter && !wantsDocker && !wantsSoftflowd) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, printer, Docker, softflowd).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -1065,6 +1078,14 @@ async function startInstallRun() {
   }
   if ($('rsatToggle').checked) {
     body.rsat = true;
+  }
+  if (wantsPrinter) {
+    if ($('printerAdd').checked) {
+      body.printer = true;
+      body.printer_name = $('printerName').value.trim() || null;
+      body.printer_address = $('printerAddress').value.trim() || null;
+    }
+    body.hp_smart = $('hpSmart').checked;
   }
   if (wantsSoftflowd) {
     body.softflowd = true;

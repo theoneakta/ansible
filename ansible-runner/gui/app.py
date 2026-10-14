@@ -831,6 +831,10 @@ class RunIn(BaseModel):
     wsl_target_users: list[str] = []  # also provision selected distro(s) for these specific Windows users
     win11debloat: bool = False  # run Win11Debloat with its own default settings, silently
     rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
+    printer: bool = False  # add a network printer (driverless IPP)
+    printer_name: Optional[str] = None  # default in the playbook: HP OfficeJet 8010
+    printer_address: Optional[str] = None  # default in the playbook: 192.168.3.9
+    hp_smart: bool = False  # HP Smart from the Microsoft Store (winget, as the signed-in user)
     docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
     docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
     softflowd: bool = False  # Linux hosts: softflowd NetFlow exporter
@@ -921,6 +925,18 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["win11debloat_enabled"] = True
     if body.rsat:
         extra_vars["rsat_enabled"] = True
+    if body.printer:
+        extra_vars["printer_enabled"] = True
+        if body.printer_address:
+            if not (_IP_RE.match(body.printer_address) or HOST_NAME_RE.match(body.printer_address)):
+                raise HTTPException(400, "Printer address must be an IP address or a host name.")
+            extra_vars["printer_address"] = body.printer_address
+        if body.printer_name:
+            if not PRINTER_NAME_RE.match(body.printer_name):
+                raise HTTPException(400, "Printer name: letters, digits, spaces and - _ . ( ) only.")
+            extra_vars["printer_name"] = body.printer_name
+    if body.hp_smart:
+        extra_vars["hp_smart_enabled"] = True
     if body.docker:
         extra_vars["docker_enabled"] = True
         users = [u for u in body.docker_users if LINUX_USER_RE.match(u)]
@@ -937,6 +953,7 @@ def build_extra_vars(body: RunIn) -> dict:
     return extra_vars
 
 
+PRINTER_NAME_RE = re.compile(r"^[A-Za-z0-9 ._()-]{1,64}$")
 LINUX_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 COLLECTOR_RE = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
 

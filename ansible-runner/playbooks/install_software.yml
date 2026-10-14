@@ -69,6 +69,20 @@
     # there's no per-tool picker here, matching "with all options".
     rsat_enabled: false
 
+    # Network printer: off by default. Added driverless over IPP
+    # (Add-Printer -IppURL -> Windows's inbox "Microsoft IPP Class Driver"),
+    # so nothing to download. Default = the HP OfficeJet 8010 on the LAN.
+    printer_enabled: false
+    printer_name: "HP OfficeJet 8010"
+    printer_address: "192.168.3.9"
+    # Skip if a printer whose name matches this is already there (Windows may
+    # have auto-added it over WSD, e.g. "printer.internal (HP OfficeJet 8010 series)").
+    printer_match: "*{{ printer_name }}*"
+    # HP Smart is a Microsoft Store app (no Chocolatey package): installed
+    # with winget from the msstore source, as the signed-in user (Store apps
+    # are per-user and winget doesn't work over WinRM / as SYSTEM).
+    hp_smart_enabled: false
+
     # IPv6 is turned off on every managed PC, on every run (same as the PXE
     # images, see playbooks/packer/windows/scripts/prepare-sysprep.ps1).
     # -e disable_ipv6=false skips the step; it never turns IPv6 back on.
@@ -617,6 +631,66 @@
         state: absent
       when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
       changed_when: true
+
+    - name: Add the network printer (driverless IPP)
+      ansible.windows.win_powershell:
+        parameters:
+          Name: "{{ printer_name }}"
+          Address: "{{ printer_address }}"
+          Match: "{{ printer_match }}"
+        script: |
+          param([string]$Name, [string]$Address, [string]$Match)
+          $Ansible.Changed = $false
+          $url = "http://${Address}:631/ipp/print"
+          $existing = Get-Printer | Where-Object { $_.Name -eq $Name -or ($Match -and $_.Name -like $Match) } | Select-Object -First 1
+          if ($existing) { return "already installed: $($existing.Name) ($($existing.PortName), $($existing.DriverName))" }
+          if (-not (Test-NetConnection $Address -Port 631 -InformationLevel Quiet -WarningAction SilentlyContinue)) {
+            $Ansible.Failed = $true; return "printer $Address does not answer on IPP (port 631) - is it on and on the network?"
+          }
+          try {
+            Add-Printer -Name $Name -IppURL $url -ErrorAction Stop
+          } catch {
+            # Windows already knows this device under another name (e.g. auto-added over WSD)
+            if ("$_" -match 'already exists') { return "already installed under another name: $url" }
+            throw
+          }
+          $Ansible.Changed = $true
+          $p = Get-Printer -Name $Name
+          "added $Name -> $url ($($p.DriverName))"
+      when: printer_enabled | bool
+
+    - name: Install HP Smart (Microsoft Store) as the signed-in user
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $app = 'AD2F1837.HPPrinterControl'   # HP Smart's package family
+          $user = (Get-CimInstance Win32_ComputerSystem).UserName
+          if (-not $user) { $Ansible.Failed = $true; return "skipped: nobody is signed in at the console - sign in and re-run" }
+          $sid = (New-Object System.Security.Principal.NTAccount $user).Translate([System.Security.Principal.SecurityIdentifier]).Value
+          if (Get-AppxPackage -User $sid -Name $app) { return "already installed for $user" }
+          $dir = 'C:\ProgramData\ansible-runner'; New-Item -ItemType Directory -Force $dir | Out-Null
+          $log = Join-Path $dir 'winget-hpsmart.log'; Remove-Item $log -ErrorAction SilentlyContinue
+          $cmd = "winget install --id 9WZDNCRFHWLH --source msstore --accept-package-agreements --accept-source-agreements --silent --disable-interactivity *> '$log'; exit `$LASTEXITCODE"
+          $name = 'ansible-runner winget HP Smart'
+          Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$cmd`""
+          $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+          Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings | Out-Null
+          try {
+            Start-ScheduledTask -TaskName $name
+            $deadline = (Get-Date).AddMinutes(22)
+            do { Start-Sleep 5; $t = Get-ScheduledTask -TaskName $name } while ($t.State -in 'Running', 'Queued' -and (Get-Date) -lt $deadline)
+            $rc = (Get-ScheduledTaskInfo -TaskName $name).LastTaskResult
+            if ($t.State -eq 'Running') { Stop-ScheduledTask -TaskName $name; $rc = 'timeout' }
+          } finally {
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+          }
+          $out = if (Test-Path $log) { Get-Content $log -Tail 6 | Where-Object { $_ -match '\w' } } else { @() }
+          $ok = [bool](Get-AppxPackage -User $sid -Name $app)
+          if ($ok) { $Ansible.Changed = $true } else { $Ansible.Failed = $true }
+          "winget (as $user) -> exit $rc"; $out
+      when: hp_smart_enabled | bool
 
     - name: Report packages that failed
       ansible.builtin.debug:
