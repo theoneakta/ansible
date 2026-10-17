@@ -48,8 +48,8 @@
       $Ansible.Changed = $false
       $Pass = $env:DRIVE_PASSWORD   # from `environment:` below - never a module parameter
       $who = (Get-CimInstance Win32_ComputerSystem).UserName
-      if (-not $who) { throw "nobody is signed in at the console - sign in and re-run" }
-      if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { throw "invalid path '$Path' - expected \\server\share or \\server\share\folder" }
+      if (-not $who) { return "FAILED: nobody is signed in at the console - sign in and re-run" }
+      if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { return "FAILED: invalid path '$Path' - expected \\server\share or \\server\share\folder" }
       $server = if ($Path -match '^\\\\([^\\]+)') { $Matches[1] } else { '' }
       # [string] cast: an empty value (e.g. no password - PowerShell turns an empty env var into $null) must encode as ""
       $enc = { param($s) [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$s)) }
@@ -69,15 +69,18 @@
         # via cmd: PowerShell 5.1 with ErrorAction Stop treats any native stderr ("not found") as fatal
         & cmd.exe /c "net use `$drive /delete /y >nul 2>&1"
         if (`$state -eq 'absent') {
-          if (`$server) { & cmd.exe /c "cmdkey /delete:`$server >nul 2>&1" }
+          # Forget the saved login only when no other drive still uses that server.
+          `$others = @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { `$_.RemotePath -like "\\`$server\*" })
+          if (`$server -and `$others.Count -eq 0) { & cmd.exe /c "cmdkey /delete:`$server >nul 2>&1" }
           'removed'
           exit 0
         }
         `$p = @{ LocalPath = `$drive; RemotePath = `$path; Persistent = `$persistent }
         if (`$user) { `$p.UserName = `$user; `$p.Password = `$pass; if (`$persistent) { `$p.SaveCredentials = `$true } }
-        New-SmbMapping @p | Out-Null
+        New-SmbMapping @p -ErrorAction Stop | Out-Null
         if (`$label) { (New-Object -ComObject Shell.Application).NameSpace("`$drive\").Self.Name = `$label }
         "mapped `$drive -> `$path (persistent=`$persistent)"
+        exit 0   # else the exit code of the last native cleanup command (e.g. 2 = nothing to remove) leaks out
       } catch { "ERROR: `$(`$_.Exception.Message)"; exit 1 }
       "@
 
@@ -107,17 +110,36 @@
         Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $ps1 -Force -ErrorAction SilentlyContinue
       }
-      $out = if (Test-Path $log) { (Get-Content $log) -join ' ' } else { '' }
+      $lines = if (Test-Path $log) { @(Get-Content $log) } else { @() }
+      $out = ($lines | Where-Object { $_.Trim() }) -join ' '
+      # Success only when the user-side script printed its own result line - anything else is a failure.
+      $ok = [bool]($lines | Where-Object { $_ -match '^(mapped |removed$)' })
       Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-      # throw = the reason shows as the task error in the GUI log (a plain Failed flag only says "Unknown error")
-      if ($rc -ne 0 -or $out -match '^ERROR|ERROR:') { throw "as $who -> $out (exit $rc)" }
+      # Never fail here: return the message ("FAILED: ..." on error) - the next task fails WITH it,
+      # because the GUI log only shows a task's msg (a failed win_powershell just says "Unknown error").
+      if ($rc -ne 0 -or -not $ok) {
+        # Keep Windows's message, drop PowerShell's "At <script>:line" / "+ ~~~" noise
+        $msg = ($out -replace 'At [A-Z]:\\\S+:\d+ char:\d+', '' -replace '\+[^+]*?~+', '' -replace '\s+', ' ').Trim()
+        return "FAILED: as $who -> $msg (exit $rc)"
+      }
       $Ansible.Changed = $true
-      "as $who -> $out (exit $rc)"
+      "as $who -> $out"
   # Password via the environment, never as a module parameter - Ansible prints neither env nor this.
   environment:
     DRIVE_PASSWORD: "{{ drive_password | default('') }}"
   register: drive_result
+  failed_when: false
 
 - name: Network drive result
   ansible.builtin.debug:
     msg: "{{ drive_result.output | default([]) }}"
+
+- name: Network drive failed
+  ansible.builtin.fail:
+    msg: >-
+      {{ (drive_result.output | default([]) | join(' ')) or
+         ((drive_result.error | default([{}]) | first).exception.message | default(drive_result.msg | default('unknown error'))) }}
+  when: >-
+    (drive_result.output | default([]) | join(' ')) is search('FAILED:')
+    or (drive_result.error | default([]) | length > 0)
+    or (drive_result.failed | default(false) and (drive_result.output | default([]) | length == 0))
