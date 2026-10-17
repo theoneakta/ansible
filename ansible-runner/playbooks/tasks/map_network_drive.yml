@@ -47,8 +47,13 @@
       param([string]$Letter, [string]$Path, [string]$User, [bool]$Persistent, [string]$Label, [string]$State)
       $Ansible.Changed = $false
       $Pass = $env:DRIVE_PASSWORD   # from `environment:` below - never a module parameter
+      # The console user; for a Remote Desktop session (no console user) the owner of the desktop (explorer.exe).
       $who = (Get-CimInstance Win32_ComputerSystem).UserName
-      if (-not $who) { return "FAILED: nobody is signed in at the console - sign in and re-run" }
+      if (-not $who) {
+        $ex = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1
+        if ($ex) { $o = Invoke-CimMethod -InputObject $ex -MethodName GetOwner; if ($o.User) { $who = "$($o.Domain)\$($o.User)" } }
+      }
+      if (-not $who) { return "FAILED: nobody is signed in (console or Remote Desktop) - sign in and re-run" }
       if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { return "FAILED: invalid path '$Path' - expected \\server\share or \\server\share\folder" }
       $server = if ($Path -match '^\\\\([^\\]+)') { $Matches[1] } else { '' }
       # [string] cast: an empty value (e.g. no password - PowerShell turns an empty env var into $null) must encode as ""
@@ -75,9 +80,22 @@
           'removed'
           exit 0
         }
-        `$p = @{ LocalPath = `$drive; RemotePath = `$path; Persistent = `$persistent }
-        if (`$user) { `$p.UserName = `$user; `$p.Password = `$pass; if (`$persistent) { `$p.SaveCredentials = `$true } }
-        New-SmbMapping @p -ErrorAction Stop | Out-Null
+        if (`$persistent) {
+          # New-SmbMapping -Persistent + -SaveCredentials fails with "The parameter is incorrect"
+          # (confirmed on Win11) - so the classic way: login into Credential Manager, then net use.
+          `$ErrorActionPreference = 'Continue'   # native tools: their stderr must not be fatal
+          if (`$user) {
+            `$o = & cmdkey.exe "/add:`$server" "/user:`$user" "/pass:`$pass" 2>&1
+            if (`$LASTEXITCODE -ne 0) { throw "cmdkey: `$((`$o | Out-String).Trim())" }
+          }
+          `$o = & net.exe use `$drive `$path /persistent:yes 2>&1
+          if (`$LASTEXITCODE -ne 0) { throw "net use: `$((`$o | Out-String).Trim())" }
+          `$ErrorActionPreference = 'Stop'
+        } else {
+          `$p = @{ LocalPath = `$drive; RemotePath = `$path; Persistent = `$false }
+          if (`$user) { `$p.UserName = `$user; `$p.Password = `$pass }
+          New-SmbMapping @p -ErrorAction Stop | Out-Null
+        }
         if (`$label) { (New-Object -ComObject Shell.Application).NameSpace("`$drive\").Self.Name = `$label }
         "mapped `$drive -> `$path (persistent=`$persistent)"
         exit 0   # else the exit code of the last native cleanup command (e.g. 2 = nothing to remove) leaks out
