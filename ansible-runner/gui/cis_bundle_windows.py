@@ -67,7 +67,8 @@ SAFETY = re.compile(
 PERSONAL = re.compile(r"Block Microsoft accounts|Block all consumer Microsoft account|Prevent the usage of OneDrive"
                       r"|account details on sign-in|enumerate connected users|Enumerate local users"
                       r"|LAN Manager authentication level"
-                      r"|Enable App Installer$|Only display the private store", re.I)
+                      r"|Enable App Installer$|Only display the private store"
+                      r"|Do not allow storage of passwords and credentials", re.I)
 
 
 def _get(url: str, dest: pathlib.Path) -> pathlib.Path:
