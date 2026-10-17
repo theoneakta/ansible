@@ -103,6 +103,7 @@
       - win11cis_rule_18_10_50_1
       - win11cis_rule_18_10_17_1
       - win11cis_rule_18_10_65_2
+      - win11cis_rule_2_3_10_4
     # 2.3.1.1 ("Block Microsoft accounts") sets NoConnectedUser=3 under
     # HKLM:\Software\Microsoft\Windows\Currentversion\Policies\System -
     # Microsoft's documented value for "Users can't add or log on with
@@ -184,6 +185,15 @@
     # PC an earlier run already hardened.
     #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_17_1
     #   -> in cis_personal_pc_exclusions: win11cis_rule_18_10_65_2
+    # 2.3.10.4 ("Network access: Do not allow storage of passwords and
+    # credentials for network authentication") sets Lsa\DisableDomainCreds=1:
+    # Windows then refuses to save ANY network login - cmdkey answers
+    # "Credentials cannot be saved from this logon session" and New-SmbMapping
+    # -SaveCredentials "The parameter is incorrect". So no persistent mapped
+    # drive with a saved login (map_network_drive.yml), no "remember my
+    # credentials" for NAS shares or RDP. Confirmed live on the XPS 2026-10-17.
+    # User's call: personal PCs keep saved network logins. Cleared below too.
+    #   -> in cis_personal_pc_exclusions: win11cis_rule_2_3_10_4
   pre_tasks:
     - name: Personal PC / laptop - leave out the controls that broke the XPS
       ansible.builtin.set_fact:
@@ -200,6 +210,14 @@
         - { path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppInstaller', name: EnableAppInstaller }
         - { path: 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore', name: RequirePrivateStoreOnly }
       when: cis_personal_pc | bool   # only ever set for Windows 11 Home
+      tags: always
+    - name: Personal PC / laptop - allow saved network logins (2.3.10.4)
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: DisableDomainCreds
+        data: 0
+        type: dword
+      when: cis_personal_pc | bool
       tags: always
     # The vendored roles (overwritten from GitHub on every `--build`, so not
     # ours to patch) disable services in control-number order, not dependency
