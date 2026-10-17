@@ -83,6 +83,17 @@
     # are per-user and winget doesn't work over WinRM / as SYSTEM).
     hp_smart_enabled: false
 
+    # Network drive for the signed-in user (tasks/map_network_drive.yml - see
+    # there for how it works). Off unless requested (GUI card / -e drive_enabled=true).
+    drive_enabled: false
+    drive_letter: ""
+    drive_path: ""
+    drive_username: ""
+    drive_password: ""
+    drive_persistent: true
+    drive_label: ""
+    drive_state: present
+
     # IPv6 is turned off on every managed PC, on every run (same as the PXE
     # images, see playbooks/packer/windows/scripts/prepare-sysprep.ps1).
     # -e disable_ipv6=false skips the step; it never turns IPv6 back on.
@@ -631,6 +642,10 @@
         state: absent
       when: rsat_enabled | bool and (rsat_missing.stdout | default('')) | length > 0
       changed_when: true
+
+    - name: Network drive
+      ansible.builtin.include_tasks: tasks/map_network_drive.yml
+      when: drive_enabled | bool
 
     - name: Add the network printer (driverless IPP)
       ansible.windows.win_powershell:

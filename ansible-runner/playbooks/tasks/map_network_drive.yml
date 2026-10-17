@@ -1,0 +1,119 @@
+---
+# Map (or remove) a network drive for whoever is signed in at the PC.
+#
+# A mapped drive belongs to a user's logon session, not to the machine, so a
+# plain `net use` over WinRM would only exist inside Ansible's own throw-away
+# session. Instead this runs a one-shot scheduled task as the signed-in user,
+# "only when logged on" (their open session - no password needed) and NOT
+# elevated: elevated and normal sessions keep separate drive lists, and
+# Explorer only sees the normal one. Same idea as the interactive Chocolatey
+# installs in install_software.yml.
+#
+# The share password never appears on a command line: it goes into a script
+# file readable only by that user, SYSTEM and Administrators, deleted after.
+#
+# Inputs (vars):
+#   drive_letter      Z                       (letter only, no colon needed)
+#   drive_path        \\192.168.3.188\movies\tv   (a sub-folder of a share is fine)
+#   drive_username    user or DOMAIN\user     (empty = the signed-in user's own credentials)
+#   drive_password    the share password
+#   drive_persistent  true  = reconnects at every logon, credentials saved in
+#                             the user's Windows Credential Manager
+#                     false = until sign-out only, nothing stored
+#   drive_label       optional name shown in Explorer
+#   drive_state       present | absent (absent also forgets the saved credentials)
+
+- name: Check the network drive settings
+  ansible.builtin.assert:
+    that:
+      - drive_letter | default('') | regex_search('^[A-Za-z]:?$')
+      - drive_state | default('present') in ['present', 'absent']
+      - (drive_state | default('present')) == 'absent' or drive_path | default('') | length > 0
+    fail_msg: >-
+      Need drive_letter (e.g. Z) and, to map, drive_path like \\server\share or \\server\share\folder
+      (the path format itself is checked on the PC, below).
+    quiet: true
+
+- name: "{{ 'Map' if (drive_state | default('present')) == 'present' else 'Remove' }} network drive {{ drive_letter | upper | regex_replace(':', '') }}: for the signed-in user"
+  ansible.windows.win_powershell:
+    parameters:
+      Letter: "{{ drive_letter | upper | regex_replace(':', '') }}"
+      Path: "{{ drive_path | default('') }}"
+      User: "{{ drive_username | default('') }}"
+      Persistent: "{{ drive_persistent | default(true) | bool }}"
+      Label: "{{ drive_label | default('') }}"
+      State: "{{ drive_state | default('present') }}"
+    script: |
+      param([string]$Letter, [string]$Path, [string]$User, [bool]$Persistent, [string]$Label, [string]$State)
+      $Ansible.Changed = $false
+      $Pass = $env:DRIVE_PASSWORD   # from `environment:` below - never a module parameter
+      $who = (Get-CimInstance Win32_ComputerSystem).UserName
+      if (-not $who) { $Ansible.Failed = $true; return "skipped: nobody is signed in at the console - sign in and re-run" }
+      if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { $Ansible.Failed = $true; return "invalid path '$Path' - expected \\server\share or \\server\share\folder" }
+      $server = if ($Path -match '^\\\\([^\\]+)') { $Matches[1] } else { '' }
+      $enc = { param($s) [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($s)) }
+
+      # The script the user's session runs. Values are embedded base64-encoded
+      # (no quoting problems); the file is ACL'd to the user + SYSTEM + admins.
+      $body = @"
+      `$ErrorActionPreference = 'Stop'
+      function D(`$b) { [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(`$b)) }
+      `$letter = D '$(& $enc $Letter)'; `$path = D '$(& $enc $Path)'; `$user = D '$(& $enc $User)'
+      `$pass = D '$(& $enc $Pass)'; `$label = D '$(& $enc $Label)'; `$server = D '$(& $enc $server)'
+      `$persistent = [bool]::Parse('$Persistent'); `$state = '$State'
+      `$drive = "`${letter}:"
+      try {
+        # Drop any existing mapping on that letter first (idempotent re-runs, path changes).
+        Get-SmbMapping -LocalPath `$drive -ErrorAction SilentlyContinue | Remove-SmbMapping -Force -UpdateProfile -ErrorAction SilentlyContinue
+        & net.exe use `$drive /delete /y 2>`$null | Out-Null
+        if (`$state -eq 'absent') {
+          if (`$server) { & cmdkey.exe "/delete:`$server" 2>`$null | Out-Null }
+          'removed'
+          exit 0
+        }
+        `$p = @{ LocalPath = `$drive; RemotePath = `$path; Persistent = `$persistent }
+        if (`$user) { `$p.UserName = `$user; `$p.Password = `$pass; if (`$persistent) { `$p.SaveCredentials = `$true } }
+        New-SmbMapping @p | Out-Null
+        if (`$label) { (New-Object -ComObject Shell.Application).NameSpace("`$drive\").Self.Name = `$label }
+        "mapped `$drive -> `$path (persistent=`$persistent)"
+      } catch { "ERROR: `$(`$_.Exception.Message)"; exit 1 }
+      "@
+
+      $dir = 'C:\ProgramData\ansible-runner'; New-Item -ItemType Directory -Force $dir | Out-Null
+      $id = [guid]::NewGuid().ToString('N')
+      $ps1 = Join-Path $dir "map-$id.ps1"; $log = Join-Path $dir "map-$id.log"
+      Set-Content -LiteralPath $ps1 -Value $body -Encoding UTF8
+      $acl = New-Object Security.AccessControl.FileSecurity
+      $acl.SetAccessRuleProtection($true, $false)
+      foreach ($id2 in @($who, 'NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id2, 'FullControl', 'Allow')))
+      }
+      Set-Acl -LiteralPath $ps1 -AclObject $acl
+      $name = "ansible-runner map drive $Letter"
+      try {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"& '$ps1' *> '$log'; exit `$LASTEXITCODE`""
+        # Interactive + Limited = the user's normal (non-elevated) session, where Explorer lives.
+        $principal = New-ScheduledTaskPrincipal -UserId $who -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings | Out-Null
+        Start-ScheduledTask -TaskName $name
+        $deadline = (Get-Date).AddSeconds(90)
+        do { Start-Sleep 2; $t = Get-ScheduledTask -TaskName $name } while ($t.State -in 'Running', 'Queued' -and (Get-Date) -lt $deadline)
+        $rc = (Get-ScheduledTaskInfo -TaskName $name).LastTaskResult
+      } finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $ps1 -Force -ErrorAction SilentlyContinue
+      }
+      $out = if (Test-Path $log) { (Get-Content $log) -join ' ' } else { '' }
+      Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+      if ($rc -ne 0 -or $out -match '^ERROR|ERROR:') { $Ansible.Failed = $true } else { $Ansible.Changed = $true }
+      "as $who -> $out (exit $rc)"
+  # Password via the environment, never as a module parameter - Ansible prints neither env nor this.
+  environment:
+    DRIVE_PASSWORD: "{{ drive_password | default('') }}"
+  register: drive_result
+
+- name: Network drive result
+  ansible.builtin.debug:
+    msg: "{{ drive_result.output | default([]) }}"

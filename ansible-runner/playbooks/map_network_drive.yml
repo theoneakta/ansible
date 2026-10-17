@@ -1,0 +1,27 @@
+---
+# Map (or remove) a network drive for whoever is signed in at the PC(s).
+# The work is in tasks/map_network_drive.yml (also used by install_software.yml,
+# i.e. the GUI's Install tab "Map network drive" card).
+#
+# Run:
+#   ./run.sh map_network_drive.yml --limit 192.168.3.17 \
+#     -e drive_letter=Z -e 'drive_path=\\192.168.3.188\movies\tv' \
+#     -e drive_username=share -e drive_password=... [-e drive_persistent=false] [-e drive_label=TV]
+#   ./run.sh map_network_drive.yml --limit 192.168.3.17 -e drive_letter=Z -e drive_state=absent
+#
+# Someone must be signed in at the PC: the drive is created in their session.
+
+- name: Map a network drive
+  hosts: windows
+  gather_facts: false
+  vars:
+    drive_letter: ""
+    drive_path: ""
+    drive_username: ""
+    drive_password: ""
+    drive_persistent: true
+    drive_label: ""
+    drive_state: present
+  tasks:
+    - name: Map / remove the drive
+      ansible.builtin.include_tasks: tasks/map_network_drive.yml

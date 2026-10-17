@@ -598,7 +598,7 @@ def vault_file_for_target(target: str) -> pathlib.Path:
 
 def redact(extra_vars: dict) -> dict:
     redacted = dict(extra_vars)
-    for k in ("wazuh_registration_password", "tailscale_authkey"):
+    for k in ("wazuh_registration_password", "tailscale_authkey", "drive_password"):
         if k in redacted:
             redacted[k] = "***"
     return redacted
@@ -818,6 +818,16 @@ class GitParams(BaseModel):
     email: Optional[str] = None
 
 
+class DriveParams(BaseModel):
+    letter: str
+    path: Optional[str] = None  # \\server\share or \\server\share\folder (required to map)
+    username: Optional[str] = None  # empty = the signed-in user's own credentials
+    password: Optional[str] = None
+    persistent: bool = True  # reconnect at every logon + save the credentials (Credential Manager)
+    label: Optional[str] = None
+    remove: bool = False  # unmap the letter and forget the saved credentials
+
+
 class RunIn(BaseModel):
     hosts: list[str] = []  # empty = all hosts in the windows group
     packages: list[str] = []  # empty = install every package in choco_packages (see install_packages)
@@ -835,6 +845,7 @@ class RunIn(BaseModel):
     printer_name: Optional[str] = None  # default in the playbook: HP OfficeJet 8010
     printer_address: Optional[str] = None  # default in the playbook: 192.168.3.9
     hp_smart: bool = False  # HP Smart from the Microsoft Store (winget, as the signed-in user)
+    drive: Optional["DriveParams"] = None  # map / remove a network drive for the signed-in user
     docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
     docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
     softflowd: bool = False  # Linux hosts: softflowd NetFlow exporter
@@ -937,6 +948,29 @@ def build_extra_vars(body: RunIn) -> dict:
             extra_vars["printer_name"] = body.printer_name
     if body.hp_smart:
         extra_vars["hp_smart_enabled"] = True
+    if body.drive:
+        d = body.drive
+        letter = d.letter.strip().rstrip(":").upper()
+        if not re.fullmatch(r"[D-Z]", letter):
+            raise HTTPException(400, "Drive letter must be a single letter D-Z.")
+        extra_vars.update(drive_enabled=True, drive_letter=letter, drive_state="absent" if d.remove else "present",
+                          drive_persistent=bool(d.persistent))
+        if not d.remove:
+            path = (d.path or "").strip().replace("/", "\\")
+            if not DRIVE_PATH_RE.match(path):
+                raise HTTPException(400, r"Path must look like \\server\share or \\server\share\folder.")
+            extra_vars["drive_path"] = path
+            if d.username:
+                if not DRIVE_USER_RE.match(d.username.strip()):
+                    raise HTTPException(400, r"Username: user, DOMAIN\user or user@domain.")
+                extra_vars["drive_username"] = d.username.strip()
+                extra_vars["drive_password"] = d.password or ""
+            if d.label:
+                if not PRINTER_NAME_RE.match(d.label.strip()):
+                    raise HTTPException(400, "Label: letters, digits, spaces and - _ . ( ) only.")
+                extra_vars["drive_label"] = d.label.strip()
+        elif d.path:
+            extra_vars["drive_path"] = (d.path or "").strip().replace("/", "\\")
     if body.docker:
         extra_vars["docker_enabled"] = True
         users = [u for u in body.docker_users if LINUX_USER_RE.match(u)]
@@ -954,6 +988,9 @@ def build_extra_vars(body: RunIn) -> dict:
 
 
 PRINTER_NAME_RE = re.compile(r"^[A-Za-z0-9 ._()-]{1,64}$")
+# \\server\share[\folder...] - no quotes, no control characters
+DRIVE_PATH_RE = re.compile(r"^\\\\[A-Za-z0-9._-]+(\\[^\\/:*?\"<>|\x00-\x1f]+)+$")
+DRIVE_USER_RE = re.compile(r"^([A-Za-z0-9._-]+\\)?[A-Za-z0-9._@-]{1,104}$")
 LINUX_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 COLLECTOR_RE = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
 

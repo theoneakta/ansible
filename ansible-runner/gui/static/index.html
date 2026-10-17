@@ -407,6 +407,20 @@
       </div>
 
       <div class="toggleCard">
+        <label class="toggleHead"><input type="checkbox" id="driveToggle"> Map network drive (Windows)</label>
+        <div class="params" id="driveParams">
+          <p class="muted">Maps a drive letter for whoever is signed in at the PC (someone must be signed in - a mapped drive belongs to their session). The path can be a share or a folder inside it. Leave the username empty to use the signed-in user's own Windows login. The password is never stored on the runner.</p>
+          <label>Drive letter <input id="driveLetter" value="Z" maxlength="2" size="3"></label>
+          <label>Path <input id="drivePath" placeholder="\\192.168.3.188\movies\tv" size="40"></label>
+          <label>Username <input id="driveUser" placeholder="user or DOMAIN\user" autocomplete="off"></label>
+          <label>Password <input id="drivePass" type="password" autocomplete="new-password"></label>
+          <label>Label (optional) <input id="driveLabel" placeholder="TV shows"></label>
+          <label><input type="checkbox" id="drivePersistent" checked> Persistent - reconnect at every logon and remember the credentials</label>
+          <label><input type="checkbox" id="driveRemove"> Remove this drive letter instead (also forgets its saved credentials)</label>
+        </div>
+      </div>
+
+      <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="softflowdToggle"> Install softflowd - NetFlow exporter (Linux hosts)</label>
         <div class="params" id="softflowdParams">
           <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.168.3.8:2055" placeholder="192.168.3.8:2055"></div>
@@ -640,6 +654,7 @@ toggleParams('wslToggle', 'wslParams');
 toggleParams('win11debloatToggle', 'win11debloatParams');
 toggleParams('rsatToggle', 'rsatParams');
 toggleParams('printerToggle', 'printerParams');
+toggleParams('driveToggle', 'driveParams');
 toggleParams('dockerToggle', 'dockerParams');
 toggleParams('softflowdToggle', 'softflowdParams');
 
@@ -1039,8 +1054,9 @@ async function startInstallRun() {
   const wantsPrinter = $('printerToggle').checked && ($('printerAdd').checked || $('hpSmart').checked);
   const wantsDocker = $('dockerToggle').checked;
   const wantsSoftflowd = $('softflowdToggle').checked;
-  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsPrinter && !wantsDocker && !wantsSoftflowd) {
-    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, printer, Docker, softflowd).');
+  const wantsDrive = $('driveToggle').checked;
+  if (!wantsPackages && !wantsWazuh && !wantsTailscale && !wantsGit && !wantsWsl && !wantsWin11Debloat && !wantsRsat && !wantsPrinter && !wantsDocker && !wantsSoftflowd && !wantsDrive) {
+    alert('Select at least one package, or enable another install option (WSL, Wazuh, Tailscale, Git, Win11Debloat, RSAT, printer, network drive, Docker, softflowd).');
     return;
   }
   if ($('wazuhToggle').checked) {
@@ -1086,6 +1102,20 @@ async function startInstallRun() {
       body.printer_address = $('printerAddress').value.trim() || null;
     }
     body.hp_smart = $('hpSmart').checked;
+  }
+  if (wantsDrive) {
+    const remove = $('driveRemove').checked;
+    if (!$('driveLetter').value.trim()) { alert('Enter a drive letter.'); return; }
+    if (!remove && !$('drivePath').value.trim()) { alert('Enter the network path, e.g. \\\\server\\share\\folder.'); return; }
+    body.drive = {
+      letter: $('driveLetter').value.trim(),
+      path: $('drivePath').value.trim() || null,
+      username: $('driveUser').value.trim() || null,
+      password: $('drivePass').value || null,
+      persistent: $('drivePersistent').checked,
+      label: $('driveLabel').value.trim() || null,
+      remove: remove,
+    };
   }
   if (wantsSoftflowd) {
     body.softflowd = true;
