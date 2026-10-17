@@ -26,7 +26,7 @@
 - name: Check the network drive settings
   ansible.builtin.assert:
     that:
-      - drive_letter | default('') | regex_search('^[A-Za-z]:?$')
+      - drive_letter | default('') is match('^[A-Za-z]:?$')
       - drive_state | default('present') in ['present', 'absent']
       - (drive_state | default('present')) == 'absent' or drive_path | default('') | length > 0
     fail_msg: >-
