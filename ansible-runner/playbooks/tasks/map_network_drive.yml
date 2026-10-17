@@ -48,10 +48,11 @@
       $Ansible.Changed = $false
       $Pass = $env:DRIVE_PASSWORD   # from `environment:` below - never a module parameter
       $who = (Get-CimInstance Win32_ComputerSystem).UserName
-      if (-not $who) { $Ansible.Failed = $true; return "skipped: nobody is signed in at the console - sign in and re-run" }
-      if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { $Ansible.Failed = $true; return "invalid path '$Path' - expected \\server\share or \\server\share\folder" }
+      if (-not $who) { throw "nobody is signed in at the console - sign in and re-run" }
+      if ($State -eq 'present' -and $Path -notmatch '^\\\\[^\\]+\\[^\\]+') { throw "invalid path '$Path' - expected \\server\share or \\server\share\folder" }
       $server = if ($Path -match '^\\\\([^\\]+)') { $Matches[1] } else { '' }
-      $enc = { param($s) [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($s)) }
+      # [string] cast: an empty value (e.g. no password - PowerShell turns an empty env var into $null) must encode as ""
+      $enc = { param($s) [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$s)) }
 
       # The script the user's session runs. Values are embedded base64-encoded
       # (no quoting problems); the file is ACL'd to the user + SYSTEM + admins.
@@ -65,9 +66,10 @@
       try {
         # Drop any existing mapping on that letter first (idempotent re-runs, path changes).
         Get-SmbMapping -LocalPath `$drive -ErrorAction SilentlyContinue | Remove-SmbMapping -Force -UpdateProfile -ErrorAction SilentlyContinue
-        & net.exe use `$drive /delete /y 2>`$null | Out-Null
+        # via cmd: PowerShell 5.1 with ErrorAction Stop treats any native stderr ("not found") as fatal
+        & cmd.exe /c "net use `$drive /delete /y >nul 2>&1"
         if (`$state -eq 'absent') {
-          if (`$server) { & cmdkey.exe "/delete:`$server" 2>`$null | Out-Null }
+          if (`$server) { & cmd.exe /c "cmdkey /delete:`$server >nul 2>&1" }
           'removed'
           exit 0
         }
@@ -107,7 +109,9 @@
       }
       $out = if (Test-Path $log) { (Get-Content $log) -join ' ' } else { '' }
       Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-      if ($rc -ne 0 -or $out -match '^ERROR|ERROR:') { $Ansible.Failed = $true } else { $Ansible.Changed = $true }
+      # throw = the reason shows as the task error in the GUI log (a plain Failed flag only says "Unknown error")
+      if ($rc -ne 0 -or $out -match '^ERROR|ERROR:') { throw "as $who -> $out (exit $rc)" }
+      $Ansible.Changed = $true
       "as $who -> $out (exit $rc)"
   # Password via the environment, never as a module parameter - Ansible prints neither env nor this.
   environment:
