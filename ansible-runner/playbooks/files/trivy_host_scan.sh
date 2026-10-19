@@ -16,7 +16,8 @@ trivy() {  # trivy <out-file> <docker-run-args...> -- <trivy-args...>
   f=$1; shift; dargs=""
   while [ "$1" != "--" ]; do dargs="$dargs $1"; shift; done; shift
   # shellcheck disable=SC2086
-  timeout 1800 docker run --rm --env-file "$ENVF" -v "$CACHE:/root/.cache/trivy" $dargs "$TRIVY_IMAGE" \
+  # --cpus 1: the hosts' disks sit on the NAS (iSCSI) - keep the scan from starving the apps
+  timeout 1800 docker run --rm --cpus 1 --env-file "$ENVF" -v "$CACHE:/root/.cache/trivy" $dargs "$TRIVY_IMAGE" \
     "$@" --server "$TRIVY_SERVER" --token-header Trivy-Token --format json --quiet --timeout 25m \
     > "$OUT/$f" 2> "$OUT/$f.err"
 }
@@ -30,7 +31,9 @@ record() {  # kind target file rc
 
 for img in $(docker ps --format '{{.Image}}' | sort -u); do
   f="img__$(safe "$img").json"
-  trivy "$f" -v /var/run/docker.sock:/var/run/docker.sock -- image --scanners vuln "$img"; record image "$img" "$f" $?
+  # remote first: layers stream from the registry (no `docker save` of the whole image to the slow disk)
+  # and layers already analysed are skipped via the cache; docker only for locally built images
+  trivy "$f" -v /var/run/docker.sock:/var/run/docker.sock -- image --scanners vuln --image-src remote,docker "$img"; record image "$img" "$f" $?
 done
 
 for d in $(find /home /opt /srv -maxdepth 5 -name .git -type d -not -path '*/node_modules/*' 2>/dev/null | sed 's#/\.git$##' | sort); do

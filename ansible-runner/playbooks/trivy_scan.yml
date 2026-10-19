@@ -14,6 +14,9 @@
   gather_facts: false
   vars:
     trivy_github_user: theoneakta
+    # third-party repos we run code from (softflowd: built on the hosts that export NetFlow to ntopng)
+    trivy_extra_repos:
+      - https://github.com/irino/softflowd.git
     dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
   tasks:
     - name: List the repos (public; private too when the vault has a github_token)
@@ -26,12 +29,13 @@
 
     - name: Remember the clone URLs (no forks, no archived repos)
       ansible.builtin.set_fact:
-        trivy_github_repos: "{{ gh.json | rejectattr('fork') | rejectattr('archived') | map(attribute='clone_url') | list }}"
+        trivy_github_repos: "{{ (gh.json | rejectattr('fork') | rejectattr('archived') | map(attribute='clone_url') | list + trivy_extra_repos) | unique }}"
 
 - name: Trivy scan of the Docker hosts
   hosts: "{{ trivy_hosts | default('192.168.3.6,192.168.3.7,192.168.3.8') }}"
   gather_facts: false
   become: true
+  serial: 1   # one host at a time: all three VMs' disks share the NAS
   vars:
     ansible_become_exe: sudo.ws
     trivy_server_host: 192.168.3.8
