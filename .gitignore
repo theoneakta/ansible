@@ -5,3 +5,6 @@
 .vault_pass
 *.key
 .ssh/
+
+# Installer ISOs (large, licensed - never commit)
+iso-installer/
