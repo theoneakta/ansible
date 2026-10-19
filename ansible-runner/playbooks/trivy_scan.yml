@@ -1,0 +1,149 @@
+---
+# Trivy (Aqua Security, open source) -> DefectDojo.
+# Scans, on every Docker host: the images of running containers + every git checkout; on .8 also the
+# GitHub repos of trivy_github_user. Results are re-imported into DefectDojo (http://192.168.3.8:8095),
+# so findings that disappear get closed and the history stays in one place.
+#   DefectDojo + Trivy server: /home/mbmondor/docker/defectdojo on .8 (compose; secrets in .env + vault)
+#   Vault host defectdojo.aktasolutions.com: vault_win_user/vault_win_password (GUI login, also used for
+#   the API), trivy_token (Trivy server), optional github_token (read-only, needed for private repos).
+# Run: ansible-playbook playbooks/trivy_scan.yml --vault-password-file /run/secrets/vault_pass
+# Nightly: systemd timer trivy-scan.timer on .8.
+
+- name: GitHub repos to scan
+  hosts: localhost
+  gather_facts: false
+  vars:
+    trivy_github_user: theoneakta
+    dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
+  tasks:
+    - name: List the repos (public; private too when the vault has a github_token)
+      ansible.builtin.uri:
+        url: "{{ 'https://api.github.com/user/repos?affiliation=owner&per_page=100' if dd.github_token | default('') else 'https://api.github.com/users/' ~ trivy_github_user ~ '/repos?per_page=100' }}"
+        headers: "{{ {'Authorization': 'Bearer ' ~ dd.github_token} if dd.github_token | default('') else {} }}"
+        return_content: true
+      register: gh
+      no_log: true
+
+    - name: Remember the clone URLs (no forks, no archived repos)
+      ansible.builtin.set_fact:
+        trivy_github_repos: "{{ gh.json | rejectattr('fork') | rejectattr('archived') | map(attribute='clone_url') | list }}"
+
+- name: Trivy scan of the Docker hosts
+  hosts: "{{ trivy_hosts | default('192.168.3.6,192.168.3.7,192.168.3.8') }}"
+  gather_facts: false
+  become: true
+  vars:
+    ansible_become_exe: sudo.ws
+    trivy_server_host: 192.168.3.8
+    trivy_image: docker.io/aquasec/trivy:0.76.0
+    dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
+  tasks:
+    - name: Scan images, git checkouts (and the GitHub repos, from the Trivy server host)
+      ansible.builtin.script: files/trivy_host_scan.sh
+      environment:
+        TRIVY_SERVER: "http://{{ trivy_server_host }}:4954"
+        TRIVY_TOKEN: "{{ dd.trivy_token }}"
+        TRIVY_IMAGE: "{{ trivy_image }}"
+        TRIVY_GITHUB_REPOS: "{{ hostvars['localhost'].trivy_github_repos | join(' ') if inventory_hostname == trivy_server_host else '' }}"
+        GITHUB_TOKEN: "{{ dd.github_token | default('') }}"
+      register: scan
+      changed_when: false
+
+    - name: Scan summary
+      ansible.builtin.debug:
+        msg: "{{ scan.stdout_lines | last }}"
+
+    - name: Fetch the results
+      ansible.builtin.fetch:
+        src: /tmp/trivy-results.tar.gz
+        dest: "/tmp/trivy-results/{{ inventory_hostname }}.tar.gz"
+        flat: true
+
+    - name: Remove the results archive from the host
+      ansible.builtin.file:
+        path: /tmp/trivy-results.tar.gz
+        state: absent
+
+- name: Import into DefectDojo
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dd_url: http://192.168.3.8:8095
+    dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
+    scan_hosts: "{{ (trivy_hosts | default('192.168.3.6,192.168.3.7,192.168.3.8')).split(',') }}"
+  tasks:
+    - name: Unpack each host's results
+      ansible.builtin.shell: |
+        set -e
+        rm -rf "/tmp/trivy-results/{{ item }}"; mkdir -p "/tmp/trivy-results/{{ item }}"
+        tar -xzf "/tmp/trivy-results/{{ item }}.tar.gz" -C "/tmp/trivy-results/{{ item }}"
+      loop: "{{ scan_hosts }}"
+      changed_when: false
+
+    - name: Read the indexes
+      ansible.builtin.slurp:
+        src: "/tmp/trivy-results/{{ item }}/index.tsv"
+      loop: "{{ scan_hosts }}"
+      register: idx
+
+    - name: Build the import list
+      ansible.builtin.set_fact:
+        imports: >-
+          {%- set out = [] -%}
+          {%- for r in idx.results -%}
+          {%-   set h = r.item -%}
+          {%-   for line in (r.content | b64decode).splitlines() if line -%}
+          {%-     set c = line.split('\t') -%}
+          {%-     set _ = out.append({'host': h, 'kind': c[0], 'target': c[1], 'file': c[2], 'status': c[3]}) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Targets that failed to scan
+      ansible.builtin.debug:
+        msg: "{{ imports | rejectattr('status', 'equalto', 'ok') | map(attribute='target') | zip(imports | rejectattr('status', 'equalto', 'ok') | map(attribute='status')) | list }}"
+
+    - name: DefectDojo API token
+      ansible.builtin.uri:
+        url: "{{ dd_url }}/api/v2/api-token-auth/"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ dd.vault_win_user }}"
+          password: "{{ dd.vault_win_password }}"
+      register: tok
+      no_log: true
+
+    - name: Re-import each result (creates product/engagement/test on first run, closes fixed findings)
+      ansible.builtin.uri:
+        url: "{{ dd_url }}/api/v2/reimport-scan/"
+        method: POST
+        headers:
+          Authorization: "Token {{ tok.json.token }}"
+        body_format: form-multipart
+        body:
+          scan_type: Trivy Scan
+          file:
+            filename: "/tmp/trivy-results/{{ item.host }}/{{ item.file }}"
+            mime_type: application/json
+          auto_create_context: "true"
+          product_type_name: "{{ 'GitHub repos' if item.kind == 'github' else 'Docker hosts' }}"
+          product_name: "{{ item.target | basename | regex_replace('\\.git$', '') if item.kind == 'github' else item.host }}"
+          engagement_name: "{{ {'image': 'Trivy - container images', 'checkout': 'Trivy - git checkouts', 'github': 'Trivy'}[item.kind] }}"
+          test_title: "{{ item.target }}"
+          close_old_findings: "true"
+          do_not_reactivate: "false"
+          minimum_severity: Info
+          active: "true"
+          verified: "false"
+        status_code: [200, 201]
+        timeout: 300
+      loop: "{{ imports | selectattr('status', 'equalto', 'ok') | list }}"
+      loop_control:
+        label: "{{ item.host }} {{ item.kind }} {{ item.target }}"
+      register: imp
+      changed_when: false
+
+    - name: Imported
+      ansible.builtin.debug:
+        msg: "{{ imp.results | length }} results imported into {{ dd_url }}"
