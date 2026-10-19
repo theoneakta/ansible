@@ -68,7 +68,8 @@ PERSONAL = re.compile(r"Block Microsoft accounts|Block all consumer Microsoft ac
                       r"|account details on sign-in|enumerate connected users|Enumerate local users"
                       r"|LAN Manager authentication level"
                       r"|Enable App Installer$|Only display the private store"
-                      r"|Do not allow storage of passwords and credentials", re.I)
+                      r"|Do not allow storage of passwords and credentials"
+                      r"|Configure Windows Defender SmartScreen", re.I)
 
 
 def _get(url: str, dest: pathlib.Path) -> pathlib.Path:
