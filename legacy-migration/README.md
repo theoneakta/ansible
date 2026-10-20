@@ -71,7 +71,7 @@ Source: Microsoft, [Plan your Windows Server upgrade path](https://learn.microso
 
 ## Server log
 
-### SQL2005 (VM 118, 192.168.3.103): Windows Server 2008 R2 SP1 → 2012 R2 ✅ (2026-10-20)
+### SQL2005 (VM 118, 192.168.3.103): Windows Server 2008 R2 SP1 → 2012 R2 → 2025 ✅ (2026-10-20)
 
 **Source build:** a clean install of English Windows Server 2008 R2 SP1 Standard, then SQL Server 2005 SP4 Standard x64 and IIS 7.5 with the "Celtics Hub" app (see [github.com/theoneakta/celtics-app](https://github.com/theoneakta/celtics-app), folder `iis-sql2005/`).
 
@@ -185,4 +185,74 @@ This is a prerequisite for later servicing and for the 2012 R2 → 2025 step.
 - **MSDTC:** now *Automatic (Delayed Start)* and stopped at the time of the check. That's normal on 2012 R2, where it starts on demand. Celtics doesn't use distributed transactions.
 - **Disk:** C: free 30.2 GB.
 
-**Next hop:** 2012 R2 → **2025** (supported directly). Take a snapshot first. Re-check the SQL Server 2005 situation: it's unsupported on 2025, so move the databases to a supported SQL version first, or test carefully.
+**Preparing the 2025 hop, 2026-10-20:**
+- **Snapshot:** `win2012r2-sql2005` (with RAM).
+- **Disk:** grown from 60 to **120 GB** in Proxmox, by the user. Windows needed `Update-HostStorageCache`, then `Resize-Partition -DriveLetter C -Size (Get-PartitionSupportedSize C).SizeMax`. C: now has 89.8 GB free.
+- **Media: BLOCKED.** `WindowsServer2025.iso` (label `SSS_X64FREE_EN-US_DV9`, build 10.0.26100.32230) is Evaluation: `ei.cfg Channel=eval`, editions `ServerStandardEval` and `ServerDatacenterEval`. The 26100.32230 `SERVER_EVAL` ISO is Evaluation too. **Needed:** a non-evaluation Windows Server 2025 Standard ISO (MSDN/VL).
+- **CPU:** the VM uses `kvm64`, which shows Windows a "Common KVM processor" without SSE4.2/POPCNT, and 2025 requires x86-64-v2. Switch the CPU type to `x86-64-v2-AES` before the upgrade; pve6's Xeon E5-2650 v2 supports it.
+
+- **Media: OK.** `en-us_windows_server_2025_x64_dvd_b7ec10f3.iso`.
+  - SHA-1 `a46f8b2097d1f01e9be05e9c059862c3c7d5fdcb`, label `SSS_X64FRE_EN-US_DV9` (the Evaluation one is `…X64FREE…`).
+  - No `ei.cfg`, editions `ServerStandard` and `ServerDatacenter`. `install.wim` dated 2024-09-06, build 10.0.26100.1742, en-US.
+  - Index 2 = Standard (Desktop Experience). No repack artifacts.
+- **CPU:** changed `kvm64` → `x86-64-v2-AES` with the VM off. 2012 R2 and the app ran fine on it ("QEMU Virtual CPU version 2.5+").
+
+**Attempt 1, 2026-10-20: FAILED, no changes made.**
+- Command: `setup.exe /auto upgrade /imageindex 2 /pkey TVRH6-WHNXV-R9WG3-9XRFY-MY832 /dynamicupdate disable /compat ignorewarning /eula accept /quiet`, run as SYSTEM. The key is Microsoft's 2025 Standard KMS client key.
+- After about 3 minutes, `SetupHost.exe` 10.0.26100.1591 **crashed**: APPCRASH in `KERNELBASE.dll` 6.3.9600.17055, exception 0x505, during the Appraiser app-compat scan.
+- `C:\Windows\Logs\MoSetup\BlueBox.log`: *"SetupHost process returned [0x505], but SetupHostResult registry key was missing … remapping to MOSETUP_E_PROCESS_CRASHED"*, so exit code **0xC190011F**.
+- `setupact.log` just stops, with no error line. The CompatData report shows no hard blocks; the hardware, disk and CPU checks all passed.
+- **Cause:** the 2025 setup engine on a 2012 R2 that only had the April 2014 Update (KERNELBASE from 2014).
+- **Fix:** bring 2012 R2 fully up to date first, with the final public updates:
+  - SSU **KB5032308** (2023-11);
+  - Monthly Rollup **KB5031419** (2023-10, the last before end of support).
+  
+  Both are from the Update Catalog, with SHA-1s matching their file names.
+- **Lesson for the runbook:** before a 2025 upgrade, every source server must be **fully patched to its last public update**, not just carry the minimum prerequisite updates.
+
+**Attempt 2, 2026-10-20: DONE**, after the final 2012 R2 updates.
+- **Source level:** build 9600.21620 (`winblue_ltsb_escrow.230929`), `KERNELBASE` 6.3.9600.21615.
+- **Command:** the same as attempt 1, run as SYSTEM. No hidden pages: `/compat ignorewarning` and `/quiet` got past the SQL 2005 warning, unlike the 2012 R2 setup.
+- **Timeline** (VM time):
+  - 18:10 launch;
+  - ~18:28 the online phase ends, after about 18 min of downlevel work (copying and migration gathering);
+  - offline phase with several reboots. WinRM is down or "not ready" in between.
+  - **19:09** first logon on 2025.
+  
+  About an hour in total on 2 vCPU.
+
+#### Result: Windows Server 2025 Standard
+
+| Item | Result |
+|---|---|
+| OS | Windows Server 2025 Standard 24H2, 10.0.26100.1742, en-US. PowerShell 5.1 (PowerShell-V2 feature kept). |
+| SQL Server 2005 SP4 | **Still runs** (unsupported): all services up, NetworkService, `roster_db` intact. `@@VERSION` still says "Windows NT 6.2". |
+| IIS / app | IIS 8.5 → **10.0**. Site and app pools kept. `/api/health`, `/api/roster`, `/api/mvp`, `/api/schedule` and `/` return 200 from the LAN. |
+| Roles/features | All kept. New defaults: Windows Defender, Windows Admin Center setup, SMB1 client/server sub-features, System Data Archiver. |
+| Firewall / network | All six custom rules enabled. Same IP (DHCP). The Intel 82574L (Proxmox e1000) NIC works with the inbox driver. |
+| **RDP** | On first boot after the upgrade, TermService was **Stopped** and nothing listened on 3389, although `fDenyTSConnections=0`. Starting it by hand didn't bring up the listener; after one more restart it listened normally. **Check RDP explicitly after the upgrade.** NLA is off (`UserAuthenticationRequired=0`), as before. |
+| MSDTC | Automatic (Delayed Start), on demand |
+| Activation | Notification mode (KMS client key, no KMS host). Same as on 2012 R2. |
+| Disk | C: 120 GB, 83 GB free after the upgrade (Windows.old from 2012 R2 present) |
+| Proxmox | OS type `win8` → **`win11`** (Proxmox's type for Windows 11/2022/2025), set with the VM off. CPU `x86-64-v2-AES`, disk still on IDE, no TPM or UEFI needed for an upgraded BIOS/MBR server. |
+
+**Snapshots:** `win2008r2-sql2005` and `win2012r2-sql2005` (taken by the user). Take one of the 2025 state if you want to keep it.
+
+### Runbook summary for the next servers (2008 R2 → 2012 R2 → 2025)
+
+1. **Pre-flight the ISOs:** authenticity, not Evaluation, same edition, same language. Pre-flight the server too: baseline, snapshot, disk space (grow the disk if C: has less than ~40 GB free).
+2. **2008 R2 SP1 → 2012 R2:**
+   - Answer file with `UpgradeData`, the KMS client key, `ImageInstall` (index 2) **plus** `InstallTo` pointing at the OS partition, and DynamicUpdate off.
+   - Run setup **on the console** and confirm the SQL 2005 app-compat page.
+3. **On 2012 R2:**
+   - install the April 2014 Update (KB2919442 → KB2919355 + companions);
+   - then **patch fully**: last SSU KB5032308 + last rollup KB5031419;
+   - shut down from inside Windows while updates are pending.
+4. **Before 2025:** CPU type x86-64-v2 or better.
+5. **2012 R2 → 2025:** `setup.exe /auto upgrade /imageindex 2 /pkey <KMS key> /dynamicupdate disable /compat ignorewarning /eula accept /quiet`, as SYSTEM.
+   - Watch `C:\Windows\Logs\MoSetup\BlueBox.log` for the exit code.
+   - Watch the Application log for SetupHost crashes.
+6. **After each hop:**
+   - compare with the baseline, RDP included;
+   - fix the activation path (KMS or MAK);
+   - set the Proxmox OS type to match the new OS. Take a snapshot first. Re-check the SQL Server 2005 situation: it's unsupported on 2025, so move the databases to a supported SQL version first, or test carefully.
