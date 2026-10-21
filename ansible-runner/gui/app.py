@@ -284,14 +284,28 @@ def init_db():
             run_id INTEGER, host TEXT, package TEXT, status TEXT
         )"""
     )
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+@app.on_event("startup")
+def reconcile_interrupted_runs():
     # A run's background thread lives only as long as this process - if the
     # container restarts (redeploy, crash, `docker compose up` for an
     # unrelated change) while one is mid-run, its DB row is orphaned at
     # status='running' forever, since nothing ever runs the code that would
-    # mark it finished. A fresh process starting up means nothing from a
+    # mark it finished. A fresh server starting up means nothing from a
     # prior process could still genuinely be running, so any such row here
     # is unconditionally stale - reconcile it to a terminal state now,
     # rather than leaving the GUI showing a run that will never complete.
+    # This must be a server-startup hook, not import-time code: scripts
+    # (scripts/firefly_*.py) `from gui.app import read_vault` via docker
+    # exec while the server is live, and an import-time reconcile marked the
+    # server's genuinely in-progress runs failed.
+    conn = db_connect()
     conn.execute(
         """UPDATE runs SET status = 'failed', finished_at = ?,
            error = 'Interrupted: the GUI restarted while this run was in progress (its own process, not the target host, was interrupted). Re-run if needed.'
@@ -300,9 +314,6 @@ def init_db():
     )
     conn.commit()
     conn.close()
-
-
-init_db()
 
 
 # Inventory groups the GUI manages, and the OS each one means. "ssh" is for

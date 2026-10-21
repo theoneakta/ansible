@@ -150,6 +150,7 @@
       - { name: vscode,           label: VS Code,                         category: dev }
       - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
+      - { name: filzyx-duplicate-file-finder, label: Duplicate File Finder, category: tools, ignore_checksums: true }
       # PotPlayer's installer (NSIS + UAC plugin) hangs forever over WinRM
       # and as SYSTEM (>10 min, 192.168.3.17, Oct 2026) but installs in
       # seconds from an admin desktop session -> interactive (see the task).
