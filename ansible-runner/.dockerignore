@@ -1,0 +1,13 @@
+# Build context is the whole runner dir - keep the big/secret parts out of it.
+# pxe/ alone is ~65 GB (boot images), which stalled `docker compose build gui`
+# for 15+ min just sending the context. The image only COPYs ansible.cfg,
+# requirements.yml, gui/ code and one packer file.
+pxe/
+gui/data/
+iso-installer/
+*.iso
+.git/
+.claude/
+.vault_pass
+.env
+**/__pycache__/

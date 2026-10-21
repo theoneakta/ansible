@@ -8,12 +8,13 @@ without the ansible-runner (copied over, offline once Ansible is installed).
       site.yml, ansible.cfg   localhost play - same safety settings as playbooks/cis_hardening_linux.yml
       roles/<ROLE>/           the ansible-lockdown role the GUI uses
       collections/            ansible.posix, community.general, community.crypto
-      audit/goss              audit binary (linux amd64) - no download needed
+      audit/goss              audit binary (goss or syver, linux amd64) - no download needed
       audit/<ROLE>-Audit/     the benchmark's audit rules - no git clone needed
       reports/                filled by run-cis.sh (log + audit results per run)
 
 Built on demand by /api/cis/bundle/<os> and cached in gui/data/cis-bundles.
 """
+import hashlib
 import io
 import json
 import pathlib
@@ -34,16 +35,22 @@ MAX_AGE = 7 * 86400   # rebuild a cached bundle after a week (or when the role c
 
 
 def _role_meta(role_dir: pathlib.Path) -> dict:
-    """benchmark, benchmark_version and the goss release the role's audit expects."""
+    """benchmark, benchmark_version and the audit binary (url, release, checksum) the role's audit expects."""
     text = "\n".join(p.read_text(errors="ignore") for p in sorted((role_dir / "defaults").rglob("*.yml")))
     get = lambda key: (re.search(rf"^{key}:\s*['\"]?([^'\"\n]+)", text, re.M) or [None, None])[1]
-    release = re.search(r"^audit_bin_version:\s*\n(?:\s+.*\n)*?\s+release:\s*['\"]?([^'\"\n]+)", text, re.M)
+    sub = lambda key: re.search(rf"^audit_bin_version:\s*\n(?:\s+.*\n)*?\s+{key}:\s*['\"]?([^'\"\n]+)", text, re.M)
+    release, checksum = sub("release"), sub("AMD64_checksum")
+    release = release.group(1).strip() if release else "v0.5.0"
     version = get("benchmark_version")
     # each role names its audit branch itself: "benchmark_{{ benchmark_version }}" (most) or
     # "benchmark-{{ benchmark_version }}" (UBUNTU22-CIS)
     branch = (get("audit_git_version") or "benchmark_{{ benchmark_version }}").replace("{{ benchmark_version }}", version or "")
+    # the role's own download url + arch: krameff/goss, or krameff/syver (its successor, RHEL10-CIS since Oct 2026)
+    url = (get("audit_bin_url") or "https://github.com/krameff/goss/releases/download/{{ audit_bin_version.release }}/goss-linux-")
+    url = re.sub(r"\{\{\s*audit_bin_version\.release\s*\}\}", release, url) + "amd64"
     return {"benchmark": get("benchmark"), "benchmark_version": version, "audit_branch": branch,
-            "goss_release": release.group(1).strip() if release else "v0.5.0"}
+            "audit_bin_url": url, "audit_bin_release": release,
+            "audit_bin_sha256": checksum.group(1).strip().removeprefix("sha256:") if checksum else None}
 
 
 def _download(url: str, dest: pathlib.Path) -> pathlib.Path:
@@ -198,8 +205,11 @@ def build(key: str, profile: dict, playbook_path: pathlib.Path, out_dir: pathlib
     meta = _role_meta(role_dir)
     bench, bver = meta["benchmark"], meta["benchmark_version"]
     cache = out_dir / "cache"
-    goss = _download(f"https://github.com/krameff/goss/releases/download/{meta['goss_release']}/goss-linux-amd64",
-                     cache / f"goss-{meta['goss_release']}-linux-amd64")
+    name = meta["audit_bin_url"].rsplit("/", 1)[1]          # goss-linux-amd64 / syver-linux-amd64
+    goss = _download(meta["audit_bin_url"], cache / f"{name.split('-')[0]}-{meta['audit_bin_release']}-linux-amd64")
+    if meta["audit_bin_sha256"] and hashlib.sha256(goss.read_bytes()).hexdigest() != meta["audit_bin_sha256"]:
+        goss.unlink()
+        raise ValueError(f"checksum mismatch for {meta['audit_bin_url']}")
     audit_tgz = None
     for branch in (meta["audit_branch"], f"benchmark_{bver}", f"benchmark-{bver}", "latest", "main"):
         try:
