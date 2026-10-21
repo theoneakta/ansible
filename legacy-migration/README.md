@@ -238,6 +238,26 @@ This is a prerequisite for later servicing and for the 2012 R2 → 2025 step.
 
 **Snapshots:** `win2008r2-sql2005` and `win2012r2-sql2005` (taken by the user). Take one of the 2025 state if you want to keep it.
 
+#### SQL Server 2005 resilience test, 2026-10-20 (on Windows Server 2025)
+
+Fault-injection check of how the SQL service behaves under failure. All data survived; one real weakness found.
+
+| Test | Result |
+|---|---|
+| **1. Controlled `Stop-Service` / `Start-Service`** | Stopped in ~2.6s, came back and accepted connections; the Celtics app stayed at HTTP 200 throughout (it reconnects once SQL is back). |
+| **2. Hard kill of `sqlservr.exe` (simulated crash)** | Crash recovery completed in **~1s** (ERRORLOG: all databases start up, *"SQL Server is now ready for client connections"*; transactions rolled forward). `roster_db` still has its 11 rows and **`DBCC CHECKDB` is clean**. The write-ahead log protects against an abrupt kill, as designed. |
+
+**Weakness found — no service recovery actions.** After the kill, the Service Control Manager did **not** restart SQL; it stayed Stopped until started by hand (`sc qfailure MSSQLSERVER` → `RESET_PERIOD 0`, no actions). SQL Server 2005's installer never set failure actions, and they carried through all three OS upgrades untouched. Consequences:
+- a **reboot** brings SQL back (start type Automatic) ✅;
+- a **process crash** (bug, OOM, access violation) leaves SQL down until someone intervenes, and the app fails every query meanwhile ❌.
+
+**Recommended hardening** (non-destructive, reversible; not yet applied):
+```
+sc failure MSSQLSERVER reset= 86400 actions= restart/5000/restart/10000/restart/30000
+sc failure SQLBrowser  reset= 86400 actions= restart/5000/restart/10000/restart/30000
+```
+Auto-restarts the service after 5s / 10s / 30s, resetting the failure count daily. Worth adding to any SQL build in this project.
+
 ### Runbook summary for the next servers (2008 R2 → 2012 R2 → 2025)
 
 1. **Pre-flight the ISOs:** authenticity, not Evaluation, same edition, same language. Pre-flight the server too: baseline, snapshot, disk space (grow the disk if C: has less than ~40 GB free).
