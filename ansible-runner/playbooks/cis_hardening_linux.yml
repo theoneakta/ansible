@@ -94,6 +94,28 @@
     deb12cis_section4: false
     deb13cis_section4: false
 
+    # Journal upload (systemd-journal-upload) off: no central log server yet,
+    # and the roles' default target is a placeholder (192.168.50.42) with no
+    # certificates - the service then fails at every boot (confirmed live,
+    # fresh Rocky 10 on 192.168.3.150). Skips "authentication is configured"
+    # and "is enabled and active"; journal-remote stays installed.
+    rhel8cis_rule_6_2_1_2_2: false
+    rhel8cis_rule_6_2_1_2_3: false
+    rhel9cis_rule_6_2_2_1_2: false
+    rhel9cis_rule_6_2_2_1_3: false
+    rhel10cis_rule_6_2_2_1_2: false
+    rhel10cis_rule_6_2_2_1_3: false
+    deb11cis_rule_6_2_1_2_2: false
+    deb11cis_rule_6_2_1_2_3: false
+    deb12cis_rule_6_1_2_1_2: false
+    deb12cis_rule_6_1_2_1_3: false
+    deb13cis_rule_6_1_1_2_2: false
+    deb13cis_rule_6_1_1_2_3: false
+    ubtu22cis_rule_6_1_1_2_2: false
+    ubtu22cis_rule_6_1_1_2_3: false
+    ubtu24cis_rule_6_1_2_1_2: false
+    ubtu24cis_rule_6_1_2_1_3: false
+
   pre_tasks:
     # Same login handling as linux_software.yml: the host's own vault login
     # if it has one, else the group default (loaded only then - play-level
