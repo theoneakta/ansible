@@ -151,7 +151,9 @@ OUT="reports/$(date +%Y%m%d-%H%M%S)-$MODE-$LEVEL"; mkdir -p "$OUT"; touch "$OUT/
 EV="{\"__PREFIX___level_1\": true, \"__PREFIX___level_2\": $L2, \"setup_audit\": true, \"run_audit\": true"
 [ "$MODE" = audit ] && EV="$EV, \"audit_only\": true"
 EV="$EV}"
-T="$TAGS"; [ "$MODE" = audit ] && T="$TAGS,run_audit"
+# the role's audits (and the audit_only stop) are tagged only run_audit - without it apply skips the
+# pre/post audit and then fails writing the facts file ("'post_audit_results' is undefined")
+T="$TAGS,run_audit"
 echo "running: $MODE $LEVEL (tags $T) - log in $OUT/ansible.log"
 set +e
 $SUDO env ANSIBLE_CONFIG=./ansible.cfg ANSIBLE_LOG_PATH="$OUT/ansible.log" "$AP" site.yml --tags "$T" -e "$EV"
