@@ -251,12 +251,21 @@ Fault-injection check of how the SQL service behaves under failure. All data sur
 - a **reboot** brings SQL back (start type Automatic) ✅;
 - a **process crash** (bug, OOM, access violation) leaves SQL down until someone intervenes, and the app fails every query meanwhile ❌.
 
-**Recommended hardening** (non-destructive, reversible; not yet applied):
+**Hardening — APPLIED 2026-10-20.** Configured service auto-restart:
 ```
 sc failure MSSQLSERVER reset= 86400 actions= restart/5000/restart/10000/restart/30000
 sc failure SQLBrowser  reset= 86400 actions= restart/5000/restart/10000/restart/30000
 ```
-Auto-restarts the service after 5s / 10s / 30s, resetting the failure count daily. Worth adding to any SQL build in this project.
+Restarts the service after 5s / 10s / 30s, failure count reset daily. The setting lives in the service config, so it persists across reboots. **Self-heal re-test:** killed `sqlservr.exe` again with this in place — the SCM auto-restarted it and it was **accepting connections 13.5s later**, with no manual action. The app returned one transient `FAIL` at the reconnect instant, then 200 (625ms first call, 6–9ms after). Worth applying on every SQL build in this project.
+
+#### Resource-pressure tests, 2026-10-20
+
+| Test | Result |
+|---|---|
+| **3a. Disk full** (filled C: to ~25 MB free with `fsutil file createnew`) | **Reads unaffected** (`SELECT` still returns 11 rows, app stays 200). **Writes fail cleanly with the right errors:** `BACKUP` → OS error 112 / SQL 3202+3013; an insert loop → **SQL 9002 "transaction log for database 'roster_db' is full"**. No crash, service stays up. After deleting the filler: free space back, `DBCC CHECKDB` clean, data intact. |
+| **3b. Memory pressure** (time-boxed hog allocating ~5.5 GB on the 8 GB VM, then self-releasing) | OS Available MBytes fell from ~6500 to **~900 MB** (deep paging). Throughout, **the app stayed at 200** (latency briefly rose to ~95 ms at peak, then back to single digits) and SQL kept answering. After the hog released: available RAM back to ~6900 MB, app 200/6ms, SQL Running. Graceful degradation, full recovery. |
+
+**Verdict:** SQL Server 2005 (even on Windows Server 2025) is robust to crash, disk-full and memory pressure — the write-ahead log and the engine degrade gracefully and recover on their own. The single fragility was the **missing service-restart policy**, now fixed. The test tables/files were all cleaned up; `roster_db` ends at its original 11 rows with a clean DBCC.
 
 ### Runbook summary for the next servers (2008 R2 → 2012 R2 → 2025)
 
