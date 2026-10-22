@@ -812,11 +812,33 @@ A server can also be **split**: for example, migrate two databases and retire th
 
 ### 3.1 Choose the method
 
+**In-place upgrade first, whenever a path exists. Side-by-side second.** Both always start on a cloned VM ([clone-first](#clone-first-procedure)).
+
+```mermaid
+flowchart LR
+    A{"In-place path<br/>exists?<br/>(OS and SQL)"} -- "yes" --> B["Run it on a<br/>cloned VM"] --> C{"Clone test<br/>passes?"}
+    C -- "yes" --> D["<b>1st choice</b><br/>In-place on production<br/>+ hardening"]
+    C -- "no, can't be fixed" --> E["<b>2nd choice</b><br/>Side-by-side"]
+    A -- "no" --> E
+
+    classDef q fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef first fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef second fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    class A,C q
+    class B,D first
+    class E second
+```
+
+| Order | Method | When to use | Watch out for |
+|:-:|---|---|---|
+| **1** | **In-place OS upgrade** | **Whenever a path exists.** 2008 R2 SP1 → 2012 R2 → 2025: **works, not supported, LAB OK**. **2012 R2 → 2016, 2019 or 2025** (not 2022). **2016, 2019 → 2022 or 2025** ([Sysadmin guide §5](SYSADMIN.md#5-windows-in-place-upgrade-paths)) | Each hop needs a licence and a snapshot. It **keeps old settings**, so **harden after the last hop**: SMBv1 off, TLS 1.2+, NTLMv1 refused ([2.6](#26-legacy-protocols-and-insecure-settings)) |
+| **1** | **In-place SQL upgrade** | **Whenever a supported path exists:** to 2022 from 2012 SP4, 2014 SP3, 2016 SP3, 2017, 2019; to 2025 from 2014 SP3 onwards. The OS must support the target SQL ([DBA guide §5](DBA.md#5-migration-paths)) | Rollback = the VM snapshot taken just before |
+| **2** | **Side-by-side** (new server, move app and data) | **No in-place path** (2003, SQL 2000, an OS and SQL pair that can't be reached), or the **clone test failed** | DNS and aliases, IP allow-lists, hard-coded names |
+
+**Moving the data** in a side-by-side, or into a new SQL instance:
+
 | Method | When to use | Watch out for |
 |---|---|---|
-| **Side-by-side** (new server, move app and data) | **Default** for 2003 / 2008, and the preferred method for everything | DNS and aliases, IP allow-lists, hard-coded names |
-| **In-place OS upgrade** | 2003: **no path**. 2008 R2 SP1 → 2012 R2 → 2025: **works, not supported, LAB OK**. **2012 R2 → 2016, 2019 or 2025** (not 2022). **2016, 2019 → 2022 or 2025** ([Sysadmin guide §5](SYSADMIN.md#5-windows-in-place-upgrade-paths)) | Each hop needs a licence and a snapshot. Keeps old settings, **including SMBv1** and weak TLS |
-| **In-place SQL upgrade** | To 2022 from 2012 SP4, 2014 SP3, 2016 SP3, 2017, 2019. To 2025 from 2014 SP3 onwards. The OS must support the target SQL ([DBA guide §5](DBA.md#5-migration-paths)) | No rollback except restoring from backup; test on a copy first |
 | **Backup / restore** (SQL) | Most databases; downtime equals the restore time | Restore-version hops (see 1.6); orphaned users |
 | **Log shipping or differential catch-up** (SQL) | Large databases with a short window | The target must be able to restore the source version |
 | **Detach / attach** | Rarely; when backup and restore is too slow | No rollback once upgraded; keep a copy |
