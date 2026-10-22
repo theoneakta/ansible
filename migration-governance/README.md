@@ -197,8 +197,26 @@ flowchart TD
     class BLK stop
 ```
 
+### 2.6 Legacy protocols and insecure settings
+
+**Discovery documents, Migration addresses.** Everything found during Discovery is recorded in the flag summary. It's fixed as part of the migration: the target is built to the current standard and doesn't carry the legacy setting over.
+
+| Found during Discovery | Addressed during Migration |
+|---|---|
+| **FTP** (servers, scripts, partner and device flows) | Flow moved to the **MFT** (managed file transfer) platform. Files that land on old file shares move with the flow. |
+| **SMBv1** (server or clients) | Off on the target. Clients that only speak SMBv1 are upgraded or replaced, or moved to MFT if they only exchange files |
+| **TLS 1.0 / 1.1, SSL** | TLS 1.2+ only on the target. Partners and clients are tested during the rehearsal |
+| **NTLMv1 / LM** | NTLMv2 or Kerberos only. Apps and devices that need NTLMv1 are identified and upgraded |
+| **Anything else** (telnet, SNMP v1/v2, SHA-1 certificates, clear-text credentials, …) | Documented in the summary, with a fix planned in the migration |
+
 > [!WARNING]
-> A **risk acceptance** for a legacy protocol (SMBv1, FTP, TLS 1.0, NTLMv1) must have an **end date** and an owner. "Temporary" exceptions without an end date become permanent.
+> **Exceptions can happen**, for example a device that can't be upgraded in time. Every exception is logged in the decision log with:
+> - an **owner**;
+> - the **reason**;
+> - the **compensating control**, such as network isolation or a restricted firewall rule;
+> - an **end date**.
+>
+> Security is consulted on each one. Exceptions are reviewed at the weekly blockers meeting until they're closed.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
@@ -234,7 +252,8 @@ Raw data is for evidence; **the summary is what gets read**. Every script writes
 
 | Server | Area | Item | Flag | Detail | Owner | Decision | Decided by | Date |
 |---|---|---|---|---|---|---|---|---|
-| APP01 | Protocols | SMBv1 server enabled | **RED** | 3 scanners connect over SMBv1 | Sysadmin | Fix: firmware update | J. Doe | 2026-10-30 |
+| APP01 | Protocols | SMBv1 server enabled | AMBER | 3 scanners connect over SMBv1 | Sysadmin | Fix during migration: firmware update | J. Doe | 2026-10-30 |
+| APP01 | Protocols | FTP partner flow | AMBER | Partner drops files in `\\\\APP01\\Inbound` | Sysadmin | Move to MFT | J. Doe | 2026-10-30 |
 | APP01 | SQL | Job owned by a person | AMBER | `Nightly export` owned by DOMAIN\jsmith | DBA | Fix: change to sa | A. Roy | 2026-10-30 |
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
@@ -364,18 +383,18 @@ at
 
 ### 1.4 Server: legacy protocols and insecure settings
 
-These are the items most likely to **break during or after migration**, because modern Windows disables them or doesn't install them.
+These are the items most likely to **break during or after migration**, because modern Windows disables them or doesn't install them. Discovery **documents** them all. They're **addressed during the migration**, as set out in [2.6](#26-legacy-protocols-and-insecure-settings).
 
 | Item | How to check | Why it matters |
 |---|---|---|
 | **SMBv1 server** | **2003:** only speaks SMBv1. **2008 / 2008 R2:** registry `HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters` → `SMB1` (missing = enabled). **2012+:** `Get-SmbServerConfiguration` → `EnableSMB1Protocol`. Enabled by default up to **2016**; not installed on a clean **2019**, but **kept on a 2019 upgraded in place** | Plan the target as if SMBv1 can't be used. |
 | **SMBv1 clients** | **2003 / 2008:** no audit. Record `net session` and `net file` during the capture. **2012 / 2012 R2:** `Get-SmbSession` shows the `Dialect` (1.x = SMBv1). **2016 / 2019:** enable `AuditSmb1Access` and read event **3000** in `Microsoft-Windows-SMBServer/Audit`. Then identify each client: XP, 2003, **scanners and MFPs, NAS, embedded devices, old Samba** | These clients can't reach a modern file server. Each needs an upgrade, firmware, or a decision. |
 | **SMBv1 as a client** | **2008 / 2008 R2:** `HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10` → `Start`. **2012+:** same, or the `SMB1Protocol` feature state | The app may pull files from an old NAS or device that only speaks SMBv1. |
-| **FTP server** | IIS 6 FTP (`MSFTPSVC`, 2003). IIS 7.5–10 FTP (`FTPSVC`, 2008 R2–2019, logs in `%SystemDrive%\inetpub\logs\LogFiles\FTPSVC*`). FileZilla, Serv-U, WS_FTP. Check services, listeners on 21 or other ports, and site config | Clear-text passwords, anonymous access, partners or devices that drop files. Find **who** connects (from the logs) and **what** processes the files. |
-| **FTP clients** | Scheduled tasks and scripts that call `ftp.exe -s:<file>`, WinSCP or `curl`. Read the `-s:` file for the host and **credentials** | Hidden outbound dependencies with stored passwords |
+| **FTP server** | IIS 6 FTP (`MSFTPSVC`, 2003). IIS 7.5–10 FTP (`FTPSVC`, 2008 R2–2019, logs in `%SystemDrive%\inetpub\logs\LogFiles\FTPSVC*`). FileZilla, Serv-U, WS_FTP. Check services, listeners on 21 or other ports, and site config, especially **FTP roots and virtual directories that point to file shares** | Clear-text passwords, anonymous access, partners or devices that drop files. For each flow, record **who** connects (from the logs), **where** the files land, and **what** processes them. Each flow is moved to **MFT**. |
+| **FTP clients** | Scheduled tasks and scripts that call `ftp.exe -s:<file>`, WinSCP or `curl`. Read the `-s:` file for the host and **credentials** | Hidden outbound dependencies with stored passwords. Each one becomes an **MFT** flow. |
 | **TLS / SSL** | `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols`. **2003:** no TLS 1.1 or 1.2. **2008 R2:** TLS 1.1/1.2 only if enabled. **2012–2019:** TLS 1.2 is available, but **TLS 1.0 and 1.1 are still on by default**. Check .NET `SchUseStrongCrypto` too | Partners and clients that only speak SSL3 or TLS 1.0 will fail against a hardened target. |
 | **NTLMv1 / LM** | `HKLM\SYSTEM\CurrentControlSet\Control\Lsa` → `LmCompatibilityLevel`, `NoLMHash` | Old apps and devices fail against hardened targets. |
-| **Telnet, rsh, SNMP v1/v2** | Services, listeners, SNMP community strings | Replace (SSH, SNMPv3), or accept the risk with an end date. |
+| **Telnet, rsh, SNMP v1/v2** | Services, listeners, SNMP community strings | Documented; replaced by SSH or SNMPv3 during the migration. |
 | **Other legacy items** | WINS, NetBIOS name use, 8.3 short names, `subst` drives, mapped drives in a service context | These usually appear only after cut-over. |
 
 <details>
@@ -420,6 +439,7 @@ net file    >> SRV01_openfiles_capture.txt
 > Discovery only **reports**. The **app owner or data owner decides** what to archive or delete. That happens in Phase 4, never during Discovery.
 
 - [ ] Every share: path, share and NTFS permissions, size, file count
+- [ ] **FTP data on file shares:** inbound and outbound folders, archive folders, and the jobs that pick files up or clean them. These move with the flow to MFT, not with the file share.
 - [ ] Data grouped by **last-modified age**: < 1 year · 1–3 years · 3–7 years · > 7 years
 - [ ] Home or user folders of **disabled or deleted AD accounts**
 - [ ] File types that carry risk or hide dependencies:
@@ -617,14 +637,16 @@ WHERE s.freq_type IN (16, 32);
 
 - Unsupported source → target path (e.g. SQL 2000 → 2019 direct)
 - DTS packages, 16-bit apps, hardware dongles
-- SMBv1 client that can't be upgraded
-- FTP, or clear-text credentials in scripts
+- SMBv1 or NTLMv1 client that can't be upgraded (needs an exception)
+- Clear-text credentials in scripts
 - TDE or encryption keys not backed up
 - No backup, or last good backup older than 7 days
 - Unknown inbound connections after the capture
 
 </td><td>
 
+- FTP flow to move to MFT
+- SMBv1, TLS 1.0/1.1 or NTLMv1 in use (fixed during the migration)
 - Certificate expiring within 90 days
 - Job or database owned by a personal account
 - Data older than 7 years with no owner
@@ -681,8 +703,8 @@ A server can also be **split**: for example, migrate two databases and retire th
 - [ ] Disk layout to standard (OS · apps · data · logs · tempdb · backups)
 - [ ] Service accounts created, or **gMSAs** where the app supports them; passwords in the vault
 - [ ] Roles and features from Discovery installed (IIS, .NET 3.5, MSMQ, …)
-- [ ] **SMBv1 off**, TLS 1.2+ only, NTLMv1 refused, unless an exception is signed
-- [ ] FTP replaced by **SFTP/FTPS** where possible, or an exception signed
+- [ ] **SMBv1 off**, TLS 1.2+ only, NTLMv1 refused. Exceptions only as logged in the decision log
+- [ ] **MFT flows** set up for every FTP flow found in Discovery (accounts, folders, partner keys or certificates)
 - [ ] Certificates issued (SHA-256, 2048-bit+), private keys exportable per policy
 - [ ] Backup, monitoring, AV (with exclusions) and logging agents installed
 - [ ] Scheduled tasks prepared but **disabled**
@@ -757,7 +779,9 @@ flowchart LR
 - [ ] `CHECKSUM` page verify set; `DBCC CHECKDB` on the target
 - [ ] Row counts and checksums compared for key tables
 - [ ] DNS and aliases switched; old name kept as a CNAME **if** the app needs it
-- [ ] Every dependency from Discovery tested: scanners, FTP partners, reports, interfaces
+- [ ] Every dependency from Discovery tested: scanners, **MFT flows and partners**, reports, interfaces
+- [ ] Every legacy-protocol flag from Discovery is **closed**, or covered by a logged exception with an end date
+- [ ] FTP service on the old server stopped once its flows run on MFT
 
 ### Gate 3 · Accepted
 
@@ -887,6 +911,7 @@ SIGNED: <name>                               DATE: 2026-11-06
 | **Flag** | A finding that needs a decision (RED) or a plan (AMBER) |
 | **Quiet period** | Time after cut-over when the old server stays up and is watched for missed dependencies |
 | **Hop** | An intermediate version needed because the source can't go straight to the target |
+| **MFT** | Managed file transfer: the central platform that replaces FTP flows, with secure protocols, logging and alerting |
 | **Disposition** | The Gate 1 decision for a server or part of one: migrate, consolidate or retire |
 | **Scream test** | Disabling a server that's being retired, in a way that can be quickly undone, to find out whether anyone still depends on it |
 
