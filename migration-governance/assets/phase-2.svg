@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="84" viewBox="0 0 1200 84">
+  <path d="M0 4 H276 L296 42 L276 80 H0 Z" fill="#dbe8f4" stroke="#a9c6e2" stroke-width="1.5"/>
+  <text x="24" y="34" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="3" fill="#1b4a78">PHASE 1</text>
+  <text x="24" y="58" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#1b4a78">DISCOVERY</text>
+  <path d="M302 4 H576 L596 42 L576 80 H302 L322 42 Z" fill="#1b4a78" stroke="#5fa8e8" stroke-width="1.5"/>
+  <text x="340" y="34" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="3" fill="#8fc1ee">PHASE 2</text>
+  <text x="340" y="58" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff">INSTALL &amp; CONFIGURE</text>
+  <path d="M602 4 H876 L896 42 L876 80 H602 L622 42 Z" fill="#eef1f4" stroke="#d3d9df" stroke-width="1.5"/>
+  <text x="640" y="34" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="3" fill="#8a96a3">PHASE 3</text>
+  <text x="640" y="58" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#6b7785">MIGRATION</text>
+  <path d="M902 4 H1176 L1196 42 L1176 80 H902 L922 42 Z" fill="#eef1f4" stroke="#d3d9df" stroke-width="1.5"/>
+  <text x="940" y="34" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="3" fill="#8a96a3">PHASE 4</text>
+  <text x="940" y="58" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#6b7785">DECOMMISSIONING</text>
+</svg>
