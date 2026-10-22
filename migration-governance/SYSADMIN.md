@@ -73,8 +73,7 @@ Most delays happen **between** the two roles. Ask early, using this list.
 | Sysadmin needs from the DBA | DBA needs from the sysadmin |
 |---|---|
 | **SQL port(s)** and Browser need, for the firewall rules | Target server built, with **disk layout for SQL**: data, log, tempdb and backup volumes, 64 KB allocation unit |
-| **SPN** list for Kerberos | **Service accounts** or gMSAs created, passwords in the vault |
-| **AV exclusions** for data, log and backup files and `sqlservr.exe` | **Instant file initialization** and **lock pages in memory** rights for the SQL service account |
+| **AV exclusions** for data, log and backup files and `sqlservr.exe` | **Service accounts** or gMSAs created, passwords in the vault, with **instant file initialization** and **lock pages in memory** rights |
 | **Backup** schedule and retention for the agent | Backup agent installed; backup share reachable |
 | Which **apps and servers connect** to SQL (from the capture), for the dependency list | Firewall rules for 1433 / named instance ports |
 | **Go / no-go** on the SQL side before the DNS switch | **DNS alias switch** at the agreed time in cut-over |
