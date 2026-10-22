@@ -6,6 +6,8 @@
   <a href="#1-bring-your-own-script"><b>Bring your own script</b></a> &nbsp;·&nbsp;
   <a href="#2-repository-layout"><b>Repository</b></a> &nbsp;·&nbsp;
   <a href="#3-set-up-vs-code"><b>VS Code setup</b></a> &nbsp;·&nbsp;
+  <a href="#32-connect-to-azure-devops-and-get-the-repository"><b>Azure DevOps</b></a> &nbsp;·&nbsp;
+  <a href="#42-your-first-commit-and-push-step-by-step"><b>First commit</b></a> &nbsp;·&nbsp;
   <a href="#4-daily-workflow-on-develop"><b>Daily workflow</b></a> &nbsp;·&nbsp;
   <a href="#5-copilot"><b>Copilot</b></a> &nbsp;·&nbsp;
   <a href="#6-checklist-before-you-push"><b>Checklist</b></a> &nbsp;·&nbsp;
@@ -131,11 +133,34 @@ git config --global user.name  "First Last"
 git config --global user.email "first.last@company.com"
 ```
 
-### 3.2 Clone the repository
+### 3.2 Connect to Azure DevOps and get the repository
 
-1. `Ctrl+Shift+P`, then **Git: Clone**, then paste the repository URL.
-2. Choose a local folder, for example `C:\Repos`, and click **Open**.
-3. In the bottom-left corner, click the branch name and choose **`develop`**.
+You don't need an extension, a password or a token. **Git for Windows** includes the **Git Credential Manager**, which signs you in to Azure DevOps with your **work account**, the same one as Outlook and Teams.
+
+```mermaid
+flowchart LR
+    A["Azure DevOps<br/>Repos → Clone"] --> B["Clone in VS Code<br/>(or copy the HTTPS URL)"] --> C["Choose a local folder<br/>C:\Repos"] --> D["Sign in once<br/>with your work account"] --> E["Switch to<br/>develop"]
+
+    classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    class A,B,C,D,E step
+```
+
+**Step by step**
+
+1. In the browser, open **Azure DevOps** → your project → **Repos** → **Files**, and select the scripts repository at the top.
+2. Click **Clone** (top right). Then either:
+   - click **Clone in VS Code**, and allow the browser to open VS Code; or
+   - copy the **HTTPS** URL. In VS Code, press `Ctrl+Shift+P`, type **Git: Clone**, and paste the URL.
+3. Choose a local folder, for example **`C:\Repos`**.
+4. A Microsoft sign-in window appears the first time. Sign in with your **work account**. Git remembers it, and you won't be asked again.
+5. When VS Code asks *"Would you like to open the cloned repository?"*, click **Open**.
+6. Switch to the team branch: click the **branch name** in the bottom-left corner of VS Code (it probably shows `main`), then choose **`origin/develop`**. The status bar now shows **`develop`**.
+
+> [!CAUTION]
+> **Don't clone into OneDrive** (Desktop or Documents are often synced). OneDrive and Git both manage the same files and cause conflicts. Use a plain local folder such as `C:\Repos`.
+
+> [!NOTE]
+> Use **HTTPS**, not SSH, and don't use **Generate Git Credentials** in Azure DevOps unless the tech lead asks you to. The Credential Manager sign-in is enough.
 
 ### 3.3 Where things are
 
@@ -167,17 +192,74 @@ gitGraph
     commit id: "carol: standard CSV export"
 ```
 
-### 4.1 The loop
+### 4.1 Words you'll see
+
+| Word | Meaning |
+|---|---|
+| **Repository (repo)** | The shared folder of scripts, with its full history, stored in Azure DevOps |
+| **Clone** | Your local copy of the repo, made once (3.2) |
+| **Branch** | A line of work. The team uses **`develop`** |
+| **Pull** | Bring your colleagues' latest changes **from** Azure DevOps to your PC |
+| **Stage** | Choose which changed files go into the next commit |
+| **Commit** | Save a snapshot of your staged changes **on your PC**, with a message. Nobody else sees it yet |
+| **Push** | Send your commits **to** Azure DevOps, so the team gets them |
+| **Sync** | VS Code's button that does a pull and then a push |
+| **origin** | Git's name for the Azure DevOps copy of the repo |
+
+```mermaid
+flowchart LR
+    ADO[("Azure DevOps<br/>develop")] -- "Pull" --> PC["Your PC<br/>C:\Repos\..."]
+    PC -- "Stage + Commit<br/>(local snapshot)" --> PC
+    PC -- "Push" --> ADO
+
+    classDef remote fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef local fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    class ADO remote
+    class PC local
+```
+
+### 4.2 Your first commit and push, step by step
+
+An example: adding your existing discovery script to the repo.
+
+**1. Get the latest version.** Open **Source Control** (`Ctrl+Shift+G`), click **`...`** at the top, then **Pull**. You can also click the circular arrows next to `develop` in the status bar.
+
+**2. Add your script.** In **Explorer** (`Ctrl+Shift+E`), right-click `discovery` → **New Folder** → your name (for example `jdoe`). Drag your `.ps1` file from Windows Explorer into that folder, or create it with **New File**. Add a short `README.md` next to it.
+
+**3. See what changed.** Back in **Source Control**, your files are listed under **Changes**, each with a letter:
+
+| Letter | Meaning |
+|:-:|---|
+| **U** | Untracked: a new file Git hasn't seen before |
+| **M** | Modified |
+| **D** | Deleted |
+
+Click a file to see a **side-by-side comparison**: the old version on the left, yours on the right.
+
+**4. Stage.** Hover over a file and click **`+`** (*Stage Changes*). It moves to **Staged Changes**. To stage everything, click the `+` on the **Changes** heading.
+
+**5. Commit.** Type a message in the box at the top, for example `discovery: add jdoe server discovery script`. Then click **Commit** (or press `Ctrl+Enter`). The commit is saved **on your PC only**.
+
+**6. Push.** The button now says **Sync Changes ↑1**, meaning one commit is waiting to go up. Click it. The first time, VS Code explains that it will pull and push: click **OK**.
+
+**7. Check in Azure DevOps.** In the browser, go to **Repos** → **Commits**, choose the **`develop`** branch, and your commit is at the top. Under **Repos** → **Files**, your folder and script are visible to the whole team.
+
+> [!TIP]
+> If you click **Commit** with nothing staged, VS Code offers to **stage all changes and commit them directly**. That's fine when you've checked every file in the list.
+
+### 4.3 The daily loop
 
 | Step | In VS Code | Equivalent command |
 |---|---|---|
-| **1. Pull** before you start | Source Control → `...` → **Pull**, or the sync icon in the status bar | `git pull` |
+| **1. Pull** before you start | Source Control → `...` → **Pull**, or the arrows next to `develop` in the status bar | `git pull` |
 | **2. Write and test** | Edit; run with `F5` against a test server | |
-| **3. Review** your changes | Source Control: click each file to see a side-by-side diff | `git diff` |
-| **4. Commit** | Type a message, then **Commit** (`Ctrl+Enter`) | `git commit -am "..."` |
+| **3. Review** your changes | Source Control: click each file to see the side-by-side comparison | `git diff` |
+| **4. Stage and commit** | `+` on the files, type a message, **Commit** (`Ctrl+Enter`) | `git add <file>` then `git commit -m "..."` |
 | **5. Push** | **Sync Changes** (pull, then push) | `git pull` then `git push` |
 
-### 4.2 Commit messages
+Push at least **once a day** when you've changed something. Commits that stay on your PC aren't backed up, and nobody else can see them.
+
+### 4.4 Commit messages
 
 Short, in the form `<area>: what changed`, so the history reads like a changelog:
 
@@ -191,13 +273,38 @@ fix: Get-ServerDiscovery failed on 2003 without PowerShell
 > [!TIP]
 > Microsoft 365 Copilot can draft a commit message: copy the diff from Source Control into the chat and ask for one in the `<area>: what changed` form (see 5.4).
 
-### 4.3 If two people changed the same lines
+### 4.5 If two people changed the same lines
 
-VS Code shows a **merge conflict** when you pull. Open the file and, for each highlighted block, choose **Accept Current**, **Accept Incoming** or **Accept Both**. Then commit and push. If you're unsure, ask the other author; their name is in the conflict block.
+VS Code shows a **merge conflict** when you pull, and the file appears under **Merge Changes** with a **!**. Open the file. Each conflict shows your version (**Current**) and the other version (**Incoming**). For each one, choose **Accept Current Change**, **Accept Incoming Change** or **Accept Both Changes**. Then save, stage, commit and push.
+
+If you're not sure which version is right, find out who made the other change: hover over the line with **GitLens**, or see **Repos → Commits** in Azure DevOps. Then ask them.
 
 Separate folders per author make conflicts rare.
 
-### 4.4 Later: feature branches and pull requests
+### 4.6 Undo and fix mistakes
+
+| Situation | What to do |
+|---|---|
+| Changed a file and want the original back (**not committed**) | Source Control → hover over the file → **↶ Discard Changes**. Uncommitted changes are gone for good, so be sure. |
+| Staged a file by mistake | Hover over it under **Staged Changes** → **`−`** (*Unstage*) |
+| Committed, but **not pushed** yet | Source Control → `...` → **Commit** → **Undo Last Commit**. Your changes come back as uncommitted edits |
+| Already **pushed** something wrong | Don't try to rewrite history. Fix the file and push a **new commit**. If it's more serious, ask the tech lead |
+| **Pushed a password or secret** | Tell the tech lead **right away** and have the password **changed**. Removing it from the repo isn't enough, because it stays in the history |
+
+### 4.7 Troubleshooting
+
+| Message or symptom | Cause and fix |
+|---|---|
+| *Please tell me who you are* | Git doesn't know your name yet. Run the two `git config` commands in 3.1 |
+| *Git not found* / no Source Control view | Git for Windows isn't installed. Install it, then restart VS Code |
+| Asked for a **password** in the terminal | The Credential Manager isn't being used. Reinstall Git for Windows with the default options, and sign in with your work account when the window appears |
+| Sign-in keeps failing | In Windows **Credential Manager** → **Windows Credentials**, remove the entries starting with `git:https://dev.azure.com`, then pull again and sign in |
+| *Updates were rejected because the remote contains work that you do not have* | Someone pushed before you. **Pull** first, then push (or use **Sync Changes**, which does both) |
+| *TF402455: Pushes to this branch are not permitted* | `develop` has a branch policy. Contact the tech lead |
+| A `.csv` file doesn't appear in **Changes** | That's intended: `.gitignore` keeps discovery output out of Git |
+| Status bar shows `main` instead of `develop` | Click the branch name and choose `develop` (3.2, step 6) |
+
+### 4.8 Later: feature branches and pull requests
 
 When the team is comfortable with `develop`, the next step is short-lived branches merged through a **pull request**. One colleague reviews before the change reaches `develop`, and `main` holds the approved versions that run in bundles:
 
