@@ -87,8 +87,9 @@ Most delays happen **between** the two roles. Ask early, using this list.
 | | **Default** | Why |
 |---|---|---|
 | **OS for a new build** | **Windows Server 2025** (2022 if the application vendor requires it) | Longest support. 2025 supports SQL 2019, 2022 and 2025 (see the [DBA matrix](DBA.md#4-sql-server-on-windows-server)) |
-| **Method** | **Side-by-side:** new server, then move apps and data | Clean build, no carried-over settings (SMBv1, weak TLS), and the source stays as the rollback |
-| **In-place upgrade** | Only when side-by-side isn't possible (section 5). **Always run on a cloned VM first** ([clone-first](README.md#clone-first-procedure)) | Keeps every old setting. The clone proves the path for this server; production then gets a snapshot before each hop |
+| **1st choice: in-place upgrade** | **Whenever a path exists** (section 5). **Always run on a cloned VM first** ([clone-first](README.md#clone-first-procedure)) | Same server, name, IP and data: fewer dependencies to move. The clone proves the path for this server; production gets a snapshot before each hop |
+| **After an in-place upgrade** | **Harden** after the last hop: SMBv1 off, TLS 1.2+ only, NTLMv1 refused, old roles and agents reviewed | An in-place upgrade **keeps every old setting**, including the insecure ones ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)) |
+| **2nd choice: side-by-side** | New server, then move apps and data. When **no in-place path exists** (2003), or the **clone test fails** | Clean build. The source stays untouched as the rollback |
 
 > [!NOTE]
 > Check the SQL version before you choose the OS. **SQL 2017 isn't supported on Windows 2025, and SQL 2016 isn't supported on 2022.** Agree the OS and SQL pair with the DBA at Gate 1.
@@ -102,7 +103,7 @@ Most delays happen **between** the two roles. Ask early, using this list.
 | From | To (in place) | Status |
 |---|---|---|
 | **2003 / 2003 R2** | Nothing modern | **No path.** Side-by-side only |
-| **2008** (x64) | 2012 | Older Microsoft guidance; no longer in the current table. Side-by-side preferred |
+| **2008** (x64) | 2012 | Older Microsoft guidance; no longer in the current table. Try it on a clone (then 2012 → 2016 → 2025); side-by-side if it fails |
 | **2008 R2 SP1** | 2012 R2 | **Works, but not supported** (no longer in Microsoft's current table). **LAB OK** |
 | **2012** | 2012 R2, 2016 | Supported |
 | **2012 R2** | 2016, 2019, **2025** | **Supported.** Not to 2022 (not supported). 2012 R2 → 2025 is **LAB OK** |

@@ -142,9 +142,13 @@ Sources: Microsoft, *Supported version and edition upgrades* for [SQL Server 202
 
 ### 5.2 Choosing the method
 
+**In-place first, whenever a supported path exists. Side-by-side second** ([governance §3.1](README.md#31-choose-the-method)). Both start on a cloned VM.
+
 | Situation | Method |
 |---|---|
-| Small or medium database, outage window of a few hours | **Full backup → restore**, then a final differential or log backup at cut-over |
+| **A supported in-place SQL path exists** (to 2022 from 2012 SP4+, to 2025 from 2014 SP3+) and the OS supports the target SQL | **1st choice: in-place SQL upgrade**, proven on a cloned VM. Rollback = the VM snapshot |
+| The OS is upgraded in place, but the SQL version can't be upgraded in place (SQL 2005, 2008, 2008 R2) | **Keep the server, change the instance:** install a new SQL 2022 / 2025 instance on the upgraded server, then restore the databases into it (5.1). Clone first |
+| **2nd choice: side-by-side**, small or medium database, outage window of a few hours | **Full backup → restore**, then a final differential or log backup at cut-over |
 | Large database, short window, source 2008 SP3+ | **Log shipping**, then a final log backup and recovery at cut-over |
 | Many databases, logins and jobs on one instance | **dbatools** from the admin workstation: `Copy-DbaLogin`, `Copy-DbaAgentJob`, `Copy-DbaLinkedServer`, `Copy-DbaDatabase` |
 | SQL 2000 | Hop instance (5.1) and a full outage |
