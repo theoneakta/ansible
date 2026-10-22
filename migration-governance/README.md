@@ -19,13 +19,13 @@
 > **Three rules apply to everything below.**
 > 1. **No gate, no next phase.** A phase is complete only when its gate checklist is signed.
 > 2. **One accountable person per activity.** Many people can do the work; one person owns the result.
-> 3. **Data that nobody reviewed doesn't count.** Every collected output has a reviewer's name and a date.
+> 3. **Collected data is reviewed.** Every output has a reviewer's name and a date.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
 ## 1. Purpose and scope
 
-This guide sets out **who does what, what to collect, what to decide, and when a phase is done** when legacy Windows servers and SQL Server instances move to supported platforms. It replaces the narrative "loop document" with **checklists, owners and gates**.
+This guide sets out **who does what, what to collect, what to decide, and when a phase is done** when legacy Windows servers and SQL Server instances move to supported platforms. It builds on the discovery work and documentation teams already have, and organises them into **checklists, owners and gates**.
 
 | | In scope | Out of scope |
 |---|---|---|
@@ -69,15 +69,17 @@ This guide sets out **who does what, what to collect, what to decide, and when a
 > [!NOTE]
 > Servers and instances on extended security updates (ESU) or Azure-hosted extensions still count as **out of support** for planning purposes.
 
-### Why this exists
+### What this guide brings
 
-| What happens today | What this guide changes |
+Migrations at this scale involve many teams, many servers and a lot of collected data. This guide gives everyone the same reference points:
+
+| Topic | What the guide provides |
 |---|---|
-| Everyone has their own discovery script | One approved script per role, versioned in Git |
-| Output goes to SharePoint and nobody reads it | Each output has a **flag summary**, a reviewer and a date |
-| Steps are explained in a long loop document | Checklists with owners and exit criteria |
-| Nobody knows who decides | RACI tables and a decision log |
-| Phases overlap and work gets done twice | Signed gates between phases |
+| **Scripts** | A shared, versioned set of discovery scripts per role, which everyone can improve |
+| **Collected data** | A short **flag summary** for each server, so the key findings are easy to review and act on |
+| **Process** | Checklists with owners and exit criteria for each phase |
+| **Decisions** | A RACI per phase and a decision log, so it's clear who decides and what was decided |
+| **Hand-offs** | Signed gates between phases, so each team knows when it can start |
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
@@ -185,7 +187,7 @@ flowchart TD
 
 ### 3.1 Scripts and repository
 
-- Use the **approved scripts in the team's shared Git repository**. Never run a local or modified copy.
+- Use the **approved scripts in the team's shared Git repository**, so every server is discovered the same way.
 - Is the script missing something? **Change it in the repository** as a reviewed change, so everyone benefits. You don't need VS Code: the repository's web editor, or any text editor plus `git`, works.
 - Every output records the **script version or commit** it came from.
 - Discovery scripts are **read-only**. They never change or delete anything on the server.
