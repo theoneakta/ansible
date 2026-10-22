@@ -8,7 +8,8 @@
   <a href="#3-hand-offs-with-the-sysadmin"><b>Hand-offs</b></a> &nbsp;·&nbsp;
   <a href="#4-sql-server-on-windows-server"><b>SQL × Windows</b></a> &nbsp;·&nbsp;
   <a href="#5-migration-paths"><b>Migration paths</b></a> &nbsp;·&nbsp;
-  <a href="#6-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
+  <a href="#6-options-after-discovery"><b>In-place · retire</b></a> &nbsp;·&nbsp;
+  <a href="#7-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
   <a href="README.md"><b>Big picture</b></a>
 </p>
 
@@ -187,7 +188,85 @@ Full details: [lab runbook](../legacy-migration/README.md) and [stability showca
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
-## 6. Tasks by phase
+## 6. Options after Discovery
+
+Discovery ends with **one of three options** for each server or database, decided at Gate 1 ([governance §1.10](README.md#110-disposition-migrate-consolidate-or-retire)):
+
+```mermaid
+flowchart LR
+    D["Discovery<br/>results"] --> U{"Is the database<br/>still used?"}
+    U -- "no" --> R["<b>Retire</b><br/>6.2"]
+    U -- "yes" --> P{"In-place path<br/>exists?"}
+    P -- "yes" --> I["<b>1st: in-place</b><br/>6.1 · clone first"]
+    P -- "no" --> S["<b>2nd: side-by-side</b><br/>restore on a new server"]
+    I -- "clone test fails" --> S
+
+    classDef q fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef first fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef second fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    classDef retire fill:#f6e7d8,stroke:#a8692e,color:#3a220d
+    class U,P q
+    class I first
+    class S second
+    class R retire
+```
+
+### 6.1 In-place upgrade, step by step
+
+"In-place" means **the server stays**. For the DBA it takes one of three forms, depending on the SQL version:
+
+| Form | When | What the DBA does |
+|---|---|---|
+| **A. OS upgraded under SQL** | The sysadmin upgrades Windows in place ([Sysadmin §6.1](SYSADMIN.md#61-in-place-upgrade-step-by-step)) | Protect and check SQL around each OS hop |
+| **B. SQL upgraded in place** | A **supported** SQL upgrade path exists: to **2022** from 2012 SP4, 2014 SP3, 2016 SP3, 2017, 2019; to **2025** from 2014 SP3 onwards. **And** the OS supports the target SQL | Run SQL setup in upgrade mode |
+| **C. New instance on the same server** | SQL can't be upgraded in place (**SQL 2005, 2008, 2008 R2**), but the server stays | Install a new SQL 2022 / 2025 instance next to the old one; restore the databases into it (5.1) |
+
+Usual combination for old servers: **A, then C**. The OS goes 2008 R2 → 2012 R2 → 2025 with SQL 2005 kept running (A, lab-proven), then the databases move to a new SQL 2022 instance on the same server (C), and the SQL 2005 instance is removed.
+
+**Steps for each form** (always on the cloned VM first, then on production):
+
+| # | A. OS upgraded under SQL | B. SQL upgraded in place | C. New instance on the same server |
+|:-:|---|---|---|
+| **1** | Full backups of **all** databases, system databases included; script logins and jobs | Full backups; check the prerequisites: no pending restart, Agent account in sysadmin, supported edition path | Full backups; script logins (with SIDs), jobs, linked servers |
+| **2** | Note the baseline: version, databases, logins, jobs, row counts of key tables | Run **Data Migration Assistant** from the admin workstation for breaking changes | Install the new instance (named, or default after the old one is removed); standard configuration |
+| **3** | The sysadmin runs the OS hop | Run SQL **setup in upgrade mode** | Restore the databases; recreate logins, jobs and linked servers (dbatools) |
+| **4** | After each hop: services up, error log clean, `DBCC CHECKDB`, app test | After setup: error log, `DBCC CHECKDB`, `UPDATE STATISTICS`, app test | `DBCC CHECKDB`, orphaned users fixed, app connection string or alias pointed to the new instance, app test |
+| **5** | Set **service recovery actions** (`sc failure`, lab finding) | Compatibility levels **unchanged**; raise them later, after validation, with Query Store on | Old instance stopped and kept as the rollback until Gate 3, then uninstalled |
+| **Rollback** | VM snapshot before the hop | **VM snapshot**; an in-place SQL upgrade can't be undone otherwise | The old instance, untouched |
+
+> [!NOTE]
+> **Form C hasn't been tested in our lab yet** (see the note in 5.3). Run it on a clone first, as usual.
+
+### 6.2 Retire: when Discovery shows a database isn't used
+
+If nobody and nothing uses a database or a whole instance any more, it **isn't migrated**. It goes straight to Phase 4 on the **retire-only path** ([governance, retire-only path](README.md#retire-only-path)). A server can also be split: some databases migrate, the others retire.
+
+**Evidence the DBA brings to Gate 1:**
+
+| Check | "Not used" looks like |
+|---|---|
+| Connection capture during the Discovery week | **No user connections** to the database, apart from maintenance and backup |
+| `sys.dm_db_index_usage_stats` (2005+) | **No reads or writes** since the last restart, **and the instance has been up for a long time** (the stats reset on restart) |
+| Login auditing / error log | No successful logins by application accounts |
+| Agent jobs | Only maintenance jobs touch it; no business jobs, or their output isn't used |
+| Linked servers and cross-database queries | **No other instance or database** reads from it (check the other instances' linked servers) |
+| SSRS / SSIS | No reports or packages use it as a data source |
+| Size and last write | Data and log files not growing; last full backup the same size for months |
+
+> [!IMPORTANT]
+> **The DBA brings the evidence; the app owner decides.** Retention rules may still require the data: **retire doesn't mean delete**. The app owner, or the data owner, decides whether the database is archived, handed over or deleted.
+
+**DBA tasks on the retire-only path:**
+- [ ] Final **full backup** of each database, kept per retention, with a **restore test**
+- [ ] Set the database **offline** (not dropped), so it can come back in minutes
+- [ ] During the **scream test** (at least 4 weeks, including a month-end): watch the error log for failed logins to the offline database. Any attempt is a missed dependency
+- [ ] If someone is affected: bring it back online, record the dependency, and go back to Gate 1
+- [ ] If nobody is affected: carry out the data decision (archive copy kept, or drop under the retention policy), then stop and uninstall the instance if nothing else is on it, and release the SQL licence
+- [ ] Confirm to the sysadmin that the server can be powered off
+
+<p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
+
+## 7. Tasks by phase
 
 ### Phase 1 · Discovery
 
