@@ -9,7 +9,8 @@
   <a href="#4-sql-server-on-windows-server"><b>SQL × Windows</b></a> &nbsp;·&nbsp;
   <a href="#5-migration-paths"><b>Migration paths</b></a> &nbsp;·&nbsp;
   <a href="#6-options-after-discovery"><b>In-place · retire</b></a> &nbsp;·&nbsp;
-  <a href="#7-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
+  <a href="#7-audit-logging"><b>Audit logging</b></a> &nbsp;·&nbsp;
+  <a href="#8-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
   <a href="README.md"><b>Big picture</b></a>
 </p>
 
@@ -270,7 +271,179 @@ If nobody and nothing uses a database or a whole instance any more, it **isn't m
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
-## 7. Tasks by phase
+## 7. Audit logging
+
+### 7.1 What an audit log is
+
+An **audit log** is a record of **who did what, when, and from where** on the instance, kept so it can be checked later. For SQL Server it covers four kinds of events:
+
+| Kind | Examples | Why it matters |
+|---|---|---|
+| **Logins** | Successful and failed logins: login name, client host, application, time | Who uses the instance; brute-force attempts; **dependency discovery** during migration |
+| **Security changes** | Logins created or dropped, role membership, `GRANT` / `DENY` / `REVOKE`, password changes | Privilege escalation; Cyber and audit requirements |
+| **Schema changes (DDL)** | `CREATE` / `ALTER` / `DROP` of tables, procedures, databases | Unplanned changes; troubleshooting after a release |
+| **Data access (DML)** | `SELECT` / `INSERT` / `UPDATE` / `DELETE` on sensitive tables | Compliance for personal or financial data. **Costly**: only on the tables that need it |
+
+An audit log is **not** the transaction log (that's for recovery), and **not** the error log, although the error log can hold login events (7.3).
+
+### 7.2 What each version supports
+
+| Version | Native **SQL Server Audit** | Other built-in options |
+|---|---|---|
+| **SQL 2000** | **None** | SQL Trace (server-side), C2 audit mode, login auditing to the error log, DML triggers |
+| **SQL 2005** | **None** | Same as 2000, plus the **default trace**, **DDL triggers**, **logon triggers** (SP2+), event notifications, Common Criteria compliance (SP2, Enterprise) |
+| **SQL 2008 / 2008 R2** | **Enterprise only** (server and database level) | Standard edition: the 2005 options, plus Extended Events |
+| **SQL 2012 / 2014** | **Server level: all editions.** Database level: Enterprise only | Audit filtering, user-defined audit events, Extended Events |
+| **SQL 2016 SP1 – 2025** | **Server and database level: all editions** | Extended Events; temporal tables (data history, 2016+); ledger (tamper-evident tables, 2022+) |
+
+> [!IMPORTANT]
+> **On the target (SQL 2022 / 2025), use SQL Server Audit.** It's built in, cheap, and covers all four kinds. The workarounds in 7.3 are for the **source** servers until they're migrated, and for discovery.
+
+### 7.3 Options on versions without SQL Server Audit
+
+Use **several light options together**. None of them alone covers everything, and none is as complete as SQL Server Audit.
+
+| Option | Versions | Covers | Cost and risks |
+|---|---|---|---|
+| **1. Login auditing to the error log** | 2000+ | Successful and failed logins | Very low. The error log grows: **recycle it daily and keep 30 files** |
+| **2. Default trace** | 2005+ | Object created, altered, dropped; logins and users added; some permission changes; DBCC; server config changes | **On by default**, almost free. Only 5 files × 20 MB that roll over: **copy them off regularly** |
+| **3. Server-side SQL Trace** (audit events only) | 2000+ | Logins, failed logins, security changes, DDL. DML on chosen tables possible | Low when filtered to audit events. **Never use the Profiler GUI** for this. Must be **restarted after a SQL restart** (startup procedure) |
+| **4. DDL triggers** | 2005+ | All DDL, with the full statement (`EVENTDATA()`) into an audit table | Low. **A broken trigger blocks all DDL**: test on the clone |
+| **5. Logon trigger** | 2005 SP2+ | Logins, with host and application | **A broken logon trigger locks everyone out.** Recovery needs the DAC. Use only if 1 and 3 aren't enough |
+| **6. DML triggers** on sensitive tables | 2000+ | Data changes on those tables | Adds cost to every write; not for `SELECT` |
+| **7. C2 audit mode** / Common Criteria | 2000+ / 2005 SP2 Ent. | Everything | **Heavy.** The instance **stops if the audit disk fills**. Last resort only |
+| **8. Network and OS side** (sysadmin) | Any | Who connects to the SQL port, from where | Windows Security log, firewall logs; no SQL detail |
+
+**Recommended set for a legacy source server:** **1 + 2 + 3**, with the files **copied off the server** every day (to the log server or SIEM), so they survive a disk failure and are harder to tamper with. Add **4** where schema changes matter.
+
+> [!WARNING]
+> **None of these is tamper-proof.** A sysadmin on the instance can stop a trace, disable a trigger or delete files. That's why the files are copied off the server daily, and why the target uses SQL Server Audit. On the decision log, record what the legacy server has as a **compensating control**, not as a full audit.
+
+<details>
+<summary><b>Scripts: login auditing, error-log retention, default trace (2005+)</b></summary>
+
+```sql
+-- 1. Login auditing: both failed and successful logins (3 = both). Takes effect after a SQL restart.
+EXEC xp_instance_regwrite N'HKEY_LOCAL_MACHINE',
+     N'Software\Microsoft\MSSQLServer\MSSQLServer', N'AuditLevel', REG_DWORD, 3;
+
+-- Keep 30 error logs, and recycle daily (add sp_cycle_errorlog to a daily Agent job)
+EXEC xp_instance_regwrite N'HKEY_LOCAL_MACHINE',
+     N'Software\Microsoft\MSSQLServer\MSSQLServer', N'NumErrorLogs', REG_DWORD, 30;
+EXEC sp_cycle_errorlog;
+```
+
+```sql
+-- 2. Read the default trace (2005+)
+DECLARE @path nvarchar(260);
+SELECT @path = REVERSE(SUBSTRING(REVERSE(path), CHARINDEX('\', REVERSE(path)), 260)) + N'log.trc'
+FROM sys.traces WHERE is_default = 1;
+
+SELECT t.StartTime, e.name AS event, t.LoginName, t.HostName, t.ApplicationName,
+       t.DatabaseName, t.ObjectName
+FROM fn_trace_gettable(@path, DEFAULT) AS t
+JOIN sys.trace_events AS e ON e.trace_event_id = t.EventClass
+ORDER BY t.StartTime DESC;
+```
+
+</details>
+
+<details>
+<summary><b>Script: server-side audit trace that restarts with SQL (2000 and 2005)</b></summary>
+
+```sql
+USE master;
+GO
+-- Starts a rollover trace of audit events only. Marked as a startup procedure below.
+CREATE PROCEDURE dbo.usp_StartAuditTrace
+AS
+BEGIN
+    DECLARE @id int, @on bit, @file nvarchar(245), @size bigint;
+    SET @on = 1;
+    SET @size = 100;                         -- MB per file
+    SET @file = N'D:\SQLAudit\audit_' + CONVERT(nvarchar(8), GETDATE(), 112)
+              + N'_' + REPLACE(CONVERT(nvarchar(8), GETDATE(), 108), ':', '');
+    -- 2 = TRACE_FILE_ROLLOVER. On SQL 2005+ you can add @filecount = 50 to cap the number of files.
+    EXEC sp_trace_create @id OUTPUT, 2, @file, @size, NULL;
+
+    -- Events: 14 Login, 20 Login failed, 102 DB scope GDR, 103 Object GDR,
+    -- 104 Add login, 105 Login GDR, 106 Login change property, 107 Login change password,
+    -- 108 Add login to server role, 109 Add DB user, 110 Add member to DB role,
+    -- 46 Object created, 47 Object deleted, 164 Object altered
+    DECLARE @events TABLE (e int);
+    INSERT @events SELECT 14 UNION ALL SELECT 20 UNION ALL SELECT 102 UNION ALL SELECT 103
+         UNION ALL SELECT 104 UNION ALL SELECT 105 UNION ALL SELECT 106 UNION ALL SELECT 107
+         UNION ALL SELECT 108 UNION ALL SELECT 109 UNION ALL SELECT 110
+         UNION ALL SELECT 46 UNION ALL SELECT 47 UNION ALL SELECT 164;
+
+    -- Columns: 1 TextData, 6 NTUserName, 8 HostName, 10 ApplicationName, 11 LoginName,
+    -- 12 SPID, 14 StartTime, 21 EventSubClass, 34 ObjectName, 35 DatabaseName
+    DECLARE @cols TABLE (c int);
+    INSERT @cols SELECT 1 UNION ALL SELECT 6 UNION ALL SELECT 8 UNION ALL SELECT 10
+         UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 14 UNION ALL SELECT 21
+         UNION ALL SELECT 34 UNION ALL SELECT 35;
+
+    DECLARE @e int, @c int;
+    DECLARE ec CURSOR LOCAL FAST_FORWARD FOR SELECT e, c FROM @events CROSS JOIN @cols;
+    OPEN ec;
+    FETCH NEXT FROM ec INTO @e, @c;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        EXEC sp_trace_setevent @id, @e, @c, @on;
+        FETCH NEXT FROM ec INTO @e, @c;
+    END
+    CLOSE ec; DEALLOCATE ec;
+
+    EXEC sp_trace_setstatus @id, 1;          -- start
+END
+GO
+EXEC sp_procoption N'dbo.usp_StartAuditTrace', 'startup', 'true';
+EXEC dbo.usp_StartAuditTrace;
+```
+
+Create `D:\SQLAudit` first, writable by the SQL service account, on a volume that **isn't the data or log volume**. A daily Agent job or scheduled task copies the closed `.trc` files to the log server. Read them with `fn_trace_gettable`. Test on the clone first.
+
+</details>
+
+<details>
+<summary><b>Target: SQL Server Audit on SQL 2022 / 2025</b></summary>
+
+```sql
+USE master;
+CREATE SERVER AUDIT MigrationAudit
+    TO FILE (FILEPATH = N'D:\SQLAudit\', MAXSIZE = 256 MB, MAX_ROLLOVER_FILES = 50)
+    WITH (ON_FAILURE = CONTINUE);
+ALTER SERVER AUDIT MigrationAudit WITH (STATE = ON);
+
+CREATE SERVER AUDIT SPECIFICATION MigrationAuditSpec
+    FOR SERVER AUDIT MigrationAudit
+    ADD (FAILED_LOGIN_GROUP),
+    ADD (SUCCESSFUL_LOGIN_GROUP),
+    ADD (SERVER_ROLE_MEMBER_CHANGE_GROUP),
+    ADD (DATABASE_ROLE_MEMBER_CHANGE_GROUP),
+    ADD (SERVER_PERMISSION_CHANGE_GROUP),
+    ADD (DATABASE_PERMISSION_CHANGE_GROUP),
+    ADD (SERVER_PRINCIPAL_CHANGE_GROUP),
+    ADD (DATABASE_PRINCIPAL_CHANGE_GROUP),
+    ADD (SCHEMA_OBJECT_CHANGE_GROUP),
+    ADD (DATABASE_OBJECT_CHANGE_GROUP),
+    ADD (AUDIT_CHANGE_GROUP)
+    WITH (STATE = ON);
+
+-- Read it
+SELECT event_time, action_id, succeeded, server_principal_name, client_ip,
+       application_name, database_name, object_name, statement
+FROM sys.fn_get_audit_file(N'D:\SQLAudit\*.sqlaudit', DEFAULT, DEFAULT)
+ORDER BY event_time DESC;
+```
+
+Add a **database audit specification** for `SELECT` / `UPDATE` on sensitive tables only where compliance requires it.
+
+</details>
+
+<p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
+
+## 8. Tasks by phase
 
 ### Phase 1 · Discovery
 

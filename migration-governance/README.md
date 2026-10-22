@@ -693,7 +693,7 @@ WHERE s.freq_type IN (16, 32);
 
 </details>
 
-- [ ] Turn on **login auditing** ("both failed and successful logins") for the capture week. It writes to the errorlog, so check the errorlog size and recycle schedule.
+- [ ] Turn on **login auditing** ("both failed and successful logins") for the capture week. It writes to the errorlog, so check the errorlog size and recycle schedule. Audit options for each version, including versions without SQL Server Audit: [DBA guide §7](DBA.md#7-audit-logging).
 - [ ] A database with **no reads or writes during the capture**, **no monthly job** touching it, and a long **uptime** behind the usage stats is a **candidate** for archiving. The app owner decides.
 - [ ] Hand the compiled *host · app · login · database* list to the app owner to **confirm**.
 
@@ -790,7 +790,7 @@ What each role does for each option, including the **evidence that a server or d
 - [ ] Logins scripted from the source (SIDs and hashes kept) but **not yet enabled** for apps
 - [ ] SSIS / SSRS installed if Discovery found them; DTS rewrite tracked
 - [ ] Linked servers recreated with **non-personal** credentials
-- [ ] Auditing enabled (SQL Server Audit is available on all editions from 2012 at server level)
+- [ ] Auditing enabled with **SQL Server Audit** (server level on all editions from 2012; database level from 2016 SP1). Standard setup: [DBA guide §7](DBA.md#7-audit-logging)
 
 </td></tr>
 </table>
