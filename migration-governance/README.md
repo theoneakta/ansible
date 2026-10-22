@@ -264,13 +264,12 @@ Raw data is for evidence; **the summary is what gets read**. Every script writes
 
 Each server has **one page** that brings together its status, people, links (ADO, ServiceNow, SharePoint), flags, approvals and gates.
 
-**Template:** [SERVER-PAGE-TEMPLATE.md](SERVER-PAGE-TEMPLATE.md)
+**Template:** [SERVER-PAGE-TEMPLATE.md](SERVER-PAGE-TEMPLATE.md) (view on GitHub) · [SERVER-PAGE-TEMPLATE.docx](SERVER-PAGE-TEMPLATE.docx) (Word copy)
 
-To use it in Microsoft Loop:
-1. Open the template on GitHub, which shows it rendered.
-2. Select the whole page and copy it.
-3. Paste it into a new Loop page. Headings, tables and lists are kept; check that the checklists came through as Loop checklists.
-4. Save the page as a **template** in the bundle's Loop workspace, so each server page starts from the same layout.
+Loop can't import a file, but it keeps formatting when you paste. To use the template in Microsoft Loop:
+1. Open the **Word copy**, press **Ctrl+A** and then **Ctrl+C**. Copying from the rendered GitHub page also works.
+2. Paste it into a new Loop page. Headings, tables and lists are kept. The checkboxes (☐) arrive as text: type `[]` at the start of those lines to turn them into Loop checklists.
+3. Save the page as a **template** in the bundle's Loop workspace, so each server page starts from the same layout.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 

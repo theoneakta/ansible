@@ -73,7 +73,7 @@
 
 | Direction | System / partner / device | Protocol / port | Purpose | Confirmed by |
 |---|---|---|---|---|
-| *Inbound* | *Partner X* | *FTP 21* | *Daily invoice drop in \\APP01\Inbound* | |
+| *Inbound* | *Partner X* | *FTP 21* | *Daily invoice drop in* `\\APP01\Inbound` | |
 | *Outbound* | *SQL02* | *1433* | *Linked server for reporting* | |
 
 ### Monthly, quarterly and yearly jobs
