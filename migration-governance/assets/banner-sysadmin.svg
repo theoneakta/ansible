@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1f36"/>
+      <stop offset="1" stop-color="#1b4a78"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" x2="1">
+      <stop offset="0" stop-color="#5fa8e8"/>
+      <stop offset="1" stop-color="#5fa8e8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" rx="14" fill="url(#bg)"/>
+  <g stroke="#ffffff" stroke-opacity="0.05">
+    <path d="M760 0 L1200 320 M840 0 L1200 262 M920 0 L1200 204 M1000 0 L1200 146"/>
+  </g>
+  <text x="64" y="84" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="4" fill="#8fc1ee">MIGRATION GOVERNANCE  ·  ROLE GUIDE</text>
+  <text x="62" y="152" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="56" font-weight="700" letter-spacing="-0.5" fill="#ffffff">Sysadmin Guide</text>
+  <rect x="64" y="176" width="420" height="3" fill="url(#rule)"/>
+  <text x="64" y="214" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="20" fill="#d6e6f5">Windows Server 2003 – 2025  ·  servers, files, network, protocols</text>
+  <g font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="13" font-weight="600" letter-spacing="2">
+    <circle cx="70" cy="268" r="6" fill="#5fa8e8"/><text x="84" y="273" fill="#ffffff">DISCOVERY</text>
+    <path d="M186 268 H224" stroke="#5fa8e8" stroke-opacity="0.5" stroke-width="2"/>
+    <circle cx="238" cy="268" r="6" fill="#5fa8e8"/><text x="252" y="273" fill="#ffffff">INSTALL &amp; CONFIGURE</text>
+    <path d="M440 268 H478" stroke="#5fa8e8" stroke-opacity="0.5" stroke-width="2"/>
+    <circle cx="492" cy="268" r="6" fill="#5fa8e8"/><text x="506" y="273" fill="#ffffff">MIGRATION</text>
+    <path d="M610 268 H648" stroke="#5fa8e8" stroke-opacity="0.5" stroke-width="2"/>
+    <circle cx="662" cy="268" r="6" fill="#5fa8e8"/><text x="676" y="273" fill="#ffffff">DECOMMISSIONING</text>
+  </g>
+</svg>
