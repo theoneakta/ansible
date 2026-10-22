@@ -230,17 +230,42 @@ flowchart TD
 
 ### 2.7 Supported vs works but not supported
 
-Every path, OS and SQL combination in this program is one of two kinds, and **the difference decides the paperwork**:
+Every path, OS and SQL combination in this program is one of two kinds, and **the difference decides how it is done**:
 
 | | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
 |---|---|---|
 | **What it means** | **Microsoft documents it:** in its compatibility matrix or upgrade table | **It runs, and may be proven in our lab, but Microsoft doesn't document it** |
 | **Fixes, security updates, support case** | **Yes** | **No. The risk is ours alone** |
-| **Approval** | **Normal gate** | **Logged exception:** owner, compensating controls, **end date**, Cyber consulted |
-| **End state?** | **Yes** | **No. Interim step only** |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**, because the path is **always run on a cloned VM first** (below) |
+| **End state?** | **Yes** | **No. A step on the way to a newer, supported SQL version** |
 
-> [!WARNING]
-> **"LAB OK" is not "production approved".** The lab proves a path works **technically**. Production use still needs **an exception, a test with the real application, a tested rollback, and a date to reach a supported state**.
+> [!IMPORTANT]
+> **Our rule: every migration ends on a newer, supported SQL version.** An unsupported step on the way is fine, as long as it's **proven on a cloned VM of the real server** before production is touched. **"LAB OK"** shows the path works in general; **the clone** shows it works for *this* server and *this* application.
+
+#### Clone-first procedure
+
+```mermaid
+flowchart LR
+    A["Clone the<br/>production VM"] --> B["Isolate the clone<br/>(no production network)"] --> C["Run the path<br/>on the clone, timed"] --> D["Test with the app<br/>(app owner)"] --> E{"OK?"}
+    E -- "yes" --> F["Same steps on production<br/>in the change window"]
+    E -- "no" --> G["Fix the runbook,<br/>re-clone, retry"]
+    G --> A
+
+    classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef good fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    class A,B,C,D step
+    class F good
+```
+
+| # | Step | Who |
+|:-:|---|---|
+| 1 | **Clone** the production VM (and take a snapshot or backup of production as the reference) | Sysadmin |
+| 2 | **Isolate the clone.** It has the **same name, IP and domain identity** as production, so it must never reach the production network: disconnected NIC or an isolated VLAN, with the app's test client inside it | Sysadmin |
+| 3 | **Run the path on the clone,** step by step, and time each step: OS hops (sysadmin) and the SQL move to the newer version (DBA) | Sysadmin, DBA |
+| 4 | **Test with the application** in the isolated network: key functions, reports, interfaces | App owner, with the DBA |
+| 5 | **Record** the steps, durations and issues on the server page; that's the runbook for production | Sysadmin, DBA |
+| 6 | **Production:** the same steps in the change window, with a snapshot before each hop. Rollback = the snapshot, or the untouched source | Sysadmin, DBA |
+| 7 | **Delete the clone** after Gate 3. It holds production data, so treat it like production until then | Sysadmin |
 
 Examples for each side are in the role guides: [Sysadmin §1](SYSADMIN.md#1-supported-vs-works-but-not-supported) (OS paths, out-of-support OS, legacy protocols) and [DBA §1](DBA.md#1-supported-vs-works-but-not-supported) (SQL on an unsupported OS, the lab-proven SQL 2005 path).
 
@@ -801,7 +826,7 @@ A server can also be **split**: for example, migrate two databases and retire th
 
 ```mermaid
 flowchart LR
-    A["Rehearsal<br/>(timed, on a copy)"] --> B["Cut-over plan<br/>+ rollback plan<br/>approved"] --> C["Freeze and<br/>final backup"] --> D["Move data<br/>and apps"] --> E["Switch DNS,<br/>aliases, jobs"] --> F["Validate<br/>(IT, then app owner)"]
+    A["Rehearsal<br/>(timed, on a cloned VM)"] --> B["Cut-over plan<br/>+ rollback plan<br/>approved"] --> C["Freeze and<br/>final backup"] --> D["Move data<br/>and apps"] --> E["Switch DNS,<br/>aliases, jobs"] --> F["Validate<br/>(IT, then app owner)"]
     F -- "fails" --> R["Rollback<br/>(source is still intact)"]
     F -- "passes" --> G["Gate 3"]
 
@@ -813,7 +838,7 @@ flowchart LR
     class G good
 ```
 
-- [ ] **Rehearsal** on a copy, timed. The real window = rehearsal time + 50%.
+- [ ] **Rehearsal on a cloned VM** of the server ([clone-first](#clone-first-procedure)), timed. The real window = rehearsal time + 50%.
 - [ ] **Rollback plan** with a clear **point of no return** and who calls it
 - [ ] Users and app owner notified; change ticket approved
 - [ ] Source set to **read-only** (or services stopped) before the final copy, so no writes are lost

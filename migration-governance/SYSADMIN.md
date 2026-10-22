@@ -22,25 +22,24 @@
 
 ## 1. Supported vs works but not supported
 
-These two words decide whether a path can be used, and with what paperwork.
+These two words decide how a path is used: directly, or proven on a cloned VM first.
 
 | | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
 |---|---|---|
 | **Meaning** | **Microsoft documents it:** the OS version is in support, the upgrade path is in Microsoft's table, and the software on it is supported on that OS | **It runs, and we proved it in the lab, but Microsoft doesn't document it** (or flags it as incompatible) |
 | **Fixes and security updates** | **Yes** | **No.** Out-of-support OS, or an app the OS vendor won't fix |
 | **Microsoft support case** | **Accepted** | **Can be refused** |
-| **Audit / Cyber** | **Accepted as is** | **Needs a logged exception:** owner, reason, compensating controls, **end date** |
-| **Can it be the end state?** | **Yes** | **No. Interim step only** |
-| **Who carries the risk** | Shared with the vendor | **Us alone** |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**: the path is **always run on a cloned VM first** |
+| **Can it be the end state?** | **Yes** | **No. A step on the way to a newer, supported platform** |
+| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why it's proven on a clone first |
 
-> [!WARNING]
-> **"LAB OK" is not "production approved".**
-> The lab proves that a path **works technically**. Using it in production still needs: **a logged exception**, **a test with the real application**, **a snapshot or backup and a tested rollback**, and **a date by which it moves to a supported state**.
+> [!IMPORTANT]
+> **Every migration ends on a newer, supported version.** An unsupported step on the way (for example 2008 R2 → 2012 R2) is allowed **when it has run on a cloned VM of the real server first**. **"LAB OK"** shows the path works in general; **the clone** shows it works for this server. The sysadmin **clones and isolates** the VM: [governance §2.7, clone-first](README.md#clone-first-procedure).
 
 **On the sysadmin side, it typically looks like this:**
 - **The upgrade path is supported, but what runs on it isn't.** Windows 2012 R2 → 2025 is a **supported OS upgrade**, but setup flags SQL Server 2005 as an incompatible application (a soft block). The OS is supported; **the server as a whole isn't**.
 - **A path that Microsoft no longer documents.** Windows 2008 R2 SP1 → 2012 R2 isn't in Microsoft's current upgrade table any more. **It worked in our lab**, but treat it as *works, but not supported*.
-- **An out-of-support OS kept running** (2003, 2008, 2008 R2, 2012 R2) **without ESU**: no security updates at all. That's an exception by definition.
+- **An out-of-support OS** (2003, 2008, 2008 R2, 2012 R2) **without ESU** gets no security updates at all. **As a step on the way, it is fine (clone first); as an end state, it is not.**
 - **Legacy protocols left on** (SMBv1, TLS 1.0, NTLMv1): Windows still has the switches, but **our policy is to turn them off**. Leaving them on needs an exception ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)).
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
@@ -182,7 +181,7 @@ Details and commands: [governance §1.2 – 1.5](README.md#12-server-platform-id
 
 ### Phase 3 · Migration
 
-- [ ] **Rehearsal** of the server-side steps, timed
+- [ ] **Clone and isolate** the production VM, then **rehearse** the server-side steps on it, timed ([clone-first](README.md#clone-first-procedure))
 - [ ] File shares: **robocopy** with `/COPYALL`, a preliminary pass days before, then a final delta during the freeze
 - [ ] Scheduled tasks enabled on the target, disabled on the source
 - [ ] **MFT flows** switched over and tested with each partner; FTP service on the old server stopped

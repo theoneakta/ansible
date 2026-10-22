@@ -22,20 +22,19 @@
 
 ## 1. Supported vs works but not supported
 
-These two words decide whether a path can be used, and with what paperwork.
+These two words decide how a path is used: directly, or proven on a cloned VM first.
 
 | | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
 |---|---|---|
 | **Meaning** | **Microsoft lists the combination.** SQL version, service pack and Windows version are in Microsoft's compatibility matrix | **It runs, and we proved it in the lab, but Microsoft doesn't list it** (or lists it as "not supported") |
 | **Fixes and security updates** | **Yes.** Bugs and vulnerabilities in this combination get fixed | **No.** If it breaks because of the combination, nobody fixes it |
 | **Microsoft support case** | **Accepted** | **Can be refused.** The first answer is "move to a supported configuration" |
-| **Audit / Cyber** | **Accepted as is** | **Needs a logged exception:** owner, reason, compensating controls, **end date** |
-| **Can it be the end state?** | **Yes** | **No. Interim step only**, to get off something worse, faster |
-| **Who carries the risk** | Shared with the vendor | **Us alone** |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**: the path is **always run on a cloned VM first** |
+| **Can it be the end state?** | **Yes** | **No. A step on the way to a newer, supported SQL version** |
+| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why it's proven on a clone first |
 
-> [!WARNING]
-> **"LAB OK" is not "production approved".**
-> The lab proves that a path **works technically**. Using it in production still needs: **a logged exception**, **a test with the real application and real data volumes**, **a tested backup and rollback**, and **a date by which it moves to a supported state**.
+> [!IMPORTANT]
+> **Every migration ends on a newer, supported SQL version.** An unsupported step on the way is allowed **when it has run on a cloned VM of the real server first**, with the real application and the real data volumes. **"LAB OK"** shows the path works in general; **the clone** shows it works for this server. Procedure: [governance §2.7, clone-first](README.md#clone-first-procedure).
 
 **On the DBA side, it typically looks like this:**
 - **SQL 2005 still running on Windows Server 2012 R2 or 2025.** Our lab ran it there after in-place OS upgrades, with a clean `DBCC CHECKDB`, crash recovery and fault injection passed. **But** the engine is out of support, the combination is unsupported, and SQL 2005 only does **TLS 1.0** at login. Clients need a TLS 1.0 exception too ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)).
@@ -150,11 +149,11 @@ Sources: Microsoft, *Supported version and edition upgrades* for [SQL Server 202
 | Large database, short window, source 2008 SP3+ | **Log shipping**, then a final log backup and recovery at cut-over |
 | Many databases, logins and jobs on one instance | **dbatools** from the admin workstation: `Copy-DbaLogin`, `Copy-DbaAgentJob`, `Copy-DbaLinkedServer`, `Copy-DbaDatabase` |
 | SQL 2000 | Hop instance (5.1) and a full outage |
-| The app can't move yet, but the OS must leave 2008 R2 | **Interim only:** the lab path in 5.3, with an exception |
+| The app can't move yet, but the OS must leave 2008 R2 | **Interim step:** the lab path in 5.3, proven on a cloned VM first |
 
 ### 5.3 Lab-proven interim path: keep SQL, upgrade the OS under it
 
-**NOT SUPPORTED. Proven in our lab. Interim use only, with an exception.**
+**NOT SUPPORTED. Proven in our lab. A step on the way to a newer SQL version, always run on a cloned VM first.**
 
 In the lab, a SQL Server 2005 SP4 instance with a live application stayed in place while the sysadmin upgraded Windows **2008 R2 SP1 → 2012 R2 → 2025** in place. Nothing was reinstalled or restored. The OS upgrade itself is the sysadmin's runbook ([Sysadmin guide §5](SYSADMIN.md#5-windows-in-place-upgrade-paths)).
 
@@ -170,7 +169,7 @@ In the lab, a SQL Server 2005 SP4 instance with a live application stayed in pla
 Full details: [lab runbook](../legacy-migration/README.md) and [stability showcase](../legacy-migration/STABILITY.md).
 
 **Conditions for using it in production**
-- [ ] **Exception logged:** owner, end date, Cyber approval, compensating controls
+- [ ] **Run on a cloned VM first** ([clone-first procedure](README.md#clone-first-procedure)), tested with the real application, steps and timings recorded on the server page
 - [ ] Server **LAN-only and firewalled**; no internet access
 - [ ] Service recovery set on every SQL service:
   ```bat
@@ -197,7 +196,7 @@ Details and queries per version: [governance §1.6 – 1.8](README.md#16-sql-ins
 - [ ] Logins, orphaned users, jobs and their owners, linked servers, DTS / SSIS / SSRS, Database Mail, encryption keys
 - [ ] **Monthly and quarterly Agent jobs** listed, each with an owner
 - [ ] Connection capture inside SQL for the Discovery week, plus login auditing
-- [ ] **Migration path chosen per database** (section 5), with **supported** or **exception** written next to it
+- [ ] **Migration path chosen per database** (section 5), with **supported** or **works, not supported (clone first)** written next to it
 - [ ] SQL flags written to the summary file; sign the Gate 1 part
 
 ### Phase 2 · Install & configure
@@ -213,7 +212,7 @@ Details and queries per version: [governance §1.6 – 1.8](README.md#16-sql-ins
 
 ### Phase 3 · Migration
 
-- [ ] **Rehearsal** on a copy, timed. Record the duration on the server page
+- [ ] **Rehearsal on the cloned VM** ([clone-first](README.md#clone-first-procedure)), timed. Record the duration on the server page
 - [ ] Source set **read-only** (or app stopped) before the final backup
 - [ ] Restore; fix orphaned users (`ALTER USER … WITH LOGIN = …`); enable logins; enable jobs
 - [ ] `DBCC CHECKDB`, then `UPDATE STATISTICS` with `FULLSCAN` on key tables
