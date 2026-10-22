@@ -253,7 +253,7 @@ Raw data is for evidence; **the summary is what gets read**. Every script writes
 | Server | Area | Item | Flag | Detail | Owner | Decision | Decided by | Date |
 |---|---|---|---|---|---|---|---|---|
 | APP01 | Protocols | SMBv1 server enabled | AMBER | 3 scanners connect over SMBv1 | Sysadmin | Fix during migration: firmware update | J. Doe | 2026-10-30 |
-| APP01 | Protocols | FTP partner flow | AMBER | Partner drops files in `\\\\APP01\\Inbound` | Sysadmin | Move to MFT | J. Doe | 2026-10-30 |
+| APP01 | Protocols | FTP partner flow | AMBER | Partner drops files in `\\APP01\Inbound` | Sysadmin | Move to MFT | J. Doe | 2026-10-30 |
 | APP01 | SQL | Job owned by a person | AMBER | `Nightly export` owned by DOMAIN\jsmith | DBA | Fix: change to sa | A. Roy | 2026-10-30 |
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
