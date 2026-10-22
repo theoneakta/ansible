@@ -24,19 +24,19 @@
 
 ## 1. Supported vs works but not supported
 
-These two words decide how a path is used: directly, or proven on a cloned VM first.
+These two words tell you who carries the risk. Whether a clone is needed depends on something else: **how certain the path is** ([when to clone](README.md#when-to-clone)).
 
 | | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
 |---|---|---|
 | **Meaning** | **Microsoft lists the combination.** SQL version, service pack and Windows version are in Microsoft's compatibility matrix | **It runs, and we proved it in the lab, but Microsoft doesn't list it** (or lists it as "not supported") |
 | **Fixes and security updates** | **Yes.** Bugs and vulnerabilities in this combination get fixed | **No.** If it breaks because of the combination, nobody fixes it |
 | **Microsoft support case** | **Accepted** | **Can be refused.** The first answer is "move to a supported configuration" |
-| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**: the path is **always run on a cloned VM first** |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker.** If the path is **uncertain**, it runs on a cloned VM first |
 | **Can it be the end state?** | **Yes** | **No. A step on the way to a newer, supported SQL version** |
-| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why it's proven on a clone first |
+| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why an uncertain path is proven on a clone first |
 
 > [!IMPORTANT]
-> **Every migration ends on a newer, supported SQL version.** An unsupported step on the way is allowed **when it has run on a cloned VM of the real server first**, with the real application and the real data volumes. **"LAB OK"** shows the path works in general; **the clone** shows it works for this server. Procedure: [governance §2.7, clone-first](README.md#clone-first-procedure).
+> **Every migration ends on a newer, supported SQL version.** An unsupported step on the way is allowed. **Clone only when the path is uncertain:** not yet done in the lab or the program, something unusual found on this server, or you're not confident. A proven path goes straight to production, with a snapshot before each step ([governance §2.7](README.md#when-to-clone)).
 
 **On the DBA side, it typically looks like this:**
 - **SQL 2005 still running on Windows Server 2012 R2 or 2025.** Our lab ran it there after in-place OS upgrades, with a clean `DBCC CHECKDB`, crash recovery and fault injection passed. **But** the engine is out of support, the combination is unsupported, and SQL 2005 only does **TLS 1.0** at login. Clients need a TLS 1.0 exception too ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)).
@@ -57,7 +57,7 @@ These two words decide how a path is used: directly, or proven on a cloned VM fi
 |---|---|---|---|
 | **1 · Discovery** | SQL discovery script and output; SQL flags | Connection and activity capture inside SQL; dependency list (SQL side) | Server discovery; legacy protocols (TLS for SQL clients) |
 | **2 · Install & configure** | SQL install and configuration on the target | Smoke test (SQL side) | Server build (disk layout, service accounts) |
-| **3 · Migration** | **Data migration and validation** | Rehearsal; cut-over and rollback plan (SQL side) | DNS / alias switch timing |
+| **3 · Migration** | **Everything SQL after the OS hand-off:** SQL upgrade or new instance, **data migration and validation**, app test with the app owner, up to Gate 3 | Rehearsal (on a clone if uncertain); cut-over and rollback plan (SQL side) | The OS in-place upgrade (done by the sysadmin); DNS / alias switch timing |
 | **4 · Decommissioning** | Instance decommissioning: databases offline, final backups, logins disabled | Quiet-period monitoring inside SQL | Server removal |
 
 **What the DBA signs at each gate**
@@ -72,6 +72,11 @@ These two words decide how a path is used: directly, or proven on a cloned VM fi
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
 ## 3. Hand-offs with the sysadmin
+
+**Three hand-off points** ([governance §2.2](README.md#22-roles)):
+1. **After Discovery (Gate 1):** OS path and SQL path agreed together.
+2. **OS hand-off:** the sysadmin finishes the OS in-place upgrade and hardening, then hands the server over. **From then on, the DBA is responsible** up to Gate 3.
+3. **Before decommissioning:** the DBA confirms the databases are offline and backed up; then the sysadmin removes the server.
 
 Most delays happen **between** the two roles. Ask early, using this list.
 
@@ -148,21 +153,21 @@ Sources: Microsoft, *Supported version and edition upgrades* for [SQL Server 202
 
 ### 5.2 Choosing the method
 
-**In-place first, whenever a supported path exists. Side-by-side second** ([governance §3.1](README.md#31-choose-the-method)). Both start on a cloned VM.
+**In-place first, whenever a supported path exists. Side-by-side second** ([governance §3.1](README.md#31-choose-the-method)). Clone first only when the path is uncertain ([when to clone](README.md#when-to-clone)).
 
 | Situation | Method |
 |---|---|
-| **A supported in-place SQL path exists** (to 2022 from 2012 SP4+, to 2025 from 2014 SP3+) and the OS supports the target SQL | **1st choice: in-place SQL upgrade**, proven on a cloned VM. Rollback = the VM snapshot |
+| **A supported in-place SQL path exists** (to 2022 from 2012 SP4+, to 2025 from 2014 SP3+) and the OS supports the target SQL | **1st choice: in-place SQL upgrade** (supported, so normally no clone). Rollback = the VM snapshot |
 | The OS is upgraded in place, but the SQL version can't be upgraded in place (SQL 2005, 2008, 2008 R2) | **Keep the server, change the instance:** install a new SQL 2022 / 2025 instance on the upgraded server, then restore the databases into it (5.1). Clone first |
 | **2nd choice: side-by-side**, small or medium database, outage window of a few hours | **Full backup → restore**, then a final differential or log backup at cut-over |
 | Large database, short window, source 2008 SP3+ | **Log shipping**, then a final log backup and recovery at cut-over |
 | Many databases, logins and jobs on one instance | **dbatools** from the admin workstation: `Copy-DbaLogin`, `Copy-DbaAgentJob`, `Copy-DbaLinkedServer`, `Copy-DbaDatabase` |
 | SQL 2000 | Hop instance (5.1) and a full outage |
-| The app can't move yet, but the OS must leave 2008 R2 | **Interim step:** the lab path in 5.3, proven on a cloned VM first |
+| The app can't move yet, but the OS must leave 2008 R2 | **Interim step:** the lab path in 5.3. The sysadmin does the OS part; the DBA takes over at the OS hand-off |
 
 ### 5.3 Lab-proven interim path: keep SQL, upgrade the OS under it
 
-**NOT SUPPORTED. Proven in our lab. A step on the way to a newer SQL version, always run on a cloned VM first.**
+**NOT SUPPORTED. Proven in our lab. A step on the way to a newer SQL version.** Because it's lab-proven, a clone is needed only if Discovery found something unusual on the server ([when to clone](README.md#when-to-clone)).
 
 In the lab, a SQL Server 2005 SP4 instance with a live application stayed in place while the sysadmin upgraded Windows **2008 R2 SP1 → 2012 R2 → 2025** in place. Nothing was reinstalled or restored. The OS upgrade itself is the sysadmin's runbook ([Sysadmin guide §5](SYSADMIN.md#5-windows-in-place-upgrade-paths)).
 
@@ -178,7 +183,7 @@ In the lab, a SQL Server 2005 SP4 instance with a live application stayed in pla
 Full details: [lab runbook](../legacy-migration/README.md) and [stability showcase](../legacy-migration/STABILITY.md).
 
 **Conditions for using it in production**
-- [ ] **Run on a cloned VM first** ([clone-first procedure](README.md#clone-first-procedure)), tested with the real application, steps and timings recorded on the server page
+- [ ] **Clone first if this server is uncertain** ([when to clone](README.md#when-to-clone)); otherwise a snapshot before each OS step. Steps and timings recorded on the server page
 - [ ] Server **LAN-only and firewalled**; no internet access
 - [ ] Service recovery set on every SQL service:
   ```bat
@@ -202,7 +207,7 @@ flowchart LR
     D["Discovery<br/>results"] --> U{"Is the database<br/>still used?"}
     U -- "no" --> R["<b>Retire</b><br/>6.2"]
     U -- "yes" --> P{"In-place path<br/>exists?"}
-    P -- "yes" --> I["<b>1st: in-place</b><br/>6.1 · clone first"]
+    P -- "yes" --> I["<b>1st: in-place</b><br/>6.1 · clone if uncertain"]
     P -- "no" --> S["<b>2nd: side-by-side</b><br/>restore on a new server"]
     I -- "clone test fails" --> S
 
@@ -218,29 +223,32 @@ flowchart LR
 
 ### 6.1 In-place upgrade, step by step
 
+> [!IMPORTANT]
+> **The OS in-place upgrade is done by the sysadmin** ([Sysadmin §6.1](SYSADMIN.md#61-in-place-upgrade-step-by-step)). The DBA's part during the OS work is small: full backups before the first hop, and a quick SQL check after each hop. **When the sysadmin hands the server over (the OS hand-off), the DBA becomes responsible** for the rest: SQL to a newer version, data validation, and the app test with the app owner, up to Gate 3.
+
 "In-place" means **the server stays**. For the DBA it takes one of three forms, depending on the SQL version:
 
 | Form | When | What the DBA does |
 |---|---|---|
-| **A. OS upgraded under SQL** | The sysadmin upgrades Windows in place ([Sysadmin §6.1](SYSADMIN.md#61-in-place-upgrade-step-by-step)) | Protect and check SQL around each OS hop |
+| **A. OS upgraded under SQL** | **The sysadmin** upgrades Windows in place ([Sysadmin §6.1](SYSADMIN.md#61-in-place-upgrade-step-by-step)) | Backups before, a quick SQL check after each hop; **take over at the OS hand-off** |
 | **B. SQL upgraded in place** | A **supported** SQL upgrade path exists: to **2022** from 2012 SP4, 2014 SP3, 2016 SP3, 2017, 2019; to **2025** from 2014 SP3 onwards. **And** the OS supports the target SQL | Run SQL setup in upgrade mode |
 | **C. New instance on the same server** | SQL can't be upgraded in place (**SQL 2005, 2008, 2008 R2**), but the server stays | Install a new SQL 2022 / 2025 instance next to the old one; restore the databases into it (5.1) |
 
 Usual combination for old servers: **A, then C**. The OS goes 2008 R2 → 2012 R2 → 2025 with SQL 2005 kept running (A, lab-proven), then the databases move to a new SQL 2022 instance on the same server (C), and the SQL 2005 instance is removed.
 
-**Steps for each form** (always on the cloned VM first, then on production):
+**Steps for each form** (on a clone first only if the path is uncertain):
 
 | # | A. OS upgraded under SQL | B. SQL upgraded in place | C. New instance on the same server |
 |:-:|---|---|---|
 | **1** | Full backups of **all** databases, system databases included; script logins and jobs | Full backups; check the prerequisites: no pending restart, Agent account in sysadmin, supported edition path | Full backups; script logins (with SIDs), jobs, linked servers |
 | **2** | Note the baseline: version, databases, logins, jobs, row counts of key tables | Run **Data Migration Assistant** from the admin workstation for breaking changes | Install the new instance (named, or default after the old one is removed); standard configuration |
 | **3** | The sysadmin runs the OS hop | Run SQL **setup in upgrade mode** | Restore the databases; recreate logins, jobs and linked servers (dbatools) |
-| **4** | After each hop: services up, error log clean, `DBCC CHECKDB`, app test | After setup: error log, `DBCC CHECKDB`, `UPDATE STATISTICS`, app test | `DBCC CHECKDB`, orphaned users fixed, app connection string or alias pointed to the new instance, app test |
+| **4** | After each hop: quick check (services up, connection works). **After the OS hand-off:** error log, `DBCC CHECKDB`, app test | After setup: error log, `DBCC CHECKDB`, `UPDATE STATISTICS`, app test | `DBCC CHECKDB`, orphaned users fixed, app connection string or alias pointed to the new instance, app test |
 | **5** | Set **service recovery actions** (`sc failure`, lab finding) | Compatibility levels **unchanged**; raise them later, after validation, with Query Store on | Old instance stopped and kept as the rollback until Gate 3, then uninstalled |
 | **Rollback** | VM snapshot before the hop | **VM snapshot**; an in-place SQL upgrade can't be undone otherwise | The old instance, untouched |
 
 > [!NOTE]
-> **Form C hasn't been tested in our lab yet** (see the note in 5.3). Run it on a clone first, as usual.
+> **Form C hasn't been tested in our lab yet** (see the note in 5.3), so it's **uncertain**: run it on a clone first until it has worked once.
 
 ### 6.2 Retire: when Discovery shows a database isn't used
 
@@ -455,7 +463,7 @@ Details and queries per version: [governance §1.6 – 1.8](README.md#16-sql-ins
 - [ ] Logins, orphaned users, jobs and their owners, linked servers, DTS / SSIS / SSRS, Database Mail, encryption keys
 - [ ] **Monthly and quarterly Agent jobs** listed, each with an owner
 - [ ] Connection capture inside SQL for the Discovery week, plus login auditing
-- [ ] **Migration path chosen per database** (section 5), with **supported** or **works, not supported (clone first)** written next to it
+- [ ] **Migration path chosen per database** (section 5), with **supported** or **works, not supported**, and **proven** or **uncertain (clone)**, written next to it
 - [ ] SQL flags written to the summary file; sign the Gate 1 part
 
 ### Phase 2 · Install & configure
@@ -471,7 +479,8 @@ Details and queries per version: [governance §1.6 – 1.8](README.md#16-sql-ins
 
 ### Phase 3 · Migration
 
-- [ ] **Rehearsal on the cloned VM** ([clone-first](README.md#clone-first-procedure)), timed. Record the duration on the server page
+- [ ] **Take over at the OS hand-off** (in-place) and record it on the server page. From here the DBA is responsible up to Gate 3
+- [ ] **Rehearsal**, timed: on a clone if the path is uncertain ([when to clone](README.md#when-to-clone)), otherwise on a test instance. Record the duration on the server page
 - [ ] Source set **read-only** (or app stopped) before the final backup
 - [ ] Restore; fix orphaned users (`ALTER USER … WITH LOGIN = …`); enable logins; enable jobs
 - [ ] `DBCC CHECKDB`, then `UPDATE STATISTICS` with `FULLSCAN` on key tables

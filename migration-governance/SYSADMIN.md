@@ -23,24 +23,24 @@
 
 ## 1. Supported vs works but not supported
 
-These two words decide how a path is used: directly, or proven on a cloned VM first.
+These two words tell you who carries the risk. Whether a clone is needed depends on something else: **how certain the path is** ([when to clone](README.md#when-to-clone)).
 
 | | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
 |---|---|---|
 | **Meaning** | **Microsoft documents it:** the OS version is in support, the upgrade path is in Microsoft's table, and the software on it is supported on that OS | **It runs, and we proved it in the lab, but Microsoft doesn't document it** (or flags it as incompatible) |
 | **Fixes and security updates** | **Yes** | **No.** Out-of-support OS, or an app the OS vendor won't fix |
 | **Microsoft support case** | **Accepted** | **Can be refused** |
-| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**: the path is **always run on a cloned VM first** |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker.** If the path is **uncertain**, it runs on a cloned VM first |
 | **Can it be the end state?** | **Yes** | **No. A step on the way to a newer, supported platform** |
-| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why it's proven on a clone first |
+| **Who carries the risk** | Shared with the vendor | **Us alone**, which is why an uncertain path is proven on a clone first |
 
 > [!IMPORTANT]
-> **Every migration ends on a newer, supported version.** An unsupported step on the way (for example 2008 R2 → 2012 R2) is allowed **when it has run on a cloned VM of the real server first**. **"LAB OK"** shows the path works in general; **the clone** shows it works for this server. The sysadmin **clones and isolates** the VM: [governance §2.7, clone-first](README.md#clone-first-procedure).
+> **Every migration ends on a newer, supported version.** An unsupported step on the way (for example 2008 R2 → 2012 R2) is allowed. **Clone only when the path is uncertain:** not yet done in the lab or the program, something unusual found on this server, or you're not confident. A proven path goes straight to production, with a snapshot before each step. When a clone is needed, the sysadmin **clones and isolates** the VM ([governance §2.7](README.md#when-to-clone)).
 
 **On the sysadmin side, it typically looks like this:**
 - **The upgrade path is supported, but what runs on it isn't.** Windows 2012 R2 → 2025 is a **supported OS upgrade**, but setup flags SQL Server 2005 as an incompatible application (a soft block). The OS is supported; **the server as a whole isn't**.
 - **A path that Microsoft no longer documents.** Windows 2008 R2 SP1 → 2012 R2 isn't in Microsoft's current upgrade table any more. **It worked in our lab**, but treat it as *works, but not supported*.
-- **An out-of-support OS** (2003, 2008, 2008 R2, 2012 R2) **without ESU** gets no security updates at all. **As a step on the way, it is fine (clone first); as an end state, it is not.**
+- **An out-of-support OS** (2003, 2008, 2008 R2, 2012 R2) **without ESU** gets no security updates at all. **As a step on the way, it is fine; as an end state, it is not.**
 - **Legacy protocols left on** (SMBv1, TLS 1.0, NTLMv1): Windows still has the switches, but **our policy is to turn them off**. Leaving them on needs an exception ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)).
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
@@ -53,7 +53,7 @@ These two words decide how a path is used: directly, or proven on a cloned VM fi
 |---|---|---|---|
 | **1 · Discovery** | Server discovery script and output; server and protocol flags | Files, shares and unused data; legacy protocols (SMBv1, FTP, TLS, NTLMv1); connection capture at OS level | SQL discovery |
 | **2 · Install & configure** | **Target server build and hardening** | Smoke test (server side) | SQL install; firewall and certificate requests (Security / Network own them) |
-| **3 · Migration** | OS-level cut-over: DNS, aliases, file shares, MFT flows, scheduled tasks | Rehearsal; cut-over and rollback plan (server side) | Data migration (DBA) |
+| **3 · Migration** | **OS in-place upgrade and hardening, up to the OS hand-off to the DBA.** OS-level cut-over: DNS, aliases, file shares, MFT flows, scheduled tasks | Clone (if the path is uncertain); cut-over and rollback plan (server side) | Everything SQL after the OS hand-off (DBA) |
 | **4 · Decommissioning** | **Server removal from every system** | Quiet-period or scream-test monitoring; carrying out the data decision for file shares | Instance decommissioning (DBA) |
 
 **What the sysadmin signs at each gate**
@@ -68,6 +68,11 @@ These two words decide how a path is used: directly, or proven on a cloned VM fi
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
 ## 3. Hand-offs with the DBA
+
+**Three hand-off points** ([governance §2.2](README.md#22-roles)):
+1. **After Discovery (Gate 1):** OS path and SQL path agreed together.
+2. **OS hand-off:** the sysadmin finishes the OS in-place upgrade and hardening, then hands the server to the DBA. **From then on, the DBA is responsible** up to Gate 3.
+3. **Before decommissioning:** the DBA confirms the databases are offline and backed up; then the sysadmin removes the server.
 
 Most delays happen **between** the two roles. Ask early, using this list.
 
@@ -88,7 +93,7 @@ Most delays happen **between** the two roles. Ask early, using this list.
 | | **Default** | Why |
 |---|---|---|
 | **OS for a new build** | **Windows Server 2025** (2022 if the application vendor requires it) | Longest support. 2025 supports SQL 2019, 2022 and 2025 (see the [DBA matrix](DBA.md#4-sql-server-on-windows-server)) |
-| **1st choice: in-place upgrade** | **Whenever a path exists** (section 5). **Always run on a cloned VM first** ([clone-first](README.md#clone-first-procedure)) | Same server, name, IP and data: fewer dependencies to move. The clone proves the path for this server; production gets a snapshot before each hop |
+| **1st choice: in-place upgrade** | **Whenever a path exists** (section 5). **Done by the sysadmin.** On a cloned VM first **only if the path is uncertain** ([when to clone](README.md#when-to-clone)) | Same server, name, IP and data: fewer dependencies to move. Production gets a snapshot before each hop |
 | **After an in-place upgrade** | **Harden** after the last hop: SMBv1 off, TLS 1.2+ only, NTLMv1 refused, old roles and agents reviewed | An in-place upgrade **keeps every old setting**, including the insecure ones ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)) |
 | **2nd choice: side-by-side** | New server, then move apps and data. When **no in-place path exists** (2003), or the **clone test fails** | Clean build. The source stays untouched as the rollback |
 
@@ -162,7 +167,7 @@ flowchart LR
     D["Discovery<br/>results"] --> U{"Is the server<br/>still used?"}
     U -- "no" --> R["<b>Retire</b><br/>6.2"]
     U -- "yes" --> P{"In-place path<br/>exists? (section 5)"}
-    P -- "yes" --> I["<b>1st: in-place upgrade</b><br/>6.1 · clone first"]
+    P -- "yes" --> I["<b>1st: in-place upgrade</b><br/>6.1 · clone if uncertain"]
     P -- "no" --> S["<b>2nd: side-by-side</b><br/>new server"]
     I -- "clone test fails" --> S
 
@@ -178,20 +183,22 @@ flowchart LR
 
 ### 6.1 In-place upgrade, step by step
 
-**What it is:** Windows is upgraded **on the same server**: same name, IP, data, shares, scheduled tasks and installed software. Nothing has to be moved, which is why it's the first choice. **The sysadmin runs the OS hops; the DBA checks SQL before and after each hop.**
+**What it is:** Windows is upgraded **on the same server**: same name, IP, data, shares, scheduled tasks and installed software. Nothing has to be moved, which is why it's the first choice.
+
+> [!IMPORTANT]
+> **The OS in-place upgrade is done by the sysadmin**, from preparation to hardening. When the OS is done, the sysadmin **hands the server over to the DBA** (step 5). **From the hand-off on, the DBA is responsible** for the rest of the migration: SQL to a newer version, data validation and the app test, up to Gate 3.
 
 | # | Step | Sysadmin | DBA |
 |:-:|---|---|---|
-| **1** | **Prepare** | Check the path (5.1), media (not Evaluation, same edition and language), licences, free disk (40 GB+), CPU (x86-64-v2 for 2025). Patch the source fully | Confirm the SQL version will run on each OS hop ([DBA matrix](DBA.md#4-sql-server-on-windows-server)). Full backups of all databases, system databases included |
-| **2** | **Clone and isolate** | Clone the production VM; isolate it (no production network) | |
-| **3** | **Rehearse on the clone** | Run every hop, timed. Note every prompt and problem | After each hop: SQL services up, error log clean, `DBCC CHECKDB`, app test |
-| **4** | **Record the runbook** | Steps, timings, problems and fixes on the server page | SQL checks and their results on the server page |
-| **5** | **Change window on production** | **Snapshot before each hop.** Run the same steps | Final backups before the first hop; the same SQL checks after each hop |
-| **6** | **Harden after the last hop** | SMBv1 off, TLS 1.2+ only, NTLMv1 refused, old roles and agents reviewed. Activation (KMS or MAK). RDP checked | Confirm the SQL clients still connect after the TLS change (SQL 2005 clients need TLS 1.0) |
-| **7** | **If SQL can't stay** | | Old SQL version on the new OS (e.g. SQL 2005 on 2025): install a new SQL 2022 / 2025 instance on the same server and restore the databases into it ([DBA §6.1](DBA.md#61-in-place-upgrade-step-by-step)) |
-| **8** | **Accept and clean up** | Keep the snapshots until the app owner accepts (Gate 3), then delete them. Remove `Windows.old` with Disk Cleanup | |
+| **1** | **Prepare** | Check the path (5.1), media (not Evaluation, same edition and language), licences, free disk (40 GB+), CPU (x86-64-v2 for 2025). Patch the source fully. **Decide whether the path is uncertain** ([when to clone](README.md#when-to-clone)) | Confirm the SQL version will run on each OS hop ([DBA matrix](DBA.md#4-sql-server-on-windows-server)). Full backups of all databases, system databases included |
+| **2** | **Clone: uncertain paths only** | Clone the production VM, isolate it, run every hop, timed; record the steps and problems on the server page | Quick SQL check after each hop on the clone |
+| **3** | **Change window on production** | **Snapshot before each hop.** Run the hops | Final backups before the first hop |
+| **4** | **Harden after the last hop** | SMBv1 off, TLS 1.2+ only, NTLMv1 refused, old roles and agents reviewed. Activation (KMS or MAK). RDP checked. **SQL services start** | |
+| **5** | **OS hand-off to the DBA** | Record on the server page: final OS version, hardening done, snapshots kept, anything unusual seen. Tell the DBA | **Accepts the server. From here, the DBA is responsible** |
+| **6** | **SQL to a newer version** | Available for OS issues | SQL upgrade in place, or a new instance on the same server, then data validation and app test ([DBA §6.1](DBA.md#61-in-place-upgrade-step-by-step)) |
+| **7** | **Clean up after Gate 3** | Delete the snapshots; remove `Windows.old` with Disk Cleanup | |
 
-**Rollback:** revert to the snapshot taken before the failed hop. The clone run tells you how long each hop takes, so the change window is sized from it.
+**Rollback:** revert to the snapshot taken before the failed hop. If a clone was used, its timings size the change window.
 
 > [!NOTE]
 > **An in-place upgrade doesn't create a new server, so there's no Phase 2 build** in the usual sense. Phase 2 becomes **preparing the source** (step 1), and the hardening in step 6 replaces the standard build's security settings.
@@ -255,7 +262,8 @@ Details and commands: [governance §1.2 – 1.5](README.md#12-server-platform-id
 
 ### Phase 3 · Migration
 
-- [ ] **Clone and isolate** the production VM, then **rehearse** the server-side steps on it, timed ([clone-first](README.md#clone-first-procedure))
+- [ ] **If the path is uncertain:** clone and isolate the production VM, and rehearse the OS steps on it, timed ([when to clone](README.md#when-to-clone))
+- [ ] **OS in-place upgrade** on production (snapshot per hop), hardening, then the **OS hand-off to the DBA**, recorded on the server page
 - [ ] File shares: **robocopy** with `/COPYALL`, a preliminary pass days before, then a final delta during the freeze
 - [ ] Scheduled tasks enabled on the target, disabled on the source
 - [ ] **MFT flows** switched over and tested with each partner; FTP service on the old server stopped

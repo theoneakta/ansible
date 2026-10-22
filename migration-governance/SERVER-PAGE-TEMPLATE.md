@@ -119,7 +119,8 @@ Only for items that can't be fixed during the migration. Each one needs an end d
 
 | | |
 |---|---|
-| **Method** | *[Side-by-side · in-place OS · backup/restore · log shipping · consolidation]* |
+| **Method** | *[In-place (1st choice) · side-by-side (2nd) · consolidation]* |
+| **Path certainty** | *[Proven (lab or earlier server) · Uncertain → clone first]* |
 | **Path** | *[e.g. SQL 2005 → 2016 (hop) → 2022 · Windows 2008 R2 → new 2022 server]* |
 | **File transfers** | *[FTP flows → Kiteworks (MFT): list the flows]* |
 | **Credentials** | *[Passwords found in files → vault; service accounts → gMSA where possible]* |
@@ -142,7 +143,10 @@ Only for items that can't be fixed during the migration. Each one needs an end d
 
 | Step | Status | Owner | Notes |
 |---|---|---|---|
-| Server built to the standard (OS, patches, OU, agents) | Not started | | |
+| *In-place:* clone run, **only if the path is uncertain** | Not started · N/A | Sysadmin | *[proven or uncertain, and why]* |
+| *In-place:* OS upgrade and hardening | Not started | Sysadmin | *[OS hops, snapshots]* |
+| *In-place:* **OS hand-off to the DBA** | Not started | Sysadmin → DBA | *[date]* · from here the DBA is responsible |
+| *Side-by-side:* server built to the standard (OS, patches, OU, agents) | Not started | Sysadmin | |
 | SQL installed and configured to the standard | Not started | | |
 | Firewall rules and certificates | Not started | | |
 | Kiteworks (MFT) flows set up | Not started | | |
