@@ -8,7 +8,8 @@
   <a href="#3-hand-offs-with-the-dba"><b>Hand-offs</b></a> &nbsp;·&nbsp;
   <a href="#4-target-platform"><b>Target platform</b></a> &nbsp;·&nbsp;
   <a href="#5-windows-in-place-upgrade-paths"><b>In-place paths</b></a> &nbsp;·&nbsp;
-  <a href="#6-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
+  <a href="#6-options-after-discovery"><b>In-place · retire</b></a> &nbsp;·&nbsp;
+  <a href="#7-tasks-by-phase"><b>Tasks by phase</b></a> &nbsp;·&nbsp;
   <a href="README.md"><b>Big picture</b></a>
 </p>
 
@@ -151,7 +152,79 @@ Full runbook, commands and logs: [legacy-migration runbook](../legacy-migration/
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
-## 6. Tasks by phase
+## 6. Options after Discovery
+
+Discovery ends with **one of three options** for each server, decided at Gate 1 ([governance §1.10](README.md#110-disposition-migrate-consolidate-or-retire)):
+
+```mermaid
+flowchart LR
+    D["Discovery<br/>results"] --> U{"Is the server<br/>still used?"}
+    U -- "no" --> R["<b>Retire</b><br/>6.2"]
+    U -- "yes" --> P{"In-place path<br/>exists? (section 5)"}
+    P -- "yes" --> I["<b>1st: in-place upgrade</b><br/>6.1 · clone first"]
+    P -- "no" --> S["<b>2nd: side-by-side</b><br/>new server"]
+    I -- "clone test fails" --> S
+
+    classDef q fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef first fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef second fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    classDef retire fill:#f6e7d8,stroke:#a8692e,color:#3a220d
+    class U,P q
+    class I first
+    class S second
+    class R retire
+```
+
+### 6.1 In-place upgrade, step by step
+
+**What it is:** Windows is upgraded **on the same server**: same name, IP, data, shares, scheduled tasks and installed software. Nothing has to be moved, which is why it's the first choice. **The sysadmin runs the OS hops; the DBA checks SQL before and after each hop.**
+
+| # | Step | Sysadmin | DBA |
+|:-:|---|---|---|
+| **1** | **Prepare** | Check the path (5.1), media (not Evaluation, same edition and language), licences, free disk (40 GB+), CPU (x86-64-v2 for 2025). Patch the source fully | Confirm the SQL version will run on each OS hop ([DBA matrix](DBA.md#4-sql-server-on-windows-server)). Full backups of all databases, system databases included |
+| **2** | **Clone and isolate** | Clone the production VM; isolate it (no production network) | |
+| **3** | **Rehearse on the clone** | Run every hop, timed. Note every prompt and problem | After each hop: SQL services up, error log clean, `DBCC CHECKDB`, app test |
+| **4** | **Record the runbook** | Steps, timings, problems and fixes on the server page | SQL checks and their results on the server page |
+| **5** | **Change window on production** | **Snapshot before each hop.** Run the same steps | Final backups before the first hop; the same SQL checks after each hop |
+| **6** | **Harden after the last hop** | SMBv1 off, TLS 1.2+ only, NTLMv1 refused, old roles and agents reviewed. Activation (KMS or MAK). RDP checked | Confirm the SQL clients still connect after the TLS change (SQL 2005 clients need TLS 1.0) |
+| **7** | **If SQL can't stay** | | Old SQL version on the new OS (e.g. SQL 2005 on 2025): install a new SQL 2022 / 2025 instance on the same server and restore the databases into it ([DBA §6.1](DBA.md#61-in-place-upgrade-step-by-step)) |
+| **8** | **Accept and clean up** | Keep the snapshots until the app owner accepts (Gate 3), then delete them. Remove `Windows.old` with Disk Cleanup | |
+
+**Rollback:** revert to the snapshot taken before the failed hop. The clone run tells you how long each hop takes, so the change window is sized from it.
+
+> [!NOTE]
+> **An in-place upgrade doesn't create a new server, so there's no Phase 2 build** in the usual sense. Phase 2 becomes **preparing the source** (step 1), and the hardening in step 6 replaces the standard build's security settings.
+
+### 6.2 Retire: when Discovery shows the server isn't used
+
+If nobody and nothing uses the server any more, it **isn't migrated at all**. It goes straight to Phase 4 on the **retire-only path** ([governance, retire-only path](README.md#retire-only-path)).
+
+**Evidence the sysadmin brings to Gate 1:**
+
+| Check | "Not used" looks like |
+|---|---|
+| Inbound connections during the capture week | **None**, apart from monitoring, backup and admin tools |
+| SMB sessions and open files | **None** on the shares |
+| Interactive and service logons (Security log) | Only admins and service accounts |
+| FTP logs | **No transfers** in the retained logs |
+| Scheduled tasks | Only maintenance (cleanup, defrag, backup); no business jobs, or the jobs' output isn't used by anyone |
+| IIS logs (if any) | No requests, or only health checks |
+| DNS aliases pointing to it | None, or the systems that use them confirmed retired |
+| Monthly or quarterly jobs | Each one checked with its owner: not needed |
+
+> [!IMPORTANT]
+> **The sysadmin brings the evidence; the app owner decides.** "No connections in a week" isn't proof on its own. The app owner confirms in writing that the service is no longer needed and decides what happens to the data.
+
+**Sysadmin tasks on the retire-only path:**
+- [ ] Announce the retirement date and a contact to the users and teams found in Discovery
+- [ ] Carry out the data decision for the file shares (archive, hand over, or delete under the retention policy), after a last full backup
+- [ ] **Scream test:** stop the services or disable the NIC, so it can be undone in minutes. **At least 4 weeks, including a month-end**
+- [ ] If someone is affected: re-enable, record the missed dependency, and go back to Gate 1
+- [ ] If nobody is affected: wait for the DBA's confirmation (if SQL is on it), power off, then the removal checklist (section 7, Phase 4)
+
+<p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
+
+## 7. Tasks by phase
 
 ### Phase 1 · Discovery
 

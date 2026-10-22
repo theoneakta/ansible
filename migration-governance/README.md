@@ -738,6 +738,8 @@ Discovery often shows that a server, or some of its databases and shares, no lon
 
 A server can also be **split**: for example, migrate two databases and retire the rest. Record each part's disposition in the decision log.
 
+What each role does for each option, including the **evidence that a server or database isn't used** and the **in-place upgrade step by step**: [Sysadmin guide §6](SYSADMIN.md#6-options-after-discovery) · [DBA guide §6](DBA.md#6-options-after-discovery).
+
 > [!IMPORTANT]
 > **Retire is a business decision.** The **app owner** is accountable, and has to confirm in writing that the service is no longer needed and what happens to its data. The sysadmin and DBA provide the evidence.
 
