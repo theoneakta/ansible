@@ -33,7 +33,7 @@ This guide sets out **who does what, what to collect, what to decide, and when a
 
 | | In scope | Out of scope |
 |---|---|---|
-| **Platforms** | Windows Server 2003, 2003 R2, 2008, 2008 R2, 2012, 2012 R2, 2016, 2019 | Desktop and endpoint migration |
+| **Platforms** | Windows Server 2003, 2008, 2008 R2, 2012, 2012 R2, 2016, 2019 | Desktop and endpoint migration |
 | **Databases** | SQL Server 2000, 2005, 2008, 2008 R2, 2012, 2014, 2016, 2017, 2019 (instances, databases, jobs, packages) | Application code changes (tracked by the app team) |
 | **Services** | File shares, FTP, IIS, scheduled jobs, print, legacy protocols | Network redesign and firewall policy (consulted, not owned) |
 | **Data** | Live data, unused or stale data, backups, retention | Records-management policy (owned by the data owner) |
@@ -48,7 +48,7 @@ This guide sets out **who does what, what to collect, what to decide, and when a
 
 | Version | Extended support ended / ends |
 |---|---|
-| 2003 / 2003 R2 | 2015-07-14 · **out** |
+| 2003 | 2015-07-14 · **out** |
 | 2008 / 2008 R2 | 2020-01-14 · **out** |
 | 2012 / 2012 R2 | 2023-10-10 · **out** |
 | 2016 | 2027-01-12 · **within 3 months** |
@@ -364,7 +364,7 @@ Whichever script you use, it has to run on the server's PowerShell version. The 
 
 | Source OS | PowerShell | What this means |
 |---|---|---|
-| **2003 / 2003 R2** | None by default (2.0 only if WMF 2.0 / KB968930 was installed) | Run discovery **remotely** from a modern admin box over WMI/DCOM (`Get-WmiObject -ComputerName`), or locally with `wmic`, `netstat`, `reg query`, `net share` and `schtasks`. Don't install software just to discover the server. |
+| **2003** | None by default (2.0 only if WMF 2.0 / KB968930 was installed) | Run discovery **remotely** from a modern admin box over WMI/DCOM (`Get-WmiObject -ComputerName`), or locally with `wmic`, `netstat`, `reg query`, `net share` and `schtasks`. Don't install software just to discover the server. |
 | **2008** | 1.0 (feature); 2.0 via WMF | **PowerShell 2.0 only**: no `Get-CimInstance`, no `ConvertTo-Json`, no `Get-SmbShare`. Use `Get-WmiObject` and `Export-Csv`. |
 | **2008 R2** | 2.0 | Same as 2008. WinRM 2.0 may need its listener configured. The default execution policy is `Restricted`. |
 | **2012** | 3.0 | CIM and the SMB cmdlets (`Get-SmbServerConfiguration`, `Get-SmbSession`, `Get-SmbOpenFile`) are available. `Get-ScheduledTask` too. |
