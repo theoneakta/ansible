@@ -94,6 +94,7 @@ flowchart LR
     G2 --> M["<b>3 · Migration</b><br/>rehearse, cut over, validate"] --> G3{{"Gate 3<br/>App owner"}}
     G3 --> X["<b>4 · Decommissioning</b><br/>quiet period, retire"] --> G4{{"Gate 4<br/>Migration lead"}}
     G1 -. "RED flag open" .-> D
+    G1 == "RETIRE<br/>(no migration)" ==> X
     G3 -. "rollback" .-> M
 
     classDef phase fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
@@ -101,6 +102,8 @@ flowchart LR
     class D,I,M,X phase
     class G1,G2,G3,G4 gate
 ```
+
+Gate 1 records one **disposition** for each server: **migrate** (Phases 2 → 3 → 4), **consolidate** (move its workload onto an existing server, then Phases 3 → 4), or **retire** (straight to Phase 4, see [Retire-only path](#retire-only-path)).
 
 | # | Phase | Ends when | Gate owner | Typical duration |
 |:-:|---|---|---|---|
@@ -133,6 +136,7 @@ flowchart LR
 | Discover legacy protocols (SMBv1, FTP, TLS, NTLMv1) | **R** | C | I | A | C |
 | Confirm the dependency list | R | R | **A** | C | |
 | Review output and decide on flags | R | R | C | **A** | C |
+| Decide the disposition (migrate · consolidate · retire) | C | C | **A** | R | I |
 | ***Phase 2: Install & configure*** | | | | | |
 | Build and harden the target OS | **R/A** | I | | I | C |
 | Install and configure SQL | C | **R/A** | | I | |
@@ -617,6 +621,21 @@ WHERE s.freq_type IN (16, 32);
 </td></tr>
 </table>
 
+### 1.10 Disposition: migrate, consolidate or retire
+
+Discovery often shows that a server, or some of its databases and shares, no longer needs to move. Decide this **before** building anything.
+
+| Disposition | Typical evidence from Discovery | Next phase |
+|---|---|---|
+| **Migrate** | Active users and connections, the app is still needed | Phase 2 |
+| **Consolidate** | Light workload that fits on an existing supported server or instance | Phase 3 (target already exists) |
+| **Retire** | No meaningful connections, no scheduled jobs that matter, the app is replaced or no longer used | **Phase 4**, retire-only path |
+
+A server can also be **split**: for example, migrate two databases and retire the rest. Record each part's disposition in the decision log.
+
+> [!IMPORTANT]
+> **Retire is a business decision.** The **app owner** is accountable, and has to confirm in writing that the service is no longer needed and what happens to its data. The sysadmin and DBA provide the evidence.
+
 ### Gate 1 · Discovery complete
 
 - [ ] Server and SQL scripts ran from the **approved repository version** (version recorded in the summary)
@@ -625,7 +644,9 @@ WHERE s.freq_type IN (16, 32);
 - [ ] Summary **reviewed by** the sysadmin ______ and the DBA ______ on ______
 - [ ] Every RED flag has an owner and a logged decision
 - [ ] App owner has **confirmed the dependencies** and the unused-data candidates
-- [ ] Target platform and path chosen (OS and SQL versions, number of hops, in-place or side-by-side)
+- [ ] **Disposition recorded** for the server (and for each database or share, if split): migrate · consolidate · retire
+- [ ] If migrating: target platform and path chosen (OS and SQL versions, number of hops, in-place or side-by-side)
+- [ ] If retiring: **app owner's written confirmation** that the service is no longer needed, plus a decision on the data
 - [ ] **Migration lead sign-off:** ______ on ______
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
@@ -755,6 +776,31 @@ flowchart LR
 - [ ] Server **powered off, not deleted**, for the agreed wait
 - [ ] Final full backup (server + databases) kept per retention policy, with a **restore test**
 
+### Retire-only path
+
+Use this path for a server whose disposition at Gate 1 was **retire**. There is no new server and no Gate 3, so nothing has been tested in practice yet. The **scream test** takes the place of that validation.
+
+```mermaid
+flowchart LR
+    A["Gate 1<br/>disposition: RETIRE"] --> B["Announce<br/>date + contact"] --> C["Data decision<br/>carried out<br/>(archive or hand over)"] --> D["Scream test<br/>disable, don't delete<br/>covers a month-end"] --> E{"Anyone<br/>affected?"}
+    E -- "yes" --> F["Re-enable,<br/>back to Gate 1<br/>(new disposition)"]
+    E -- "no" --> G["Power off,<br/>final backup,<br/>removal checklist"] --> H["Gate 4"]
+
+    classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef bad fill:#f6dcdc,stroke:#a33,color:#3a0d0d
+    classDef good fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    class A,B,C,D,G step
+    class F bad
+    class H good
+```
+
+- [ ] **Announce** the retirement date and a contact to users and dependent teams (as found in Discovery)
+- [ ] **Data:** what the app owner decided is carried out first: archived to the agreed location, handed over, or deleted under the retention policy. A last full backup is taken before anything is deleted.
+- [ ] **SQL:** each database is set **offline**, not dropped, so it can come back in minutes
+- [ ] **Scream test:** disable the service in a way that can be undone in minutes (stop the services, disable the NIC, or shut down the VM). Keep it disabled for **at least 4 weeks, including a month-end**, with the change ticket and contact visible.
+- [ ] If someone is affected: re-enable the server, record the missed dependency, and **go back to Gate 1** with a new disposition
+- [ ] If nobody is affected: continue with the final backup and the removal checklist below
+
 **Removal checklist:**
 
 <table>
@@ -784,7 +830,8 @@ flowchart LR
 
 ### Gate 4 · Retired
 
-- [ ] No connections seen during the quiet period
+- [ ] No connections seen during the quiet period, or **no one affected during the scream test** (retire-only path)
+- [ ] Retire-only: data decision carried out and confirmed by the app owner
 - [ ] Final backup kept, with the restore test recorded
 - [ ] Removal checklist complete
 - [ ] VM or hardware deleted or disposed of per policy (disks wiped)
@@ -825,6 +872,8 @@ SIGNED: <name>                               DATE: 2026-11-06
 | **Flag** | A finding that needs a decision (RED) or a plan (AMBER) |
 | **Quiet period** | Time after cut-over when the old server stays up and is watched for missed dependencies |
 | **Hop** | An intermediate version needed because the source can't go straight to the target |
+| **Disposition** | The Gate 1 decision for a server or part of one: migrate, consolidate or retire |
+| **Scream test** | Disabling a server that's being retired, in a way that can be quickly undone, to find out whether anyone still depends on it |
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
