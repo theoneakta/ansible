@@ -11,6 +11,7 @@
   <a href="#4-daily-workflow-on-develop"><b>Daily workflow</b></a> &nbsp;·&nbsp;
   <a href="#5-copilot"><b>Copilot</b></a> &nbsp;·&nbsp;
   <a href="#6-checklist-before-you-push"><b>Checklist</b></a> &nbsp;·&nbsp;
+  <a href="#7-target-fewer-scripts-owned-by-the-enterprise"><b>Target: fewer scripts</b></a> &nbsp;·&nbsp;
   <a href="README.md"><b>Governance guide</b></a>
 </p>
 
@@ -36,7 +37,7 @@ Many of us already have discovery scripts that work. There's no need to rewrite 
 | **4** | **No secrets.** No passwords in scripts, config files or output. Credentials come from the vault or `Get-Credential` at run time | Security requirement |
 | **5** | **In the repository first.** The version that runs on production is in the repository, and its version or commit is recorded in the summary | Answers "what ran on this server, with admin rights?" |
 
-How a script is written (style, structure, language, tool) is **up to its author**.
+How a script is written (style, structure, language, tool) is **up to its author**. This is the **starting point**. The wanted path is a few standard scripts owned by the teams ([section 7](#7-target-fewer-scripts-owned-by-the-enterprise)).
 
 > [!TIP]
 > **Already have a script?** Usually it only needs an **export step at the end** that writes the standard CSV names and the flag summary. That's often a short job, and Copilot can help ([section 5](#5-copilot)).
@@ -555,6 +556,84 @@ GitHub Copilot in VS Code reads this file from the repository automatically. It 
 - [ ] No warnings from PSScriptAnalyzer (shown in VS Code's **Problems** panel, `Ctrl+Shift+M`), or each one understood
 - [ ] No output files or credentials staged (check the Source Control list)
 - [ ] Clear commit message: `<area>: what changed`
+
+<p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
+
+## 7. Target: fewer scripts, owned by the enterprise
+
+**Bring your own script is the starting point, not the end state.** The wanted path is a **small set of standard scripts, owned by the teams rather than by individuals**, built from the best parts of everyone's work.
+
+### 7.1 Why
+
+| Today: many personal scripts | Target: a few enterprise-owned scripts |
+|---|---|
+| Each script depends on its author; if that person moves on, nobody maintains it | **Owned by a team**, with at least two maintainers per script |
+| Same checks written several times, slightly differently | **One implementation** per check, improved by everyone |
+| Results differ slightly from one script to another | **Identical output** for every server, so comparisons are easy |
+| Hard to tell what ran on production | **Released, versioned and signed** scripts: the version is in every summary |
+| Each new bundle needs several scripts adapted | One change, made once, applies to every bundle |
+
+### 7.2 The path
+
+```mermaid
+flowchart LR
+    A["<b>1 · Collect</b><br/>everyone's scripts<br/>in the repository"] --> B["<b>2 · Compare</b><br/>catalogue: who covers<br/>what, on which versions"] --> C["<b>3 · Converge</b><br/>a few standard scripts,<br/>best parts merged in"] --> D["<b>4 · Enterprise-owned</b><br/>team ownership, releases,<br/>signing, central feed"]
+
+    classDef now fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef target fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    class A now
+    class B,C,D target
+```
+
+| Stage | What happens | Done when |
+|---|---|---|
+| **1 · Collect** *(now)* | Everyone pushes the scripts they use to `develop`, following the five rules (section 1) | Every script that ran in a bundle is in the repository |
+| **2 · Compare** | Build a **catalogue**: script, author, what it covers, OS and SQL versions supported, standard output yes or no. Review the overlaps in the **tech discussion** | Each Discovery checklist item has a "best current implementation" |
+| **3 · Converge** | Build the **standard set** (7.3) from the best parts. **Authors are credited** in the script header and the changelog, and invited to become maintainers. A personal script moves to `archive/` **only once the standard set covers everything it did** | Bundles run on the standard set |
+| **4 · Enterprise-owned** | Team ownership (7.4), pull requests, released versions on `main`, code signing, and a central package feed | Production runs **only released, signed versions** |
+
+### 7.3 The standard set
+
+Around **four** maintained scripts or modules instead of one per person:
+
+| Script / module | Owning team | Covers |
+|---|---|---|
+| **Server discovery** | Windows team | Platform, identity, software, tasks, network, certificates, **legacy protocols**, **FTP flows**, files and shares |
+| **SQL discovery** | DBA team | Instance, databases, jobs, security, activity capture and **audit options** for each SQL version |
+| **Common** | Both teams | Standard CSV output, flag summary, scheduled connection capture, logging |
+| **Output check** | Both teams | Checks a SharePoint folder for missing files or columns before Gate 1 |
+
+Specific needs that don't fit the standard set can stay as **extensions** in the repository, using the common module for their output.
+
+### 7.4 Who owns what
+
+| Role | Who | Responsibility |
+|---|---|---|
+| **Owning team** | Windows team (server script), DBA team (SQL script) | Decides what the script does; accountable for its quality |
+| **Maintainers** | **Two per script**: a primary and a backup | Review and merge changes, publish releases, keep the changelog |
+| **Contributors** | Anyone | Propose changes through a pull request |
+| **Tech lead** | | Approves the catalogue decisions (stage 2) and the move to stage 4 |
+
+### 7.5 Rules once the scripts are enterprise-owned
+
+- **Changes go through a pull request** to `develop`, approved by one maintainer. In Azure DevOps, a branch policy with **required reviewers** on each script's folder enforces this.
+- **Releases go to `main`** with a version tag (for example `v1.4.0`) and a changelog entry ([4.8](#48-later-feature-branches-and-pull-requests)).
+- **Scripts are signed** with the company code-signing certificate, so the PowerShell execution policy can require signed scripts.
+- **Published as a PowerShell module** to an internal feed (for example Azure Artifacts), so every admin workstation installs the same released version.
+- **Bundles run released versions only**; `develop` is for work in progress.
+- Every flag summary records the **released version** used.
+
+### 7.6 How we'll know it's working
+
+| Measure | Target |
+|---|---|
+| Discovery scripts in active use | **4 or fewer** |
+| Servers discovered with the standard set | **100%** of a bundle |
+| Maintainers per script | **2 or more** |
+| Time to adapt the scripts for a new bundle | Going down from bundle to bundle |
+
+> [!NOTE]
+> **Nobody's work is thrown away.** The standard set is built from the scripts the team already wrote, and their authors are credited. Personal scripts stay usable until the standard set covers what they do.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
