@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Migration Governance: Windows Server 2003/2008 and SQL Server 2000/2005/2008" width="100%">
+  <img src="assets/banner.svg" alt="Migration Governance: Windows Server 2003 to 2019 and SQL Server 2000 to 2019" width="100%">
 </p>
 
 <p align="center">
@@ -29,10 +29,45 @@ This guide sets out **who does what, what to collect, what to decide, and when a
 
 | | In scope | Out of scope |
 |---|---|---|
-| **Platforms** | Windows Server 2003, 2003 R2, 2008, 2008 R2 | Desktop and endpoint migration |
-| **Databases** | SQL Server 2000, 2005, 2008, 2008 R2 (instances, databases, jobs, packages) | Application code changes (tracked by the app team) |
+| **Platforms** | Windows Server 2003, 2003 R2, 2008, 2008 R2, 2012, 2012 R2, 2016, 2019 | Desktop and endpoint migration |
+| **Databases** | SQL Server 2000, 2005, 2008, 2008 R2, 2012, 2014, 2016, 2017, 2019 (instances, databases, jobs, packages) | Application code changes (tracked by the app team) |
 | **Services** | File shares, FTP, IIS, scheduled jobs, print, legacy protocols | Network redesign and firewall policy (consulted, not owned) |
 | **Data** | Live data, unused or stale data, backups, retention | Records-management policy (owned by the data owner) |
+
+### Support status: what to migrate first
+
+<sub>Microsoft extended support end dates. Anything already out of support goes first, starting with the oldest.</sub>
+
+<table>
+<tr><th width="50%">Windows Server</th><th width="50%">SQL Server</th></tr>
+<tr valign="top"><td>
+
+| Version | Extended support ended / ends |
+|---|---|
+| 2003 / 2003 R2 | 2015-07-14 · **out** |
+| 2008 / 2008 R2 | 2020-01-14 · **out** |
+| 2012 / 2012 R2 | 2023-10-10 · **out** |
+| 2016 | 2027-01-12 · **within 3 months** |
+| 2019 | 2029-01-09 |
+
+</td><td>
+
+| Version | Extended support ended / ends |
+|---|---|
+| 2000 | 2013-04-09 · **out** |
+| 2005 | 2016-04-12 · **out** |
+| 2008 / 2008 R2 | 2019-07-09 · **out** |
+| 2012 | 2022-07-12 · **out** |
+| 2014 | 2024-07-09 · **out** |
+| 2016 | 2026-07-14 · **out** |
+| 2017 | 2027-10-12 |
+| 2019 | 2030-01-08 |
+
+</td></tr>
+</table>
+
+> [!NOTE]
+> Servers and instances on extended security updates (ESU) or Azure-hosted extensions still count as **out of support** for planning purposes.
 
 ### Why this exists
 
@@ -67,7 +102,7 @@ flowchart LR
 
 | # | Phase | Ends when | Gate owner | Typical duration |
 |:-:|---|---|---|---|
-| **1** | Discovery | The current state is known and reviewed, and every red flag has a decision | Migration lead | 3–5 weeks (includes a 2–4 week capture) |
+| **1** | Discovery | The current state is known and reviewed, and every red flag has a decision | Migration lead | **1 week** (scripted collection + 4-day capture + review) |
 | **2** | Install & configure | The target is built to standard, hardened and smoke-tested | Migration lead | 1–2 weeks |
 | **3** | Migration | A rehearsal is done, cut-over is complete, data is validated and the app owner has accepted | **App owner** | 1–3 weeks |
 | **4** | Decommissioning | Quiet period with no connections, final backup taken, server removed everywhere | Migration lead | 4–8 weeks (mostly waiting) |
@@ -91,7 +126,7 @@ flowchart LR
 | ***Phase 1: Discovery*** | | | | | |
 | Run the server discovery script | **R/A** | I | | I | |
 | Run the SQL discovery script | C | **R/A** | | I | |
-| Long-running connection capture | R | R | I | **A** | |
+| Scheduled connection capture (during the week) | R | R | I | **A** | |
 | Discover files, shares and unused data | **R** | | C | A | |
 | Discover legacy protocols (SMBv1, FTP, TLS, NTLMv1) | **R** | C | I | A | C |
 | Confirm the dependency list | R | R | **A** | C | |
@@ -189,35 +224,46 @@ Raw data is for evidence; **the summary is what gets read**. Every script writes
 
 > **Goal:** know everything that **runs on**, **connects to**, or **depends on** the server **before** anything is built or moved.
 
+Discovery is **scripted**, so it takes **one week** per server or batch of servers. The scripts collect everything on day 1. A scheduled capture records connections for the rest of the week, and the review and decisions happen at the end of the week.
+
 ```mermaid
 gantt
     dateFormat  YYYY-MM-DD
-    axisFormat  W%W
-    title Typical Discovery timeline for one server
+    axisFormat  %a
+    title Discovery in one week (scripted)
     section Sysadmin
-    Server and protocol scripts      :s1, 2026-11-02, 3d
-    Files, shares and unused data    :s2, after s1, 4d
+    Server, protocol and file scripts        :s1, 2026-11-02, 1d
     section DBA
-    Instance and database scripts    :d1, 2026-11-02, 3d
-    section Capture (both)
-    Connection and activity capture  :c1, 2026-11-02, 21d
+    Instance and database scripts            :d1, 2026-11-02, 1d
+    section Capture (scheduled)
+    Connections and activity every 5-15 min  :c1, 2026-11-02, 4d
     section Review
-    Flag review and decisions        :r1, after c1, 4d
-    App owner confirms dependencies  :r2, after c1, 5d
-    Gate 1                           :milestone, g1, after r2, 0d
+    Flag review and decisions                :r1, 2026-11-04, 2d
+    App owner confirms dependencies          :r2, 2026-11-05, 2d
+    Gate 1                                   :milestone, g1, 2026-11-06, 0d
 ```
 
-### 1.1 Tooling limits on legacy servers
+> [!IMPORTANT]
+> **A one-week capture doesn't see monthly or quarterly activity.** Cover that with the **schedules**:
+> - Read every scheduled task and SQL Agent job schedule, and list anything that runs monthly, quarterly or yearly. Each one gets an owner to confirm what it connects to.
+> - Ask the app owner about month-end, quarter-end and year-end processes.
+> - The **Phase 4 quiet period** (2–4 weeks, with the capture still running on the old server) is the safety net for anything missed.
+
+### 1.1 Tooling per source version
+
+One script covers every version. Its core is **PowerShell 2.0 compatible**, and it uses the newer cmdlets only when `$PSVersionTable.PSVersion.Major -ge 3`.
 
 | Source OS | PowerShell | What this means |
 |---|---|---|
 | **2003 / 2003 R2** | None by default (2.0 only if WMF 2.0 / KB968930 was installed) | Run discovery **remotely** from a modern admin box over WMI/DCOM (`Get-WmiObject -ComputerName`), or locally with `wmic`, `netstat`, `reg query`, `net share` and `schtasks`. Don't install software just to discover the server. |
-| **2008** | 1.0 (feature); 2.0 via WMF | Scripts must be **PowerShell 2.0 compatible**: no `Get-CimInstance`, no `ConvertTo-Json`, no `Get-SmbShare`. Use `Get-WmiObject` and `Export-Csv`. |
+| **2008** | 1.0 (feature); 2.0 via WMF | **PowerShell 2.0 only**: no `Get-CimInstance`, no `ConvertTo-Json`, no `Get-SmbShare`. Use `Get-WmiObject` and `Export-Csv`. |
 | **2008 R2** | 2.0 | Same as 2008. WinRM 2.0 may need its listener configured. The default execution policy is `Restricted`. |
-| **2012 R2+** (targets) | 4.0+ | Full cmdlets: `Get-SmbServerConfiguration`, `Get-SmbOpenFile`, CIM. |
+| **2012** | 3.0 | CIM and the SMB cmdlets (`Get-SmbServerConfiguration`, `Get-SmbSession`, `Get-SmbOpenFile`) are available. `Get-ScheduledTask` too. |
+| **2012 R2** | 4.0 (5.1 with WMF 5.1) | Same as 2012. Remoting is on by default. |
+| **2016 / 2019** | 5.1 | Full cmdlets, including the **SMBv1 access audit** (`Set-SmbServerConfiguration -AuditSmb1Access $true`). |
 
 > [!TIP]
-> **dbatools** needs a modern PowerShell. Run it from an **admin workstation** against the old instance, never on the legacy server. Most read commands still work against SQL 2000 and 2005.
+> **dbatools** needs a modern PowerShell. Run it from an **admin workstation** against every instance, never on the server itself. Most read commands work from SQL 2000 to 2019, so one DBA script covers the whole estate.
 
 ### 1.2 Server: platform, identity and software
 
@@ -289,7 +335,7 @@ at
 - [ ] DNS records and **aliases (CNAMEs)** that point at this server
 - [ ] `hosts` and `lmhosts` entries
 - [ ] Listening ports mapped to processes (`netstat -ano` + `tasklist /svc`)
-- [ ] **Inbound and outbound connections over time.** A single `netstat` misses monthly and quarterly jobs. Capture every 5–15 minutes for **2–4 weeks**, including a month-end.
+- [ ] **Inbound and outbound connections over time.** The script schedules a capture every 5–15 minutes for the **Discovery week**. Cover monthly and quarterly jobs from the task and job **schedules** (see the note above).
 - [ ] Firewall rules here and upstream, plus **IP allow-lists on other systems** that name this server
 - [ ] Hard-coded IPs and UNC paths in app configs
 - [ ] Certificates: subject, SAN, expiry, issuer, **exportable private key?** SHA-1 or 1024-bit keys won't be accepted on modern targets.
@@ -299,14 +345,14 @@ at
 
 These are the items most likely to **break during or after migration**, because modern Windows disables them or doesn't install them.
 
-| Item | How to check on 2003 / 2008 | Why it matters |
+| Item | How to check | Why it matters |
 |---|---|---|
-| **SMBv1 server** | 2003 only speaks SMBv1. On 2008 / 2008 R2: registry `HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters` → `SMB1` (missing = enabled) | Server 2019+ doesn't install SMBv1. Plan as if it can't be used. |
-| **SMBv1 clients** | 2003 and 2008 have no SMBv1 audit. Record `net session` and `net file` over time, then identify each client: XP, 2003, **scanners and MFPs, NAS, embedded devices, old Samba** | These clients can't reach a modern file server. Each needs an upgrade, firmware, or a decision. |
-| **SMBv1 as a client** | `HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10` → `Start` | The app may pull files from an old NAS or device that only speaks SMBv1. |
-| **FTP server** | IIS 6 FTP (`MSFTPSVC`), IIS 7.5 FTP (`FTPSVC`), FileZilla, Serv-U, WS_FTP. Check services, listeners on 21 or other ports, site config, logs in `%windir%\system32\LogFiles\MSFTPSVC*` | Clear-text passwords, anonymous access, partners or devices that drop files. Find **who** connects (from the logs) and **what** processes the files. |
+| **SMBv1 server** | **2003:** only speaks SMBv1. **2008 / 2008 R2:** registry `HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters` → `SMB1` (missing = enabled). **2012+:** `Get-SmbServerConfiguration` → `EnableSMB1Protocol`. Enabled by default up to **2016**; not installed on a clean **2019**, but **kept on a 2019 upgraded in place** | Plan the target as if SMBv1 can't be used. |
+| **SMBv1 clients** | **2003 / 2008:** no audit. Record `net session` and `net file` during the capture. **2012 / 2012 R2:** `Get-SmbSession` shows the `Dialect` (1.x = SMBv1). **2016 / 2019:** enable `AuditSmb1Access` and read event **3000** in `Microsoft-Windows-SMBServer/Audit`. Then identify each client: XP, 2003, **scanners and MFPs, NAS, embedded devices, old Samba** | These clients can't reach a modern file server. Each needs an upgrade, firmware, or a decision. |
+| **SMBv1 as a client** | **2008 / 2008 R2:** `HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10` → `Start`. **2012+:** same, or the `SMB1Protocol` feature state | The app may pull files from an old NAS or device that only speaks SMBv1. |
+| **FTP server** | IIS 6 FTP (`MSFTPSVC`, 2003). IIS 7.5–10 FTP (`FTPSVC`, 2008 R2–2019, logs in `%SystemDrive%\inetpub\logs\LogFiles\FTPSVC*`). FileZilla, Serv-U, WS_FTP. Check services, listeners on 21 or other ports, and site config | Clear-text passwords, anonymous access, partners or devices that drop files. Find **who** connects (from the logs) and **what** processes the files. |
 | **FTP clients** | Scheduled tasks and scripts that call `ftp.exe -s:<file>`, WinSCP or `curl`. Read the `-s:` file for the host and **credentials** | Hidden outbound dependencies with stored passwords |
-| **TLS / SSL** | `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols`. 2003 can't do TLS 1.1 or 1.2; 2008 R2 only does them if enabled | Partners and clients that only speak SSL3 or TLS 1.0 will fail. |
+| **TLS / SSL** | `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols`. **2003:** no TLS 1.1 or 1.2. **2008 R2:** TLS 1.1/1.2 only if enabled. **2012–2019:** TLS 1.2 is available, but **TLS 1.0 and 1.1 are still on by default**. Check .NET `SchUseStrongCrypto` too | Partners and clients that only speak SSL3 or TLS 1.0 will fail against a hardened target. |
 | **NTLMv1 / LM** | `HKLM\SYSTEM\CurrentControlSet\Control\Lsa` → `LmCompatibilityLevel`, `NoLMHash` | Old apps and devices fail against hardened targets. |
 | **Telnet, rsh, SNMP v1/v2** | Services, listeners, SNMP community strings | Replace (SSH, SNMPv3), or accept the risk with an end date. |
 | **Other legacy items** | WINS, NetBIOS name use, 8.3 short names, `subst` drives, mapped drives in a service context | These usually appear only after cut-over. |
@@ -324,6 +370,14 @@ Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameter
 
 # FTP services present?
 Get-Service MSFTPSVC, FTPSVC, 'FileZilla Server' -ErrorAction SilentlyContinue
+
+# 2012+: SMB sessions with dialect (1.x = SMBv1 client)
+Get-SmbSession | Select-Object ClientComputerName, ClientUserName, Dialect, NumOpens
+
+# 2016 / 2019: audit SMBv1 access for the capture week, then read event 3000
+Set-SmbServerConfiguration -AuditSmb1Access $true -Force
+Get-WinEvent -LogName 'Microsoft-Windows-SMBServer/Audit' -ErrorAction SilentlyContinue |
+  Where-Object { $_.Id -eq 3000 } | Select-Object TimeCreated, Message
 
 # Scripts that drive ftp.exe with a command file (often holding a password)
 Get-ChildItem C:\, D:\ -Recurse -Include *.bat, *.cmd, *.vbs, *.ps1 -ErrorAction SilentlyContinue |
@@ -364,7 +418,7 @@ net file    >> SRV01_openfiles_capture.txt
 - [ ] Retention or legal holds. Ask the data owner; **old doesn't automatically mean deletable**.
 
 > [!CAUTION]
-> Don't use **LastAccessTime**. On 2008+ it isn't updated by default (`fsutil behavior query disablelastaccess`). On 2003 it is, but antivirus and backup scans touch it too. Use **LastWriteTime**, together with the session and open-file capture.
+> Don't use **LastAccessTime**. On 2008 to 2016 it isn't updated by default, and on 2019 it's "system managed", which depends on volume size (`fsutil behavior query disablelastaccess`). On 2003 it is updated, but antivirus and backup scans touch it too. Use **LastWriteTime**, together with the session and open-file capture.
 
 <details>
 <summary><b>Command: data by age, PowerShell 2.0 compatible</b></summary>
@@ -415,9 +469,11 @@ Get-ChildItem $root -Recurse -ErrorAction SilentlyContinue |
 - [ ] **DTS packages** (2000). Not supported on 2012+, so they need a rewrite to SSIS
 - [ ] SSIS, SSRS reports and subscriptions, SSAS
 - [ ] Linked servers, OPENROWSET / OPENQUERY
-- [ ] Replication, log shipping, mirroring, clustering
+- [ ] Replication, log shipping, mirroring, clustering, **Always On AGs** (2012+)
 - [ ] CLR, extended procedures, `xp_cmdshell`
 - [ ] Cross-database and cross-server names
+- [ ] **2016–2019 features removed or deprecated in 2022:** Stretch Database, R/Python ML Services (not installed by setup), PolyBase Hadoop, Distributed Replay
+- [ ] Query Store, Master Data Services, Data Quality Services, Power BI Report Server
 
 </td></tr>
 </table>
@@ -430,6 +486,7 @@ flowchart LR
     S2000 -- "restore" --> S2008["SQL 2008 / 2008 R2"]
     S2005 -- "restore" --> S2012["SQL 2012 – 2016"]
     S2008 -- "restore" --> S2017["SQL 2017 – 2022"]
+    S2012 -- "restore or in-place upgrade" --> S2017
     S2000 -. "no direct path" .-> S2012
     S2005 -. "no direct path" .-> S2017
 
@@ -439,7 +496,10 @@ flowchart LR
     class S2012,S2017 target
 ```
 
-<sub>SQL 2000 backups need an intermediate hop (2005 / 2008 / 2008 R2) to reach 2012+. SQL 2005 restores up to 2016 but not on 2017+. Check the minimum source version of your exact target and run Data Migration Assistant from a modern box.</sub>
+<sub>SQL 2000 backups need an intermediate hop (2005 / 2008 / 2008 R2) to reach 2012+. SQL 2005 restores up to 2016 but not on 2017+. SQL 2008 to 2019 restore directly on 2022. Check the minimum source version of your exact target and run Data Migration Assistant from a modern box.</sub>
+
+> [!WARNING]
+> A restore **upgrades the database to the target version, one way**. A backup taken on the target can't be restored on the source. The rollback is always **the untouched source**, never a backup from the new server.
 
 ### 1.7 SQL: databases
 
@@ -451,15 +511,17 @@ flowchart LR
 - [ ] **Is it used?** See 1.8
 - [ ] Applications and connection strings that use it, **from the capture, not from memory**
 
-### 1.8 SQL: activity and auditing on old versions
+### 1.8 SQL: activity and auditing per version
 
-Old versions can't tell you who uses a database the way modern ones can. **SQL Server Audit doesn't exist before 2008**, and on 2008 / 2008 R2 it's **Enterprise-only**. Use what each version offers, and **capture for 2–4 weeks**.
+Old versions can't tell you who uses a database the way newer ones can. **SQL Server Audit doesn't exist before 2008**, it's **Enterprise-only** on 2008 / 2008 R2, and database-level audit reaches every edition only from **2016 SP1**. Use what each version offers, **schedule the capture for the Discovery week**, and read the **Agent job schedules** to cover monthly activity.
 
 | Version | Who connects | Is the database used | Who changes what |
 |---|---|---|---|
 | **SQL 2000** | Snapshot `master..sysprocesses` every 5–15 min | No usage DMVs. Use a light **server-side trace** (login, batch completed, filtered) | Server-side trace. **C2 audit mode** only as a last resort: it's heavy and stops the instance if the disk fills |
 | **SQL 2005** | Snapshot `sys.dm_exec_sessions` + `sys.dm_exec_connections` (client IP) | `sys.dm_db_index_usage_stats`. **It resets on restart**: check uptime via tempdb `create_date` | **Default trace** (rolls over fast: 5 × 20 MB), DDL triggers, logon triggers (SP2+) |
 | **SQL 2008 / R2** | Same as 2005 | Same, plus `sys.dm_os_sys_info.sqlserver_start_time` | **SQL Server Audit** on Enterprise; otherwise the 2005 methods |
+| **SQL 2012 / 2014** | `sys.dm_exec_sessions` now has `database_id` | Same as 2008 | **Server-level audit on every edition**; database-level audit on Enterprise only. Extended Events |
+| **SQL 2016 – 2019** | Same as 2012 | Same, plus **Query Store** (per-database query history, if enabled) | **Server- and database-level audit on every edition** (2016 SP1+). Extended Events |
 
 <details>
 <summary><b>T-SQL: connection snapshots and usage, per version</b></summary>
@@ -484,7 +546,17 @@ WHERE s.is_user_process = 1;
 ```
 
 ```sql
--- SQL 2005 / 2008: last read and write per database since the service started
+-- SQL 2012 – 2019: who is connected, with client IP and current database
+SELECT GETDATE() AS captured_at, c.client_net_address,
+       s.host_name, s.program_name, s.login_name, DB_NAME(s.database_id) AS db
+FROM sys.dm_exec_sessions    AS s
+JOIN sys.dm_exec_connections AS c ON c.session_id = s.session_id
+WHERE s.is_user_process = 1;
+```
+
+```sql
+-- SQL 2005 – 2019: last read and write per database since the service started
+-- (on 2008+ you can also use sys.dm_os_sys_info.sqlserver_start_time)
 SELECT create_date AS sql_started FROM sys.databases WHERE name = 'tempdb';
 
 SELECT DB_NAME(database_id) AS db,
@@ -500,12 +572,20 @@ GROUP BY database_id;
 -- All versions: jobs owned by a person, orphaned users
 SELECT j.name, SUSER_SNAME(j.owner_sid) AS owner FROM msdb.dbo.sysjobs AS j;
 EXEC sp_change_users_login 'Report';   -- run in each user database
+
+-- All versions: jobs that run monthly or less often (the week's capture won't see them)
+-- freq_type 16 = monthly, 32 = monthly relative
+SELECT j.name, s.name AS schedule, s.freq_type, s.freq_interval, s.active_start_time
+FROM msdb.dbo.sysjobs AS j
+JOIN msdb.dbo.sysjobschedules AS js ON js.job_id = j.job_id
+JOIN msdb.dbo.sysschedules    AS s  ON s.schedule_id = js.schedule_id
+WHERE s.freq_type IN (16, 32);
 ```
 
 </details>
 
-- [ ] Turn on **login auditing** ("both failed and successful logins") for the capture period. It writes to the errorlog, so check the errorlog size and recycle schedule.
-- [ ] A database with **no reads or writes during the whole capture** is a **candidate** for archiving. The app owner decides.
+- [ ] Turn on **login auditing** ("both failed and successful logins") for the capture week. It writes to the errorlog, so check the errorlog size and recycle schedule.
+- [ ] A database with **no reads or writes during the capture**, **no monthly job** touching it, and a long **uptime** behind the usage stats is a **candidate** for archiving. The app owner decides.
 - [ ] Hand the compiled *host · app · login · database* list to the app owner to **confirm**.
 
 ### 1.9 Red and amber flags
@@ -538,7 +618,7 @@ EXEC sp_change_users_login 'Report';   -- run in each user database
 ### Gate 1 · Discovery complete
 
 - [ ] Server and SQL scripts ran from the **approved repository version** (version recorded in the summary)
-- [ ] Capture covered at least **2 weeks**, including a month-end if possible
+- [ ] Capture ran for the **Discovery week**, and every **monthly, quarterly or yearly** task or job has an owner who confirmed what it connects to
 - [ ] Output is in `Migration/<SERVER>/1-Discovery/` with standard names
 - [ ] Summary **reviewed by** the sysadmin ______ and the DBA ______ on ______
 - [ ] Every RED flag has an owner and a logged decision
@@ -606,8 +686,9 @@ EXEC sp_change_users_login 'Report';   -- run in each user database
 
 | Method | When to use | Watch out for |
 |---|---|---|
-| **Side-by-side** (new server, move app and data) | **Default** for 2003 / 2008 | DNS and aliases, IP allow-lists, hard-coded names |
-| **In-place OS upgrade** | Only when side-by-side isn't possible; limited paths (2008 R2 → 2012 R2 → newer) | Each hop needs its own licence and a snapshot; no path at all from 2003 |
+| **Side-by-side** (new server, move app and data) | **Default** for 2003 / 2008, and the preferred method for everything | DNS and aliases, IP allow-lists, hard-coded names |
+| **In-place OS upgrade** | 2003: **no path**. 2008 R2: two hops (→ 2012 R2 → 2019/2022/2025). **2012 R2, 2016, 2019:** one hop to 2022 or 2025 | Each hop needs a licence and a snapshot. Keeps old settings, **including SMBv1** and weak TLS |
+| **In-place SQL upgrade** | 2012 SP4 / 2014 / 2016 / 2017 / 2019 → 2022, when the OS stays | No rollback except restoring from backup; test on a copy first |
 | **Backup / restore** (SQL) | Most databases; downtime equals the restore time | Restore-version hops (see 1.6); orphaned users |
 | **Log shipping or differential catch-up** (SQL) | Large databases with a short window | The target must be able to restore the source version |
 | **Detach / attach** | Rarely; when backup and restore is too slow | No rollback once upgraded; keep a copy |
@@ -666,7 +747,7 @@ flowchart LR
     class G4 good
 ```
 
-- [ ] **Quiet period:** keep the connection capture running on the **old** server. Any hit is a missed dependency, so fix it before you continue.
+- [ ] **Quiet period:** keep the connection capture running on the **old** server, and make sure it covers a **month-end**. It's the safety net for the one-week Discovery: any hit is a missed dependency, so fix it before you continue.
 - [ ] Unused-data decisions from Discovery carried out: archive, move or delete, **signed by the data owner**
 - [ ] SQL: databases set offline first, then a final backup; logins disabled
 - [ ] Server **powered off, not deleted**, for the agreed wait
@@ -723,12 +804,13 @@ flowchart LR
 SERVER: APP01            PHASE: 1 - Discovery          GATE OWNER: <name>
 
 [x] Scripts from approved version .......... v1.4 (commit 3f2a91c)
-[x] Capture period ......................... 2026-11-02 -> 2026-11-23
-[x] Summary reviewed ....................... sysadmin <name> / DBA <name> - 2026-11-25
+[x] Capture period ......................... 2026-11-02 -> 2026-11-06
+[x] Monthly/quarterly jobs confirmed ....... 4 tasks, 2 Agent jobs - owners listed
+[x] Summary reviewed ....................... sysadmin <name> / DBA <name> - 2026-11-05
 [x] RED flags decided ...................... D-014, D-015, D-016
-[x] Dependencies confirmed by app owner .... <name> - 2026-11-26
+[x] Dependencies confirmed by app owner .... <name> - 2026-11-06
 
-SIGNED: <name>                               DATE: 2026-11-27
+SIGNED: <name>                               DATE: 2026-11-06
 ```
 
 ### C. Glossary
@@ -737,7 +819,7 @@ SIGNED: <name>                               DATE: 2026-11-27
 |---|---|
 | **Gate** | A signed checkpoint between two phases |
 | **RACI** | Responsible, Accountable, Consulted, Informed |
-| **Capture** | Recording connections or activity at regular intervals over weeks, not a single snapshot |
+| **Capture** | Recording connections or activity at regular intervals (every 5–15 min for the Discovery week), not a single snapshot |
 | **Flag** | A finding that needs a decision (RED) or a plan (AMBER) |
 | **Quiet period** | Time after cut-over when the old server stays up and is watched for missed dependencies |
 | **Hop** | An intermediate version needed because the source can't go straight to the target |

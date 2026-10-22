@@ -16,7 +16,7 @@
   <text x="64" y="84" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="4" fill="#8fc1ee">OPERATIONS HANDBOOK  ·  SYSADMIN &amp; DBA</text>
   <text x="62" y="152" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="56" font-weight="700" letter-spacing="-0.5" fill="#ffffff">Migration Governance</text>
   <rect x="64" y="176" width="420" height="3" fill="url(#rule)"/>
-  <text x="64" y="214" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="20" fill="#d6e6f5">Windows Server 2003 / 2008  ·  SQL Server 2000 / 2005 / 2008</text>
+  <text x="64" y="214" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="20" fill="#d6e6f5">Windows Server 2003 – 2019  ·  SQL Server 2000 – 2019</text>
   <g font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="13" font-weight="600" letter-spacing="2">
     <circle cx="70" cy="268" r="6" fill="#5fa8e8"/><text x="84" y="273" fill="#ffffff">DISCOVERY</text>
     <path d="M186 268 H224" stroke="#5fa8e8" stroke-opacity="0.5" stroke-width="2"/>
