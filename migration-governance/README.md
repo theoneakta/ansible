@@ -6,6 +6,8 @@
   <a href="#1-purpose-and-scope"><b>Scope</b></a> &nbsp;·&nbsp;
   <a href="#2-governance-model"><b>Governance</b></a> &nbsp;·&nbsp;
   <a href="#3-standards"><b>Standards</b></a> &nbsp;·&nbsp;
+  <a href="SYSADMIN.md"><b>Sysadmin guide</b></a> &nbsp;·&nbsp;
+  <a href="DBA.md"><b>DBA guide</b></a> &nbsp;·&nbsp;
   <a href="SERVER-PAGE-TEMPLATE.md"><b>Server page template</b></a> &nbsp;·&nbsp;
   <a href="SCRIPTS-AND-VSCODE.md"><b>Scripts &amp; VS Code</b></a> &nbsp;·&nbsp;
   <a href="#phase-1--discovery"><b>Discovery</b></a> &nbsp;·&nbsp;
@@ -116,10 +118,16 @@ Gate 1 records one **disposition** for each server: **migrate** (Phases 2 → 3 
 
 ### 2.2 Roles
 
+This guide is the **big picture**. Sysadmins and DBAs work together, but **each role has its own guide**, setting out what it signs for at each gate and what it needs from the other:
+
+<table>
+<tr><td width="50%" align="center"><a href="SYSADMIN.md"><b>Sysadmin guide</b></a><br/><sub>Server, OS, files, network, protocols · Windows in-place paths</sub></td><td width="50%" align="center"><a href="DBA.md"><b>DBA guide</b></a><br/><sub>Instance, databases, data · SQL × Windows matrix · migration paths</sub></td></tr>
+</table>
+
 | Role | Owns | Typical person |
 |---|---|---|
-| **Sysadmin** | OS, server, files, network and security discovery; target server build; OS-level cut-over; decommissioning the server | Windows team |
-| **DBA** | Instance and database discovery; SQL build; data migration and validation; decommissioning the instance | DBA team |
+| **Sysadmin** ([guide](SYSADMIN.md)) | Everything **around** SQL: OS, server, files, network and security discovery; target server build; OS-level cut-over; decommissioning the server | Windows team |
+| **DBA** ([guide](DBA.md)) | Everything **inside** the instance: instance and database discovery; SQL build; data migration and validation; decommissioning the instance | DBA team |
 | **App owner** | Dependencies, users, business windows, testing, acceptance, decisions about unused data | Business or application team |
 | **Migration lead** | Plan, tracking, decision log, gate sign-off (except Gate 3), escalation | Project or team lead |
 | **Security / network** | Firewall rules, exceptions for legacy protocols, certificates, risk acceptance | Security and network teams |
@@ -219,6 +227,22 @@ flowchart TD
 > - an **end date**.
 >
 > Security is consulted on each one. Exceptions are reviewed at the weekly blockers meeting until they're closed.
+
+### 2.7 Supported vs works but not supported
+
+Every path, OS and SQL combination in this program is one of two kinds, and **the difference decides the paperwork**:
+
+| | **SUPPORTED** | **WORKS, BUT NOT SUPPORTED** |
+|---|---|---|
+| **What it means** | **Microsoft documents it:** in its compatibility matrix or upgrade table | **It runs, and may be proven in our lab, but Microsoft doesn't document it** |
+| **Fixes, security updates, support case** | **Yes** | **No. The risk is ours alone** |
+| **Approval** | **Normal gate** | **Logged exception:** owner, compensating controls, **end date**, Cyber consulted |
+| **End state?** | **Yes** | **No. Interim step only** |
+
+> [!WARNING]
+> **"LAB OK" is not "production approved".** The lab proves a path works **technically**. Production use still needs **an exception, a test with the real application, a tested rollback, and a date to reach a supported state**.
+
+Examples for each side are in the role guides: [Sysadmin §1](SYSADMIN.md#1-supported-vs-works-but-not-supported) (OS paths, out-of-support OS, legacy protocols) and [DBA §1](DBA.md#1-supported-vs-works-but-not-supported) (SQL on an unsupported OS, the lab-proven SQL 2005 path).
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
@@ -543,21 +567,20 @@ Get-ChildItem $root -Recurse -ErrorAction SilentlyContinue |
 
 ```mermaid
 flowchart LR
-    S2000["SQL 2000"] -- "restore" --> S2005["SQL 2005"]
-    S2000 -- "restore" --> S2008["SQL 2008 / 2008 R2"]
-    S2005 -- "restore" --> S2012["SQL 2012 – 2016"]
-    S2008 -- "restore" --> S2017["SQL 2017 – 2022"]
-    S2012 -- "restore or in-place upgrade" --> S2017
-    S2000 -. "no direct path" .-> S2012
-    S2005 -. "no direct path" .-> S2017
+    S2000["SQL 2000<br/>compat 80"] -- "restore" --> HOP["Hop instance<br/>SQL 2008 R2"]
+    HOP -- "restore" --> T["SQL 2022 / 2025"]
+    S2005["SQL 2005<br/>compat 90"] -- "restore (auto compat 100)" --> T
+    S2008["SQL 2008 – 2019"] -- "restore, log shipping<br/>or in-place upgrade" --> T
 
     classDef legacy fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    classDef hop fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
     classDef target fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
     class S2000,S2005,S2008 legacy
-    class S2012,S2017 target
+    class HOP hop
+    class T target
 ```
 
-<sub>SQL 2000 backups need an intermediate hop (2005 / 2008 / 2008 R2) to reach 2012+. SQL 2005 restores up to 2016 but not on 2017+. SQL 2008 to 2019 restore directly on 2022. Check the minimum source version of your exact target and run Data Migration Assistant from a modern box.</sub>
+<sub>Only **SQL 2000** needs an intermediate hop. Databases from **SQL 2005** (compatibility level 90) and later restore **directly** on SQL 2022 and 2025; 2005 databases are raised to level 100 automatically (Microsoft, *Supported version and edition upgrades* for 2022 and 2025). Per-version paths, in-place upgrade limits and the SQL × Windows matrix are in the **[DBA guide](DBA.md#5-migration-paths)**.</sub>
 
 > [!WARNING]
 > A restore **upgrades the database to the target version, one way**. A backup taken on the target can't be restored on the source. The rollback is always **the untouched source**, never a backup from the new server.
@@ -767,8 +790,8 @@ A server can also be **split**: for example, migrate two databases and retire th
 | Method | When to use | Watch out for |
 |---|---|---|
 | **Side-by-side** (new server, move app and data) | **Default** for 2003 / 2008, and the preferred method for everything | DNS and aliases, IP allow-lists, hard-coded names |
-| **In-place OS upgrade** | 2003: **no path**. 2008 R2: two hops (→ 2012 R2 → 2019/2022/2025). **2012 R2, 2016, 2019:** one hop to 2022 or 2025 | Each hop needs a licence and a snapshot. Keeps old settings, **including SMBv1** and weak TLS |
-| **In-place SQL upgrade** | 2012 SP4 / 2014 / 2016 / 2017 / 2019 → 2022, when the OS stays | No rollback except restoring from backup; test on a copy first |
+| **In-place OS upgrade** | 2003: **no path**. 2008 R2 SP1 → 2012 R2 → 2025: **works, not supported, LAB OK**. **2012 R2 → 2016, 2019 or 2025** (not 2022). **2016, 2019 → 2022 or 2025** ([Sysadmin guide §5](SYSADMIN.md#5-windows-in-place-upgrade-paths)) | Each hop needs a licence and a snapshot. Keeps old settings, **including SMBv1** and weak TLS |
+| **In-place SQL upgrade** | To 2022 from 2012 SP4, 2014 SP3, 2016 SP3, 2017, 2019. To 2025 from 2014 SP3 onwards. The OS must support the target SQL ([DBA guide §5](DBA.md#5-migration-paths)) | No rollback except restoring from backup; test on a copy first |
 | **Backup / restore** (SQL) | Most databases; downtime equals the restore time | Restore-version hops (see 1.6); orphaned users |
 | **Log shipping or differential catch-up** (SQL) | Large databases with a short window | The target must be able to restore the source version |
 | **Detach / attach** | Rarely; when backup and restore is too slow | No rollback once upgraded; keep a copy |
