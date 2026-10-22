@@ -129,6 +129,33 @@ This guide is the **big picture**. Sysadmins and DBAs work together, but **each 
 |---|---|---|
 | **Sysadmin** ([guide](SYSADMIN.md)) | Everything **around** SQL: OS, server, files, network and security discovery; target server build; OS-level cut-over; decommissioning the server | Windows team |
 | **DBA** ([guide](DBA.md)) | Everything **inside** the instance: instance and database discovery; SQL build; data migration and validation; decommissioning the instance | DBA team |
+
+**Hand-off points between sysadmin and DBA:**
+
+```mermaid
+flowchart LR
+    D["<b>Discovery</b><br/>sysadmin + DBA<br/>in parallel"] --> G1{{"Gate 1<br/>path agreed"}}
+    G1 --> OS["<b>OS in-place upgrade</b><br/>+ hardening<br/>owned by the <b>sysadmin</b>"]
+    OS --> H(["<b>OS hand-off</b><br/>sysadmin → DBA"])
+    H --> SQL["<b>SQL to a newer version</b><br/>+ data validation<br/>owned by the <b>DBA</b>"]
+    SQL --> G3{{"Gate 3<br/>app owner"}}
+    G3 --> DEC["<b>Decommissioning</b><br/>DBA: databases offline<br/>→ sysadmin: removal"]
+
+    classDef sys fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef dba fill:#2f7d5b,stroke:#59b38a,color:#ffffff
+    classDef both fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef hand fill:#f6e7d8,stroke:#a8692e,color:#3a220d
+    class OS sys
+    class SQL dba
+    class D,G1,G3,DEC both
+    class H hand
+```
+
+| Hand-off | From → to | What's handed over | From then on |
+|---|---|---|---|
+| **1. After Discovery (Gate 1)** | Both → both | Both summaries reviewed together; **OS path and SQL path agreed**; who does what, and when | The sysadmin plans the OS work; the DBA plans the SQL work |
+| **2. OS hand-off** | **Sysadmin → DBA** | OS upgraded and hardened; activation, RDP, network and agents checked; SQL services start; snapshots kept | **The DBA is responsible** for the server's migration: SQL upgrade or new instance, data validation, app test with the app owner, up to Gate 3 |
+| **3. Before decommissioning** | **DBA → sysadmin** | Databases offline, final backups kept, instance stopped | The sysadmin powers off and removes the server |
 | **App owner** | Dependencies, users, business windows, testing, acceptance, decisions about unused data | Business or application team |
 | **Migration lead** | Plan, tracking, decision log, gate sign-off (except Gate 3), escalation | Project or team lead |
 | **Security / network** | Firewall rules, exceptions for legacy protocols, certificates, risk acceptance | Security and network teams |
@@ -154,9 +181,10 @@ This guide is the **big picture**. Sysadmins and DBAs work together, but **each 
 | Firewall rules, certificates, legacy-protocol exceptions | C | C | I | I | **R/A** |
 | Smoke test of the target | R | R | C | **A** | |
 | ***Phase 3: Migration*** | | | | | |
-| Rehearsal migration | R | R | C | **A** | |
+| Rehearsal migration (on a clone if the path is uncertain) | R | R | C | **A** | |
 | Cut-over and rollback plan | R | R | C | **A** | C |
-| Data migration and validation | C | **R/A** | C | I | |
+| **OS in-place upgrade** and hardening, up to the **OS hand-off** | **R/A** | C | I | I | C |
+| **Everything SQL after the OS hand-off:** SQL upgrade or new instance, data migration and validation | C | **R/A** | C | I | |
 | Application testing and acceptance | C | C | **R/A** | I | |
 | ***Phase 4: Decommissioning*** | | | | | |
 | Quiet-period monitoring | **R** | R | I | A | |
@@ -237,11 +265,22 @@ Every path, OS and SQL combination in this program is one of two kinds, and **th
 |---|---|---|
 | **What it means** | **Microsoft documents it:** in its compatibility matrix or upgrade table | **It runs, and may be proven in our lab, but Microsoft doesn't document it** |
 | **Fixes, security updates, support case** | **Yes** | **No. The risk is ours alone** |
-| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker**, because the path is **always run on a cloned VM first** (below) |
+| **Approval** | **Normal gate** | **Normal gate. No exception, not a blocker.** If the path is **uncertain**, it runs on a cloned VM first (below) |
 | **End state?** | **Yes** | **No. A step on the way to a newer, supported SQL version** |
 
 > [!IMPORTANT]
-> **Our rule: every migration ends on a newer, supported SQL version.** An unsupported step on the way is fine, as long as it's **proven on a cloned VM of the real server** before production is touched. **"LAB OK"** shows the path works in general; **the clone** shows it works for *this* server and *this* application.
+> **Our rule: every migration ends on a newer, supported SQL version.** An unsupported step on the way is fine. **A cloned VM is used only when the path is uncertain.** A proven path goes straight to production, with a **snapshot before each step** as the rollback.
+
+#### When to clone
+
+| The path is… | Clone? | Examples |
+|---|---|---|
+| **Proven:** already done in the lab or on an earlier server of the program, and Discovery found nothing unusual on this server | **No.** Snapshot before each step on production | 2008 R2 SP1 → 2012 R2 → 2025 with SQL 2005 (LAB OK); 2016 → 2025 |
+| **Uncertain:** never done yet, in the lab or in the program | **Yes** | 2008 x64 → 2012 → 2016 → 2025; a new SQL instance on the same server (DBA form C) |
+| **Uncertain:** proven, but Discovery flagged something unusual on this server | **Yes** | Old drivers or hardware dongles, a vendor app with no support statement, RED flags on the OS or SQL side |
+| **Uncertain:** the sysadmin or DBA isn't confident | **Yes**: their call, no justification needed | |
+
+Once an uncertain path has worked on a clone and in production, it's **proven** for the next servers. Record it on the server page.
 
 #### Clone-first procedure
 
@@ -406,7 +445,7 @@ flowchart LR
 | **Discovery, day 1** | Script output and flag summary | SharePoint `1-Discovery/` | Sysadmin, DBA |
 | **Discovery, end of week** | Key findings, confirmed dependencies, monthly jobs, flags with their decisions | Server page | Sysadmin, DBA |
 | **Gate 1** | Disposition; Gate 1 checklist signed; decisions in the decision log | Server page | Migration lead; app owner confirms |
-| **Install & test / clone** | ServiceNow server request; the clone runbook (steps, timings, problems); build deviations | Server page; SharePoint `2-Build/` | Sysadmin, DBA |
+| **Install & test (clone if uncertain)** | ServiceNow server request; the clone runbook if a clone was used (steps, timings, problems); build deviations | Server page; SharePoint `2-Build/` | Sysadmin, DBA |
 | **Gate 2** | Gate 2 checklist signed | Server page | Migration lead |
 | **Migration** | CAB change and approvals; rehearsal results; cut-over plan; validation evidence | ServiceNow; server page; SharePoint `3-Migration/` | Sysadmin, DBA |
 | **Gate 3** | App owner's acceptance, with a link to the approval record | Server page | App owner |
@@ -910,19 +949,21 @@ What each role does for each option, including the **evidence that a server or d
 
 ### 3.1 Choose the method
 
-**In-place upgrade first, whenever a path exists. Side-by-side second.** Both always start on a cloned VM ([clone-first](#clone-first-procedure)).
+**In-place upgrade first, whenever a path exists. Side-by-side second.** A path that's **uncertain** runs on a cloned VM first ([when to clone](#when-to-clone)). The **sysadmin** does the OS in-place upgrade; the **DBA** takes over at the OS hand-off ([2.2](#22-roles)).
 
 ```mermaid
 flowchart LR
-    A{"In-place path<br/>exists?<br/>(OS and SQL)"} -- "yes" --> B["Run it on a<br/>cloned VM"] --> C{"Clone test<br/>passes?"}
-    C -- "yes" --> D["<b>1st choice</b><br/>In-place on production<br/>+ hardening"]
+    A{"In-place path<br/>exists?<br/>(OS and SQL)"} -- "yes" --> U{"Path<br/>uncertain?"}
+    U -- "no (proven)" --> D["<b>1st choice</b><br/>In-place on production<br/>snapshot per step + hardening"]
+    U -- "yes" --> B["Run it on a<br/>cloned VM"] --> C{"Clone test<br/>passes?"}
+    C -- "yes" --> D
     C -- "no, can't be fixed" --> E["<b>2nd choice</b><br/>Side-by-side"]
     A -- "no" --> E
 
     classDef q fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
     classDef first fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
     classDef second fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
-    class A,C q
+    class A,U,C q
     class B,D first
     class E second
 ```
@@ -946,7 +987,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["Rehearsal<br/>(timed, on a cloned VM)"] --> B["Cut-over plan<br/>+ rollback plan<br/>approved"] --> C["Freeze and<br/>final backup"] --> D["Move data<br/>and apps"] --> E["Switch DNS,<br/>aliases, jobs"] --> F["Validate<br/>(IT, then app owner)"]
+    A["Rehearsal<br/>(timed; on a clone<br/>if uncertain)"] --> B["Cut-over plan<br/>+ rollback plan<br/>approved"] --> C["Freeze and<br/>final backup"] --> D["Move data<br/>and apps"] --> E["Switch DNS,<br/>aliases, jobs"] --> F["Validate<br/>(IT, then app owner)"]
     F -- "fails" --> R["Rollback<br/>(source is still intact)"]
     F -- "passes" --> G["Gate 3"]
 
@@ -958,7 +999,7 @@ flowchart LR
     class G good
 ```
 
-- [ ] **Rehearsal on a cloned VM** of the server ([clone-first](#clone-first-procedure)), timed. The real window = rehearsal time + 50%.
+- [ ] **Rehearsal**, timed: on a cloned VM if the path is uncertain ([when to clone](#when-to-clone)), otherwise a dry run of the steps on a test server. The real window = rehearsal time + 50%.
 - [ ] **Rollback plan** with a clear **point of no return** and who calls it
 - [ ] Users and app owner notified; change ticket approved
 - [ ] Source set to **read-only** (or services stopped) before the final copy, so no writes are lost
