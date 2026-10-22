@@ -88,7 +88,7 @@ Most delays happen **between** the two roles. Ask early, using this list.
 |---|---|---|
 | **OS for a new build** | **Windows Server 2025** (2022 if the application vendor requires it) | Longest support. 2025 supports SQL 2019, 2022 and 2025 (see the [DBA matrix](DBA.md#4-sql-server-on-windows-server)) |
 | **Method** | **Side-by-side:** new server, then move apps and data | Clean build, no carried-over settings (SMBv1, weak TLS), and the source stays as the rollback |
-| **In-place upgrade** | Only when side-by-side isn't possible (section 5) | Keeps every old setting, and needs a snapshot and a tested rollback |
+| **In-place upgrade** | Only when side-by-side isn't possible (section 5). **Always run on a cloned VM first** ([clone-first](README.md#clone-first-procedure)) | Keeps every old setting. The clone proves the path for this server; production then gets a snapshot before each hop |
 
 > [!NOTE]
 > Check the SQL version before you choose the OS. **SQL 2017 isn't supported on Windows 2025, and SQL 2016 isn't supported on 2022.** Agree the OS and SQL pair with the DBA at Gate 1.
