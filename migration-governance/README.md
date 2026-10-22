@@ -6,6 +6,7 @@
   <a href="#1-purpose-and-scope"><b>Scope</b></a> &nbsp;·&nbsp;
   <a href="#2-governance-model"><b>Governance</b></a> &nbsp;·&nbsp;
   <a href="#3-standards"><b>Standards</b></a> &nbsp;·&nbsp;
+  <a href="#4-documentation-path"><b>Documentation path</b></a> &nbsp;·&nbsp;
   <a href="SYSADMIN.md"><b>Sysadmin guide</b></a> &nbsp;·&nbsp;
   <a href="DBA.md"><b>DBA guide</b></a> &nbsp;·&nbsp;
   <a href="SERVER-PAGE-TEMPLATE.md"><b>Server page template</b></a> &nbsp;·&nbsp;
@@ -296,9 +297,10 @@ Migration/
         │   └── <INSTANCE>_sql-<area>_<yyyyMMdd>.csv     e.g. APP01-SQL2005_sql-jobs_20261022.csv
         ├── 2-Build/
         ├── 3-Migration/
-        ├── 4-Decommission/
-        └── GATES.md                                     signed gate checklists for this server
+        └── 4-Decommission/
 ```
+
+Gate sign-offs, decisions and status live on the **server's Loop page**, not in SharePoint ([section 4](#4-documentation-path)).
 
 A **bundle** is the group of servers that are discovered and migrated together. Each server belongs to exactly one bundle. If a server moves to another bundle, its folder moves with it.
 
@@ -324,6 +326,100 @@ Loop can't import a file, but it keeps formatting when you paste. To use the tem
 1. Open the **Word copy**, press **Ctrl+A** and then **Ctrl+C**. Copying from the rendered GitHub page also works.
 2. Paste it into a new Loop page. Headings, tables and lists are kept. The checkboxes (☐) arrive as text: type `[]` at the start of those lines to turn them into Loop checklists.
 3. Save the page as a **template** in the bundle's Loop workspace, so each server page starts from the same layout.
+
+<p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
+
+## 4. Documentation path
+
+**One place for each kind of information, and links everywhere else.** If the same information is written in two places, one of them is wrong.
+
+### 4.1 The documents
+
+```mermaid
+flowchart TB
+    GOV["<b>Governance guide</b><br/>this page · the big picture"]
+    GOV --> SYS["<b>Sysadmin guide</b><br/>what the sysadmin owns"]
+    GOV --> DBA["<b>DBA guide</b><br/>what the DBA owns"]
+    GOV --> SCR["<b>Scripts &amp; VS Code</b><br/>how scripts are written and shared"]
+    GOV --> TPL["<b>Server page template</b><br/>one Loop page per server"]
+    SYS --> LAB["<b>Lab evidence</b><br/>runbook · stability tests"]
+    DBA --> LAB
+
+    classDef main fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef role fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
+    classDef ref fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    class GOV main
+    class SYS,DBA,SCR,TPL role
+    class LAB ref
+```
+
+| Document | What it's for | Changes when |
+|---|---|---|
+| **[Governance guide](README.md)** (this page) | Phases, gates, roles, rules, standards | A rule changes (decided in the retro or the blockers meeting) |
+| **[Sysadmin guide](SYSADMIN.md)** | What the sysadmin owns and signs; Windows paths; checklists | Sysadmin practice changes |
+| **[DBA guide](DBA.md)** | What the DBA owns and signs; SQL paths and matrix; audit; checklists | DBA practice changes |
+| **[Scripts & VS Code](SCRIPTS-AND-VSCODE.md)** | Script rules, Git, VS Code, Copilot, the path to fewer scripts | Tools or the script workflow change |
+| **[Server page template](SERVER-PAGE-TEMPLATE.md)** | The layout of every server's Loop page | The information we track changes |
+| **[Lab evidence](../legacy-migration/README.md)** | Proof for the lab-proven paths | After each lab test |
+
+### 4.2 Where to start
+
+| You are | Read, in this order |
+|---|---|
+| **Sysadmin** | This page §1–2 → [Sysadmin guide](SYSADMIN.md) → [Scripts & VS Code](SCRIPTS-AND-VSCODE.md) §1–4 |
+| **DBA** | This page §1–2 → [DBA guide](DBA.md) → [Scripts & VS Code](SCRIPTS-AND-VSCODE.md) §1–4 |
+| **App owner** | This page §1, §2.2, [1.10 Disposition](#110-disposition-migrate-consolidate-or-retire), [Gate 3](#gate-3--accepted) → your server's Loop page |
+| **Tech lead / PM** | This whole page → the server pages of the current bundle |
+| **Writing or changing a script** | [Scripts & VS Code](SCRIPTS-AND-VSCODE.md) |
+
+### 4.3 Where each kind of information lives
+
+| Information | Lives in | Linked from |
+|---|---|---|
+| Rules and how-to (these guides) | **Git repository** | Loop workspace home page |
+| Scripts | **Git repository** (`develop`; released versions on `main`) | Server page (script version) |
+| Raw discovery output (CSV) | **SharePoint** `Migration/<BUNDLE>/<SERVER>/1-Discovery/` | Server page |
+| Flag summary (CSV) | **SharePoint**, same folder | Server page, flags table |
+| **Status, people, dependencies, flags and decisions, approvals, gate sign-offs** | **Loop server page** (the hub for each server) | ADO story |
+| Work items: stories, tasks, sprints | **Azure DevOps** | Server page |
+| Server requests, CAB changes, decommission requests | **ServiceNow** | Server page |
+| Clone runbook, validation evidence | **SharePoint** `2-Build/`, `3-Migration/` | Server page |
+| Decisions that apply to the whole program | **Decision log page** in the Loop workspace | Blockers meeting notes |
+
+### 4.4 What gets documented, step by step
+
+```mermaid
+flowchart LR
+    S["Scripts run"] --> SP["SharePoint<br/>output + summary"] --> L["Loop server page<br/>findings, flags, decisions"] --> G["Gate signed<br/>on the Loop page"] --> N["Next phase"]
+    ADO["Azure DevOps<br/>story"] -. "links" .- L
+    SN["ServiceNow<br/>tickets"] -. "links" .- L
+
+    classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
+    classDef ext fill:#eef1f4,stroke:#8a96a3,color:#1f2a36
+    class S,SP,L,G,N step
+    class ADO,SN ext
+```
+
+| When | Document | Where | Who |
+|---|---|---|---|
+| **Bundle starts** | Create the server page from the template, the ADO story and the SharePoint folder; link them together | Loop, ADO, SharePoint | Tech lead |
+| **Discovery, day 1** | Script output and flag summary | SharePoint `1-Discovery/` | Sysadmin, DBA |
+| **Discovery, end of week** | Key findings, confirmed dependencies, monthly jobs, flags with their decisions | Server page | Sysadmin, DBA |
+| **Gate 1** | Disposition; Gate 1 checklist signed; decisions in the decision log | Server page | Migration lead; app owner confirms |
+| **Install & test / clone** | ServiceNow server request; the clone runbook (steps, timings, problems); build deviations | Server page; SharePoint `2-Build/` | Sysadmin, DBA |
+| **Gate 2** | Gate 2 checklist signed | Server page | Migration lead |
+| **Migration** | CAB change and approvals; rehearsal results; cut-over plan; validation evidence | ServiceNow; server page; SharePoint `3-Migration/` | Sysadmin, DBA |
+| **Gate 3** | App owner's acceptance, with a link to the approval record | Server page | App owner |
+| **Decommissioning** | ServiceNow decommission request; quiet period or scream test result; removal checklist; location of the final backup | ServiceNow; server page; SharePoint `4-Decommission/` | Sysadmin, DBA |
+| **Gate 4** | Gate 4 checklist signed; ADO story closed | Server page; ADO | Migration lead |
+
+### 4.5 Keeping it current
+
+- **Update the server page the same day** something changes, and set its *Last updated* field.
+- The **daily status** works from the server pages. There's no separate status document.
+- Decisions made in the **tech discussion** or the **blockers meeting** go into the decision log **during the meeting**.
+- **Link, don't copy:** the server page links to SharePoint, ADO and ServiceNow instead of repeating their content.
+- These guides change in the **repository**, like the scripts. Improvements usually come from the sprint **retro**.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
@@ -978,7 +1074,7 @@ flowchart LR
 |---|---|---|---|---|---|---|---|---|
 | D-001 | | | | | | | | |
 
-### B. Gate sign-off template (`GATES.md` per server)
+### B. Gate sign-off template (on the server's Loop page)
 
 ```text
 SERVER: APP01            PHASE: 1 - Discovery          GATE OWNER: <name>
