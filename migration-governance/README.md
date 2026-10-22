@@ -6,6 +6,7 @@
   <a href="#1-purpose-and-scope"><b>Scope</b></a> &nbsp;·&nbsp;
   <a href="#2-governance-model"><b>Governance</b></a> &nbsp;·&nbsp;
   <a href="#3-standards"><b>Standards</b></a> &nbsp;·&nbsp;
+  <a href="SERVER-PAGE-TEMPLATE.md"><b>Server page template</b></a> &nbsp;·&nbsp;
   <a href="#phase-1--discovery"><b>Discovery</b></a> &nbsp;·&nbsp;
   <a href="#phase-2--install--configure"><b>Install &amp; configure</b></a> &nbsp;·&nbsp;
   <a href="#phase-3--migration"><b>Migration</b></a> &nbsp;·&nbsp;
@@ -258,6 +259,18 @@ Raw data is for evidence; **the summary is what gets read**. Every script writes
 | APP01 | Protocols | SMBv1 server enabled | AMBER | 3 scanners connect over SMBv1 | Sysadmin | Fix during migration: firmware update | J. Doe | 2026-10-30 |
 | APP01 | Protocols | FTP partner flow | AMBER | Partner drops files in `\\APP01\Inbound` | Sysadmin | Move to MFT | J. Doe | 2026-10-30 |
 | APP01 | SQL | Job owned by a person | AMBER | `Nightly export` owned by DOMAIN\jsmith | DBA | Fix: change to sa | A. Roy | 2026-10-30 |
+
+### 3.4 Server page (Loop template)
+
+Each server has **one page** that brings together its status, people, links (ADO, ServiceNow, SharePoint), flags, approvals and gates.
+
+**Template:** [SERVER-PAGE-TEMPLATE.md](SERVER-PAGE-TEMPLATE.md)
+
+To use it in Microsoft Loop:
+1. Open the template on GitHub, which shows it rendered.
+2. Select the whole page and copy it.
+3. Paste it into a new Loop page. Headings, tables and lists are kept; check that the checklists came through as Loop checklists.
+4. Save the page as a **template** in the bundle's Loop workspace, so each server page starts from the same layout.
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
