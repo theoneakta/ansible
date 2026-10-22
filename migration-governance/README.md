@@ -233,7 +233,7 @@ flowchart TD
 4. it contains no secrets;
 5. it's in the team repository before it runs on production, with its version recorded in the summary.
 
-How to work with the repository, VS Code, the `develop` branch and GitHub Copilot is described in **[Scripts & VS Code](SCRIPTS-AND-VSCODE.md)**.
+How to work with the repository, VS Code, the `develop` branch and Copilot is described in **[Scripts & VS Code](SCRIPTS-AND-VSCODE.md)**.
 
 ### 3.2 Output naming and storage
 
