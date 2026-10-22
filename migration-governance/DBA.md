@@ -39,6 +39,10 @@ These two words decide how a path is used: directly, or proven on a cloned VM fi
 
 **On the DBA side, it typically looks like this:**
 - **SQL 2005 still running on Windows Server 2012 R2 or 2025.** Our lab ran it there after in-place OS upgrades, with a clean `DBCC CHECKDB`, crash recovery and fault injection passed. **But** the engine is out of support, the combination is unsupported, and SQL 2005 only does **TLS 1.0** at login. Clients need a TLS 1.0 exception too ([governance §2.6](README.md#26-legacy-protocols-and-insecure-settings)).
+- **SQL 2005 on Windows Server 2008 (not R2).** **The combination was supported** (SQL 2005 SP2 or later), **but both products are out of support**: SQL 2005 since 2016, Windows 2008 since 2020. There are no fixes for either, so it's in the same risk position as an unsupported combination. TLS 1.0 at login applies here too. The way out:
+  - **Data:** the databases restore **directly** on SQL 2022 or 2025, which is **supported** (5.1).
+  - **OS in place, if the server is x64:** 2008 → 2012 → 2016 → 2025, with SQL 2005 kept running (form A, 6.1). **Not tested in our lab**: the lab chain started from 2008 R2. Clone first.
+  - **If the server is 32-bit (x86):** there's **no in-place path**, because Windows 2012 and later are x64 only. Side-by-side.
 - **SQL 2016 on Windows Server 2022, or SQL 2017 on Windows Server 2025.** It installs and runs, **but Microsoft lists both as "not supported"**. Pick SQL 2019 or later for those OS versions.
 - **A restore from SQL 2005 to SQL 2022 or 2025 is supported.** The database is raised to compatibility level 100 automatically. This is the **supported** way off SQL 2005; no extra hop is needed.
 

@@ -104,7 +104,8 @@ Most delays happen **between** the two roles. Ask early, using this list.
 | From | To (in place) | Status |
 |---|---|---|
 | **2003** | Nothing modern | **No path.** Side-by-side only |
-| **2008** (x64) | 2012 | Older Microsoft guidance; no longer in the current table. Try it on a clone (then 2012 → 2016 → 2025); side-by-side if it fails |
+| **2008** (x64) | 2012 | Older Microsoft guidance; no longer in the current table. **Not lab-tested.** Try it on a clone (then 2012 → 2016 → 2025); side-by-side if it fails |
+| **2008** (x86, 32-bit) | Nothing | **No path:** Windows 2012 and later are x64 only. Side-by-side only |
 | **2008 R2 SP1** | 2012 R2 | **Works, but not supported** (no longer in Microsoft's current table). **LAB OK** |
 | **2012** | 2012 R2, 2016 | Supported |
 | **2012 R2** | 2016, 2019, **2025** | **Supported.** Not to 2022 (not supported). 2012 R2 → 2025 is **LAB OK** |
