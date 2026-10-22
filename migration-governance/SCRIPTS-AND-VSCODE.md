@@ -116,8 +116,68 @@ You install it once, and it takes about 15 minutes. VS Code runs on your **admin
 
 ### 3.1 Install
 
-1. Install **Visual Studio Code** and **Git for Windows** from the company software portal.
-2. Open VS Code, go to **Extensions** (`Ctrl+Shift+X`) and install:
+You need **two** programs: **VS Code** (the editor) and **Git for Windows** (the version control that VS Code uses). VS Code doesn't include Git. Without Git, the Source Control view stays empty.
+
+> [!IMPORTANT]
+> **Install so that updates work without admin rights.** VS Code ships an update every month, and Git for Windows a few times a year. Choose an install method that lets them **update themselves**, so nobody stays on an old version. If the company software portal (Company Portal / Software Center) has them, use that first: IT then handles the updates.
+
+#### Visual Studio Code
+
+| Method | Updates | Admin rights | Use it? |
+|---|---|---|---|
+| **Microsoft Store** | Automatic, through the Store | No | **Recommended**, if the Store is allowed on your PC |
+| **User Installer** from the web | VS Code updates itself (it asks to restart) | No | **Recommended** if the Store is blocked |
+| System Installer from the web | Each update needs an admin | Yes | Avoid: updates get stuck |
+
+**From the Microsoft Store**
+1. Open the **Microsoft Store** app, search for **Visual Studio Code**, and check that the publisher is **Microsoft Corporation**.
+2. Click **Get** / **Install**.
+3. Updates arrive through the Store. To check: Store → **Library** → **Get updates**.
+
+**With the User Installer, if the Store is blocked**
+1. Go to **https://code.visualstudio.com/download**.
+2. Under Windows, click **User Installer**, **x64**. Don't pick the System Installer.
+3. Run it. It installs to `%LOCALAPPDATA%\Programs\Microsoft VS Code` without asking for admin rights.
+4. On the **Select Additional Tasks** screen, tick:
+   - **Add "Open with Code" action to Windows Explorer file context menu**
+   - **Add "Open with Code" action to Windows Explorer directory context menu**
+   - **Add to PATH** (already ticked)
+5. Updates: VS Code checks by itself, and shows a blue dot on the gear icon (bottom left) when one is ready. Click **Restart to Update**.
+
+#### Git for Windows
+
+**Requirements:** Windows 10 or 11, 64-bit. Admin rights aren't required: if you're not an administrator, the installer installs for your user only.
+
+| Method | How |
+|---|---|
+| **winget** (simplest) | In PowerShell: `winget install --id Git.Git -e --source winget`. Later updates: `winget upgrade --id Git.Git` |
+| **From the web** | **https://git-scm.com/download/win** → **64-bit Git for Windows Setup** |
+
+Microsoft doesn't publish Git for Windows in the Store; winget is its equivalent.
+
+**Installer options that matter.** Accept the defaults, except where marked:
+
+| Installer screen | Choose | Why |
+|---|---|---|
+| Choosing the default editor | **Use Visual Studio Code as Git's default editor** ⬅ change | Commit messages open in VS Code, not Vim |
+| Adjusting the name of the initial branch | Let Git decide (default) | The team branch comes from the repo anyway |
+| Adjusting your PATH environment | **Git from the command line and also from 3rd-party software** (default) | **Required**: VS Code finds Git through the PATH |
+| Choosing the HTTPS transport backend | **Use the native Windows Secure Channel library** ⬅ change | Uses the company's certificates. Avoids SSL errors behind the corporate proxy |
+| Configuring line ending conversions | Checkout Windows-style, commit Unix-style (default) | |
+| Configure extra options / credential helper | **Git Credential Manager** (default; **keep it**) | Signs you in to Azure DevOps with your work account (3.2) |
+
+**Check that it worked.** Close and reopen VS Code. Then in the terminal (`` Ctrl+` ``):
+
+```powershell
+git --version                      # e.g. git version 2.4x.x.windows.1
+git credential-manager --version   # shows a version, so the Azure DevOps sign-in will work
+```
+
+**Keep Git up to date:** run `winget upgrade --id Git.Git`, or `git update-git-for-windows` if you installed from the web. Once a quarter is enough.
+
+#### Extensions
+
+Open VS Code, go to **Extensions** (`Ctrl+Shift+X`) and install:
 
 | Extension | What it does |
 |---|---|
@@ -126,7 +186,11 @@ You install it once, and it takes about 15 minutes. VS Code runs on your **admin
 | **SQL Server (mssql)** (Microsoft) | For DBAs: run T-SQL against an instance from VS Code |
 | **GitLens** (optional) | Shows who changed each line and when |
 
-3. Tell Git who you are, once. In the terminal (`` Ctrl+` ``):
+Extensions update themselves.
+
+#### Tell Git who you are
+
+Do this once. In the terminal (`` Ctrl+` ``):
 
 ```powershell
 git config --global user.name  "First Last"
