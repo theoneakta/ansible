@@ -7,6 +7,7 @@
   <a href="#2-governance-model"><b>Governance</b></a> &nbsp;·&nbsp;
   <a href="#3-standards"><b>Standards</b></a> &nbsp;·&nbsp;
   <a href="SERVER-PAGE-TEMPLATE.md"><b>Server page template</b></a> &nbsp;·&nbsp;
+  <a href="SCRIPTS-AND-VSCODE.md"><b>Scripts &amp; VS Code</b></a> &nbsp;·&nbsp;
   <a href="#phase-1--discovery"><b>Discovery</b></a> &nbsp;·&nbsp;
   <a href="#phase-2--install--configure"><b>Install &amp; configure</b></a> &nbsp;·&nbsp;
   <a href="#phase-3--migration"><b>Migration</b></a> &nbsp;·&nbsp;
@@ -225,10 +226,14 @@ flowchart TD
 
 ### 3.1 Scripts and repository
 
-- Use the **approved scripts in the team's shared Git repository**, so every server is discovered the same way.
-- Is the script missing something? **Change it in the repository** as a reviewed change, so everyone benefits. You don't need VS Code: the repository's web editor, or any text editor plus `git`, works.
-- Every output records the **script version or commit** it came from.
-- Discovery scripts are **read-only**. They never change or delete anything on the server.
+**Bring your own script.** Everyone can use the script they know, as long as it follows five rules:
+1. it produces the standard output (3.2, 3.3);
+2. it covers the Discovery checklist;
+3. it's read-only;
+4. it contains no secrets;
+5. it's in the team repository before it runs on production, with its version recorded in the summary.
+
+How to work with the repository, VS Code, the `develop` branch and GitHub Copilot is described in **[Scripts & VS Code](SCRIPTS-AND-VSCODE.md)**.
 
 ### 3.2 Output naming and storage
 
@@ -306,7 +311,7 @@ gantt
 
 ### 1.1 Tooling per source version
 
-One script covers every version. Its core is **PowerShell 2.0 compatible**, and it uses the newer cmdlets only when `$PSVersionTable.PSVersion.Major -ge 3`.
+Whichever script you use, it has to run on the server's PowerShell version. The **optional reference script** covers every version: its core is PowerShell 2.0 compatible, and it uses the newer cmdlets only when `$PSVersionTable.PSVersion.Major -ge 3`.
 
 | Source OS | PowerShell | What this means |
 |---|---|---|
@@ -318,7 +323,7 @@ One script covers every version. Its core is **PowerShell 2.0 compatible**, and 
 | **2016 / 2019** | 5.1 | Full cmdlets, including the **SMBv1 access audit** (`Set-SmbServerConfiguration -AuditSmb1Access $true`). |
 
 > [!TIP]
-> **dbatools** needs a modern PowerShell. Run it from an **admin workstation** against every instance, never on the server itself. Most read commands work from SQL 2000 to 2019, so one DBA script covers the whole estate.
+> **dbatools** needs a modern PowerShell. Run it from an **admin workstation** against every instance, never on the server itself. Most read commands work from SQL 2000 to 2019, so a single DBA script can cover the whole estate.
 
 ### 1.2 Server: platform, identity and software
 
