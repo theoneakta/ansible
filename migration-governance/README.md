@@ -157,11 +157,26 @@ Gate 1 records one **disposition** for each server: **migrate** (Phases 2 → 3 
 
 ### 2.4 Cadence
 
-| Forum | When | Who | Output |
-|---|---|---|---|
-| **Migration stand-up** | Weekly, 30 min | Sysadmins, DBAs, migration lead | Status per server, new flags, blockers |
-| **Gate review** | When a server is ready for a gate | Migration lead, the R people, app owner for Gate 3 | Signed gate, or a list of what's missing |
-| **Steering** | Monthly | Migration lead, management, security | Risk acceptances, priorities, resources |
+Governance uses the **existing meetings**; it doesn't add new ones. Each meeting has a defined migration role:
+
+| Meeting | When | Who | Migration topics | Output |
+|---|---|---|---|---|
+| **Daily status** | Mon–Fri, 15 min | Sysadmins, DBAs, tech lead | Per-server progress, **new RED flags** (owner assigned on the spot), what's ready for a gate | Updated board, flag owners |
+| **Tech discussion** | Mon–Thu afternoon, 30 min | Sysadmins, DBAs, tech lead, app owner or security when needed | Review of Discovery summaries, technical decisions on flags, migration method, **gate reviews** for Gates 1, 2 and 4 | Logged decisions, signed gates |
+| **Sprint ceremonies** | Per sprint | Agile team | **Planning:** which servers and phases go into the sprint. **Review:** gates signed during the sprint. **Retro:** improvements to the scripts and this guide | Sprint backlog, done items, repository changes |
+| **Blockers meeting** | Weekly | PM, tech lead, managers (security when a risk acceptance is on the agenda) | Only flags marked **BLOCKER**, risk acceptances, priorities and resources | Blocker decisions in the decision log |
+
+> [!TIP]
+> **Definition of done for a sprint item:** a server's phase is done when its **gate is signed**. Work without a signed gate stays in progress.
+
+<table>
+<tr><th></th><th>Monday</th><th>Tuesday</th><th>Wednesday</th><th>Thursday</th><th>Friday</th></tr>
+<tr><td><b>Morning</b></td><td>Daily status</td><td>Daily status</td><td>Daily status</td><td>Daily status</td><td>Daily status</td></tr>
+<tr><td><b>Afternoon</b></td><td>Tech discussion</td><td>Tech discussion</td><td>Tech discussion</td><td>Tech discussion</td><td></td></tr>
+<tr><td><b>Weekly</b></td><td colspan="5" align="center">Blockers meeting (PM · tech lead · managers) &nbsp;·&nbsp; Sprint ceremonies on the sprint calendar</td></tr>
+</table>
+
+Gate 3 is signed by the **app owner**. Invite them to the tech discussion for that gate, or collect the sign-off in writing.
 
 ### 2.5 Decisions, exceptions and escalation
 
@@ -169,12 +184,12 @@ Every RED flag ends with **one recorded decision**: *fix*, *accept the risk*, or
 
 ```mermaid
 flowchart TD
-    F["RED flag found"] --> O["Owner assigned<br/>at the next stand-up"]
+    F["RED flag found"] --> O["Owner assigned<br/>at the daily status"]
     O --> Q{"Can the team fix it<br/>within the plan?"}
     Q -- yes --> FIX["Decision: FIX<br/>logged with a due date"]
     Q -- no --> R{"Is the risk acceptable?<br/>(security consulted)"}
     R -- yes --> ACC["Decision: ACCEPT<br/>signed by app owner + security"]
-    R -- no --> BLK["Decision: BLOCKER<br/>escalated to steering"]
+    R -- no --> BLK["Decision: BLOCKER<br/>weekly blockers meeting"]
 
     classDef ok fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
     classDef stop fill:#f6dcdc,stroke:#a33,color:#3a0d0d
