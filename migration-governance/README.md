@@ -233,16 +233,19 @@ flowchart TD
 
 ```text
 Migration/
-└── <SERVER>/
-    ├── 1-Discovery/
-    │   ├── <SERVER>_SUMMARY_<yyyyMMdd>.csv          flags only, one row per finding
-    │   ├── <SERVER>_<area>_<yyyyMMdd>.csv           e.g. APP01_services_20261022.csv
-    │   └── <INSTANCE>_sql-<area>_<yyyyMMdd>.csv     e.g. APP01-SQL2005_sql-jobs_20261022.csv
-    ├── 2-Build/
-    ├── 3-Migration/
-    ├── 4-Decommission/
-    └── GATES.md                                     signed gate checklists for this server
+└── <BUNDLE>/                                            e.g. B03-Finance
+    └── <SERVER>/
+        ├── 1-Discovery/
+        │   ├── <SERVER>_SUMMARY_<yyyyMMdd>.csv          flags only, one row per finding
+        │   ├── <SERVER>_<area>_<yyyyMMdd>.csv           e.g. APP01_services_20261022.csv
+        │   └── <INSTANCE>_sql-<area>_<yyyyMMdd>.csv     e.g. APP01-SQL2005_sql-jobs_20261022.csv
+        ├── 2-Build/
+        ├── 3-Migration/
+        ├── 4-Decommission/
+        └── GATES.md                                     signed gate checklists for this server
 ```
+
+A **bundle** is the group of servers that are discovered and migrated together. Each server belongs to exactly one bundle. If a server moves to another bundle, its folder moves with it.
 
 All of this lives in **one SharePoint location**, with no copies in personal folders or mailboxes.
 
@@ -677,7 +680,7 @@ A server can also be **split**: for example, migrate two databases and retire th
 
 - [ ] Server and SQL scripts ran from the **approved repository version** (version recorded in the summary)
 - [ ] Capture ran for the **Discovery week**, and every **monthly, quarterly or yearly** task or job has an owner who confirmed what it connects to
-- [ ] Output is in `Migration/<SERVER>/1-Discovery/` with standard names
+- [ ] Output is in `Migration/<BUNDLE>/<SERVER>/1-Discovery/` with standard names
 - [ ] Summary **reviewed by** the sysadmin ______ and the DBA ______ on ______
 - [ ] Every RED flag has an owner and a logged decision
 - [ ] App owner has **confirmed the dependencies** and the unused-data candidates
@@ -912,6 +915,7 @@ SIGNED: <name>                               DATE: 2026-11-06
 | **Quiet period** | Time after cut-over when the old server stays up and is watched for missed dependencies |
 | **Hop** | An intermediate version needed because the source can't go straight to the target |
 | **MFT** | Managed file transfer: the central platform that replaces FTP flows, with secure protocols, logging and alerting |
+| **Bundle** | A group of servers discovered and migrated together; the top folder level in the migration storage |
 | **Disposition** | The Gate 1 decision for a server or part of one: migrate, consolidate or retire |
 | **Scream test** | Disabling a server that's being retired, in a way that can be quickly undone, to find out whether anyone still depends on it |
 
