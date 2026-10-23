@@ -114,6 +114,17 @@
     padding: .4rem .7rem; font: inherit; width: 320px; max-width: 100%;
   }
   input.filter:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
+  .filterbar { display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
+  .drop { display: flex; flex-direction: column; gap: .2rem; font-size: .72rem; color: var(--muted); }
+  .drop select {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px;
+    padding: .38rem .5rem; font: inherit; font-size: .85rem; min-width: 130px; max-width: 220px;
+  }
+  .drop select.on { border-color: var(--accent2); }
+  .drop select:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
+  .filterbar input.filter { width: 220px; }
+  .clear { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: .38rem .7rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  .clear:hover { color: var(--text); }
   .err { color: var(--fail); }
   .loading { opacity: .55; transition: opacity .2s; }
   .chart { width: 100%; position: relative; min-height: 60px; }
@@ -671,10 +682,22 @@ function liveFilter(text) {
     ? f === "port" ? String(fields.port ?? "") === v : String(fields[f] ?? "").toLowerCase().includes(v)
     : Object.values(fields).some(x => String(x ?? "").toLowerCase().includes(v)));
 }
+// The live dropdowns: what each filters on in a flow, and how its options read.
+const LIVE_DROPS = [
+  {k: "host", label: "Device", val: f => f.host, text: f => f.host_name ? `${f.host_name} (${f.host})` : f.host},
+  {k: "proto", label: "Protocol", val: f => String(f.proto_num), text: f => f.proto},
+  {k: "port", label: "Port / service", val: f => String(f.port), text: f => `${f.port}${f.service ? " " + f.service : ""}`},
+  {k: "country", label: "Country", val: f => f.country, text: f => flag(f.country)},
+  {k: "site", label: "Website", val: f => f.site, text: f => f.site},
+  {k: "asn", label: "Network", val: f => f.asn ? String(f.asn) : "", text: f => f.asn_name || "AS" + f.asn},
+];
 
 async function livePage() {
   let sel = localGet("liveIface"), since = 0, big = null, view = localGet("liveView") || "throughput";
   let filterText = localGet("liveFilter") || "", flows = null, top = null;
+  let picks = {};
+  try { picks = JSON.parse(localGet("liveDrops") || "{}") || {}; } catch {}
+  for (const k of ["proto", "port", "asn"]) if (picks[k] && !/^\d+$/.test(picks[k])) delete picks[k];  // saved by an older page
   const names = {};
   const hist = {};                 // device -> {label, t, down, up}
   const talk = {t: [], by: {}};    // ip -> bits/s per top-talkers sample
@@ -691,8 +714,12 @@ async function livePage() {
       <div class="card"><div class="head"><h3>Bandwidth right now</h3></div><div id="ldonut"><div class="empty">Waiting for the first sample…</div></div></div>
     </div>
     <div class="card">
-      <div class="head"><h3>Who's talking</h3><div class="spacer"></div>
-        <input class="filter" id="lf" placeholder="Filter: name, IP, website, port:443, proto:udp, cc:us" value="${esc(filterText)}"></div>
+      <div class="head"><h3>Who's talking</h3><div class="spacer"></div><span class="hint" style="margin:0">Lists fill from the last 2 minutes of traffic</span></div>
+      <div class="filterbar" id="lbar">
+        ${LIVE_DROPS.map(d => `<label class="drop">${d.label}<select data-k="${d.k}"><option value="">All</option></select></label>`).join("")}
+        <label class="drop">Search<input class="filter" id="lf" placeholder="name, IP, port:443, cc:us…" value="${esc(filterText)}"></label>
+        <button class="clear" id="lclear">Clear filters</button>
+      </div>
       <div id="ltabs"></div>
     </div>`;
 
@@ -775,11 +802,43 @@ async function livePage() {
     renderLists();
   }
 
+  // Two fetches: the newest flows unfiltered (the dropdowns' options), and,
+  // when something is picked, the same filtered on the server - so a pick
+  // searches every recent flow, not just the newest 2,000. Fetched whichever
+  // tab is open, since the dropdowns need them.
+  let sample = null;
   async function flowTick() {
-    if (localGet("tab:live") !== "flows") return;
-    flows = await api("/api/live/flows", new URLSearchParams({seconds: 120}));
+    const p = new URLSearchParams({seconds: 120});
+    const filtered = Object.keys(picks).length > 0;
+    Object.entries(picks).forEach(([k, v]) => p.set(k, v));
+    const [s, f] = await Promise.all([api("/api/live/flows", new URLSearchParams({seconds: 120})),
+                                      filtered ? api("/api/live/flows", p) : null]);
+    sample = s; flows = f || s;
+    fillDrops();
     renderLists();
   }
+
+  // Dropdown options: the values in the recent flows, busiest first, with a
+  // count; a picked value stays listed even when it has gone quiet.
+  function fillDrops() {
+    if (!sample || document.activeElement?.closest?.("#lbar select")) return;  // don't rebuild an open list
+    for (const d of LIVE_DROPS) {
+      const el = document.querySelector(`#lbar select[data-k="${d.k}"]`); if (!el) continue;
+      const seen = new Map();
+      for (const f of sample.flows) {
+        const v = d.val(f); if (!v) continue;
+        const o = seen.get(v) || {v, text: d.text(f), n: 0}; o.n++; seen.set(v, o);
+      }
+      const opts = [...seen.values()].sort((a, b) => b.n - a.n || a.text.localeCompare(b.text)).slice(0, 80);
+      if (picks[d.k] && !seen.has(picks[d.k])) opts.unshift({v: picks[d.k], text: picks[d.k], n: 0});
+      el.innerHTML = `<option value="">All</option>` + opts.map(o =>
+        `<option value="${esc(o.v)}"${o.v === picks[d.k] ? " selected" : ""}>${esc(o.text)} (${o.n})</option>`).join("");
+      el.classList.toggle("on", !!picks[d.k]);
+    }
+  }
+  const flowMatches = (f, match) => LIVE_DROPS.every(d => !picks[d.k] || d.val(f) === picks[d.k]) &&
+    match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
+           site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn});
 
   // Two lists under one filter: the firewall's devices (now) and the recent flows.
   const lt = document.getElementById("ltabs");
@@ -787,12 +846,17 @@ async function livePage() {
     {id: "talkers", label: "Devices now", html: () => `<div id="lt-talkers"><div class="empty">Waiting for the first sample…</div></div>`},
     {id: "flows", label: "Flows (last 2 min)", html: () => `<div id="lt-flows"><div class="empty">Loading flows…</div></div>`},
   ]);
-  lt.addEventListener("tab", () => { renderLists(); safe(flowTick)(); });
+  lt.addEventListener("tab", () => renderLists());
   function renderLists() {
     const match = liveFilter(filterText);
     const tEl = document.getElementById("lt-talkers");
     if (tEl && top) {
-      const rows = top.hosts.filter(h => match({host: h.name, ip: h.ip + " " + h.peers.map(p => p.ip).join(" "), site: h.peers.map(p => p.name).join(" ")}));
+      // The firewall's live list only knows devices and peers: the Device pick
+      // narrows it directly, the other picks keep devices with matching flows.
+      const flowPicks = LIVE_DROPS.some(d => d.k !== "host" && picks[d.k]);
+      const withFlows = flowPicks && flows ? new Set(flows.flows.filter(f => flowMatches(f, () => true)).map(f => f.host)) : null;
+      const rows = top.hosts.filter(h => (!picks.host || h.ip === picks.host) && (!withFlows || withFlows.has(h.ip)) &&
+        match({host: h.name, ip: h.ip + " " + h.peers.map(p => p.ip).join(" "), site: h.peers.map(p => p.name).join(" ")}));
       const max = Math.max(1, ...rows.map(total));
       tEl.innerHTML = `<div class="tbl"><table><thead><tr><th>Device</th><th class="n">Download</th><th class="n">Upload</th><th>Talking to</th></tr></thead><tbody>${
         rows.slice(0, 30).map(h => `<tr data-href="${esc(drill("host", h.ip))}"><td>${hostCell(h.ip, h.name)}<div class="bar" style="width:${(100 * total(h) / max).toFixed(1)}%"></div></td>
@@ -804,8 +868,7 @@ async function livePage() {
     }
     const fEl = document.getElementById("lt-flows");
     if (fEl && flows) {
-      const rows = flows.flows.filter(f => match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
-        site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn}));
+      const rows = flows.flows.filter(f => flowMatches(f, match));
       fEl.innerHTML = table(rows, [
         {k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)},
         {k: "rip", label: "Remote", fmt: r => `<a href="${drill("remote", r.rip)}">${esc(r.rip)}</a>${r.site ? ` <span class="tag">${esc(r.site)}</span>` : ""}`},
@@ -813,10 +876,31 @@ async function livePage() {
         {k: "port", label: "Service", fmt: svcText},
         DOWN, UP,
         {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {limit: 50, sortable: true}) +
-        `<p class="hint">${num(rows.length)} of ${num(flows.flows.length)} conversations in the last ${flows.seconds / 60} minutes &middot; flows arrive up to a minute late (the firewall reports a long connection once a minute)</p>`;
+        `<p class="hint">${num(rows.length)} conversations${Object.keys(picks).length || filterText ? " match" : ""} in the last ${flows.seconds / 60} minutes${
+          flows.capped ? ` (the newest ${num(flows.flows.length)} - narrow it with the dropdowns)` : ""} &middot; flows arrive up to a minute late (the firewall reports a long connection once a minute)</p>`;
     }
   }
   document.getElementById("lf").oninput = e => { filterText = e.target.value; localSet("liveFilter", filterText); renderLists(); };
+  document.querySelectorAll("#lbar select").forEach(el => el.onchange = () => {
+    if (el.value) picks[el.dataset.k] = el.value; else delete picks[el.dataset.k];
+    localSet("liveDrops", JSON.stringify(picks));
+    el.classList.toggle("on", !!el.value);
+    el.blur();
+    refilter();
+  });
+  document.getElementById("lclear").onclick = () => {
+    picks = {}; filterText = ""; document.getElementById("lf").value = "";
+    localSet("liveDrops", "{}"); localSet("liveFilter", "");
+    fillDrops(); refilter();
+  };
+  // A new pick needs the server's answer - say so rather than show the old list filtered.
+  function refilter() {
+    flows = null;
+    const fEl = document.getElementById("lt-flows");
+    if (fEl) fEl.innerHTML = `<div class="empty">Filtering…</div>`;
+    renderLists();
+    safe(flowTick)();
+  }
   document.querySelectorAll("#lview button").forEach(b => b.onclick = () => { view = b.dataset.v; localSet("liveView", view); drawChart(true); tick(); });
 
   const safe = fn => async () => { try { await fn(); } catch (e) { setErr(e.message); } };

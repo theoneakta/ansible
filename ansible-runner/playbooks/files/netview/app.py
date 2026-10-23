@@ -536,21 +536,40 @@ def live_top():
     return {"t": top["t"], "hosts": hosts, "error": live.status["top_error"]}
 
 
+LIVE_LIMIT = 2000
+
+
 @app.get("/api/live/flows")
-def live_flows(seconds: int = 120):
+def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[int] = None,
+               port: Optional[int] = None, country: Optional[str] = None, site: Optional[str] = None,
+               asn: Optional[int] = None):
     """The latest internet conversations (device, remote, service), newest
     first, from the flows - the firewall reports a long connection once a
-    minute, so this trails real time by up to that."""
+    minute, so this trails real time by up to that. The live page's dropdowns
+    filter here, so a pick searches every recent flow, not the newest
+    LIVE_LIMIT."""
     seconds = max(60, min(seconds, 900))
     now = int(time.time())
+    conds, p = ["1"], base_params(now - seconds, now)
+    for name, value, cond, check in [
+            ("host", host, "local = toIPv6({f_host:String})", check_ip),
+            ("proto", proto, "Proto = {f_proto:UInt32}", int),
+            ("port", port, "rport = {f_port:UInt32}", int),
+            ("country", country, "rcc = {f_country:String}", check_country),
+            ("site", site, "matched.site = {f_site:String}", check_site),  # "site" alone is the output column
+            ("asn", asn, "ras = {f_asn:UInt32}", int)]:
+        if value is not None and value != "":
+            p[f"f_{name}"] = check(value)
+            conds.append(cond)
     rows = query(f"""WITH {matched()}
         SELECT {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service,
                ras AS asn, {ASN_NAME} AS asn_name, any(rcc) AS country, anyIf(site, site != '') AS site,
                sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last
-        FROM matched GROUP BY local, remote, Proto, rport, ras
-        ORDER BY last DESC, down + up DESC LIMIT 2000""", **base_params(now - seconds, now))
-    return {"seconds": seconds, "now": now, "flows": name_rows(rows, "host")}
+        FROM matched WHERE {" AND ".join(conds)} GROUP BY local, remote, Proto, rport, ras
+        ORDER BY last DESC, down + up DESC LIMIT {LIVE_LIMIT + 1}""", **p)
+    return {"seconds": seconds, "now": now, "capped": len(rows) > LIVE_LIMIT,
+            "flows": name_rows(rows[:LIVE_LIMIT], "host")}
 
 
 @app.get("/api/health")
