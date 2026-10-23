@@ -361,10 +361,13 @@ Each server has **one page** that brings together its status, people, links (ADO
 
 **Template:** [SERVER-PAGE-TEMPLATE.md](SERVER-PAGE-TEMPLATE.md) (view on GitHub) · [SERVER-PAGE-TEMPLATE.docx](SERVER-PAGE-TEMPLATE.docx) (Word copy)
 
-Loop can't import a file, but it keeps formatting when you paste. To use the template in Microsoft Loop:
-1. Open the **Word copy**, press **Ctrl+A** and then **Ctrl+C**. Copying from the rendered GitHub page also works.
-2. Paste it into a new Loop page. Headings, tables and lists are kept. The checkboxes (☐) arrive as text: type `[]` at the start of those lines to turn them into Loop checklists.
+Loop can't import a file, and it only keeps **basic formatting** when you paste: headings, bold, lists, checklists and plain tables. Colours, shading and fonts are lost. To use the template in Microsoft Loop:
+1. Open [SERVER-PAGE-TEMPLATE.md](SERVER-PAGE-TEMPLATE.md) **on GitHub**, so it shows rendered, then select the page and copy it.
+2. Paste it into a new Loop page. **Don't paste from the Word copy:** Word's clipboard format makes Loop lose the lists and headings. Check that the checklists came through; if not, type `[]` at the start of those lines.
 3. Save the page as a **template** in the bundle's Loop workspace, so each server page starts from the same layout.
+
+> [!NOTE]
+> **The guides don't go into Loop.** Their layout (colours, diagrams, matrix) can't exist there. The Loop workspace home page **links** to them on GitHub, or to the Word copies in `word/` ([4.3](#43-where-each-kind-of-information-lives)).
 
 <p align="center"><img src="assets/divider.svg" width="100%" alt=""></p>
 
