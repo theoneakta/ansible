@@ -174,6 +174,57 @@ lanf AS (
       AND SrcNetRole = {{lan:String}} AND DstNetRole = {{lan:String}}
 )"""
 
+# The same LAN flows de-duplicated: a flow between VMs on two nodes is seen by
+# both (27% of the LAN bytes, measured), so per flow and minute the larger copy.
+LAN_DEDUP = f"""
+lan1 AS (
+    SELECT min(tr) AS t, SrcAddr, DstAddr, SrcPort, DstPort, Proto, max(bx) AS b
+    FROM (SELECT toStartOfMinute(TimeReceived) AS tm, min(TimeReceived) AS tr, ExporterName,
+                 SrcAddr, DstAddr, SrcPort, DstPort, Proto, sum(Bytes * SamplingRate) AS bx
+          FROM flows
+          WHERE ExporterName IN {{lanexp:Array(String)}} AND TimeReceived {BETWEEN}
+            AND SrcNetRole = {{lan:String}} AND DstNetRole = {{lan:String}}
+          GROUP BY tm, ExporterName, SrcAddr, DstAddr, SrcPort, DstPort, Proto)
+    GROUP BY tm, SrcAddr, DstAddr, SrcPort, DstPort, Proto
+)"""
+
+# Scopes for the explore views. Every row reads from one LAN device's side
+# (local / remote / dl = received), kind = wan | lan. A LAN flow becomes two
+# rows - sent by one device, received by the other - so per-device figures
+# are right; views across devices count LAN bytes on the sending side only.
+SCOPES = ("internet", "lan", "all")
+FLOWSX_WAN = "SELECT t, dl, local, remote, ras, rcc, rport, Proto, b, 'wan' AS kind FROM wan"
+FLOWSX_LAN = """SELECT t, side = 1 AS dl, if(side = 1, DstAddr, SrcAddr) AS local, if(side = 1, SrcAddr, DstAddr) AS remote,
+           toUInt32(0) AS ras, '' AS rcc, if(side = 1, SrcPort, DstPort) AS rport, Proto, b, 'lan' AS kind
+    FROM lan1 ARRAY JOIN [0, 1] AS side"""
+ONCE = "NOT (kind = 'lan' AND dl)"  # a LAN byte counted once, on the sender's row
+
+
+def scoped(scope):
+    """The CTEs behind `matched` for a scope (website match on internet rows)."""
+    if scope not in SCOPES:
+        raise HTTPException(400, f"scope must be one of {list(SCOPES)}")
+    ctes, parts = [], []
+    if scope != "lan":
+        ctes.append(WAN)
+        ctes.append(f"wanx AS ({FLOWSX_WAN})")
+        if dns.status["enabled"]:  # only internet rows can have a website
+            ctes.append(f"""dips AS (
+    SELECT client, ip, t AS dt, site FROM netview.dns_ips
+    WHERE t BETWEEN toDateTime({{start:UInt32}}) - INTERVAL 1 DAY AND toDateTime({{end:UInt32}})
+)""")
+            parts.append("""SELECT w.*, d.site AS site FROM wanx AS w ASOF LEFT JOIN dips AS d
+      ON w.local = d.client AND w.remote = d.ip AND w.t >= d.dt""")
+        else:
+            parts.append("SELECT *, '' AS site FROM wanx")
+    if scope != "internet":
+        ctes.append(LAN_DEDUP)
+        ctes.append(f"lanx AS ({FLOWSX_LAN})")
+        parts.append("SELECT *, '' AS site FROM lanx")
+    ctes.append("matched AS (\n    " + "\n    UNION ALL\n    ".join(parts) + "\n)")
+    return ",\n".join(ctes)
+
+
 # A visit: one device using a site within a 5-minute window - so the sites a
 # device looks up every few seconds in the background don't top the list.
 VISITS = "uniq(client, toStartOfInterval(t, INTERVAL 5 MINUTE))"
@@ -200,8 +251,10 @@ BY = {
 }
 
 
-def matched():
-    return UNMATCHED if not dns.status["enabled"] else MATCHED
+def matched(scope="internet"):
+    if scope == "internet":  # the plain internet view, as site_rows uses it
+        return UNMATCHED if not dns.status["enabled"] else MATCHED
+    return scoped(scope)
 
 
 def base_params(start, end):
@@ -287,10 +340,12 @@ def index():
 
 
 @app.get("/api/explore")
-def explore(request: Request, range: str = "6h",
+def explore(request: Request, range: str = "6h", scope: str = "internet",
             frm: Optional[int] = Query(None, alias="from"), to: Optional[int] = None):
-    """Internet traffic for any filter combination: chart, totals, and the top
-    hosts / remotes / networks / countries / services / websites behind it."""
+    """Traffic for any filter combination and scope (internet, LAN-to-LAN or
+    both): chart, totals, and the top hosts / remotes / networks / countries /
+    services / websites behind it. Down = received by the LAN device, up =
+    sent - so on the LAN scope both are the LAN traffic."""
     start, end, step = window(range, frm, to)
     where, fp, applied = filters(request)
     p = base_params(start, end) | fp | {"step": step}
@@ -303,14 +358,17 @@ def explore(request: Request, range: str = "6h",
            for name, grouped in {"hosts": ["local"], "remotes": ["remote"], "asns": ["ras"],
                                  "countries": ["rcc"], "services": ["Proto", "rport"],
                                  "sites": ["site"], "chart": ["ts"], "totals": []}.items()}
-    rows = query(f"""WITH {matched()}
+    kind = "'wan'" if scope == "internet" else "kind"  # the plain internet CTE has no kind column
+    rows = query(f"""WITH {matched(scope)}
         SELECT grouping({", ".join(cols)}) AS g,
                toUInt32(toStartOfInterval(t, toIntervalSecond({{step:UInt32}}))) AS ts,
                {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                ras AS asn, {ASN_NAME} AS asn_name, rcc AS country,
                Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service, site,
                sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows,
-               uniq(local) AS hosts, uniq(remote) AS remotes, sumIf(b, site = '') AS unnamed,
+               uniq(local) AS hosts, uniq(remote) AS remotes,
+               sumIf(b, site = '' AND {kind} = 'wan') AS unnamed, sumIf(b, {kind} = 'wan') AS internet,
+               sumIf(b, {kind} = 'lan' AND NOT dl) AS lan, sumIf(b, {kind} = 'lan' AND dl) AS lan_rx,
                any(ras) AS any_asn, any(rcc) AS any_cc
         FROM matched WHERE {where}
         GROUP BY GROUPING SETS ((local), (remote), (ras), (rcc), (Proto, rport), (site), (ts), ())
@@ -326,7 +384,8 @@ def explore(request: Request, range: str = "6h",
         if name:
             tops[name].append(r)
     chart = tops.pop("chart")
-    totals = (tops.pop("totals") or [{"down": 0, "up": 0, "flows": 0, "hosts": 0, "remotes": 0, "unnamed": 0}])[0]
+    totals = (tops.pop("totals") or [{"down": 0, "up": 0, "flows": 0, "hosts": 0, "remotes": 0, "unnamed": 0,
+                                      "internet": 0, "lan": 0, "lan_rx": 0}])[0]
     tops = {name: rows[:15] for name, rows in tops.items()}
     asn_names = {r["asn"]: r["asn_name"] for r in tops["asns"]}
     missing = {r["asn"] for r in tops["remotes"] if r["asn"] not in asn_names}
@@ -337,27 +396,34 @@ def explore(request: Request, range: str = "6h",
     for r in tops["remotes"]:
         r["asn_name"] = asn_names.get(r["asn"], "")
     name_rows(tops["hosts"], "host")
-    return {"window": win_out(start, end, step), "filters": applied, "dns": dns.status["enabled"],
+    name_rows(tops["remotes"], "rip")  # LAN peers are devices too
+    return {"window": win_out(start, end, step), "filters": applied, "dns": dns.status["enabled"], "scope": scope,
             "series": series(chart, start, end, step), "totals": totals, "tops": tops,
             "names": {k: name_of(v) for k, v in applied.items() if k == "host"}}
 
 
 @app.get("/api/breakdown")
-def breakdown(request: Request, by: str = "host", range: str = "6h",
+def breakdown(request: Request, by: str = "host", range: str = "6h", scope: str = "internet",
               frm: Optional[int] = Query(None, alias="from"), to: Optional[int] = None):
     """Stacked chart: traffic over time split by one dimension - the top STACK
-    keys, the rest summed as "other" (bits/s, both directions)."""
+    keys, the rest summed as "other" (bits/s, both directions). Across devices
+    a LAN byte counts once (the sender's row), so the stack adds up to the
+    traffic; for one device both its sent and received LAN traffic count."""
     if by not in BY:
         raise HTTPException(400, f"by must be one of {list(BY)}")
     start, end, step = window(range, frm, to)
     where, fp, applied = filters(request)
+    if scope != "internet" and "host" not in applied:
+        where += f" AND {ONCE}"
     p = base_params(start, end) | fp | {"step": step}
     key = BY[by]
-    rows = query(f"""WITH {matched()}
+    # The top keys first, then the chart - one IN (subquery) over a scoped CTE
+    # (ARRAY JOIN inside) is more than the ClickHouse analyzer resolves.
+    p["top"] = [r["k"] for r in query(f"""WITH {matched(scope)}
+        SELECT {key} AS k FROM matched WHERE {where} GROUP BY k ORDER BY sum(b) DESC LIMIT {STACK}""", **p)]
+    rows = query(f"""WITH {matched(scope)}
         SELECT toUInt32(toStartOfInterval(t, toIntervalSecond({{step:UInt32}}))) AS ts,
-               if(k IN (SELECT {key} FROM matched WHERE {where}
-                        GROUP BY {key} ORDER BY sum(b) DESC LIMIT {STACK}), k, '~other~') AS key,
-               sum(b) AS bytes
+               if(k IN {{top:Array(String)}}, k, '~other~') AS key, sum(b) AS bytes
         FROM (SELECT t, b, {key} AS k FROM matched WHERE {where})
         GROUP BY ts, key ORDER BY ts""", **p)
     ts = buckets(start, end, step)
@@ -377,7 +443,7 @@ def breakdown(request: Request, by: str = "host", range: str = "6h",
 def label(by, key):
     if key == "other":
         return "Everything else"
-    if by == "host":
+    if by in ("host", "remote"):
         return name_of(key) or key
     if by == "site":
         return key or "(no DNS name)"
@@ -546,8 +612,9 @@ PRIO = sorted(live.INTERFACES, key=lambda d: {"vpn": 0, "wan": 1, "lan": 2}.get(
 
 # Every recent flow touching the LAN, read from the LAN device's side, with
 # the interface it crossed (pif): the firewall's flows (internet, VPN,
-# Tailscale, the firewall itself) and the Proxmox nodes' LAN-to-LAN ones.
-LIVE = f"""
+# Tailscale, the firewall itself) and the Proxmox nodes' LAN-to-LAN ones,
+# de-duplicated (lan1) and counted once, as sent by their source.
+LIVE = f"""{LAN_DEDUP},
 livef AS (
     SELECT TimeReceived AS t,
            DstNetRole = {{lan:String}} AND SrcNetRole != {{lan:String}} AS dl,
@@ -555,13 +622,12 @@ livef AS (
            if(dl, SrcAS, DstAS) AS ras,
            replaceAll(toString(if(dl, SrcCountry, DstCountry)), '\\0', '') AS rcc,
            if(dl, SrcPort, DstPort) AS rport, Proto, Bytes * SamplingRate AS b,
-           if(ExporterName = {{wan:String}},
-              if(InIfName IN {{lanifs:Array(String)}}, OutIfName, InIfName),
-              {{lanif:String}}) AS pif
+           if(InIfName IN {{lanifs:Array(String)}}, OutIfName, InIfName) AS pif
     FROM flows
-    WHERE TimeReceived {BETWEEN}
-      AND ((ExporterName = {{wan:String}} AND (SrcNetRole = {{lan:String}} OR DstNetRole = {{lan:String}}))
-        OR (ExporterName IN {{lanexp:Array(String)}} AND SrcNetRole = {{lan:String}} AND DstNetRole = {{lan:String}}))
+    WHERE TimeReceived {BETWEEN} AND ExporterName = {{wan:String}}
+      AND (SrcNetRole = {{lan:String}} OR DstNetRole = {{lan:String}})
+    UNION ALL
+    SELECT t, false, SrcAddr, DstAddr, toUInt32(0), '', DstPort, Proto, b, {{lanif:String}} FROM lan1
 ),
 dips AS (
     SELECT client, ip, t AS dt, site FROM netview.dns_ips
@@ -573,6 +639,39 @@ lmatched AS (
       ON l.local = d.client AND l.remote = d.ip AND l.t >= d.dt
 )"""
 LIVE_NODNS = LIVE.split("dips AS (")[0] + "lmatched AS (SELECT *, '' AS site FROM livef)"
+
+
+CONVERSATION = "local, remote, Proto, rport, ras"
+# The interface a conversation counts under: the first of PRIO it touched.
+VIA = """groupUniqArray(pif) AS ifs,
+               if(arrayFirst(x -> has(ifs, x), {prio:Array(String)}) != '',
+                  arrayFirst(x -> has(ifs, x), {prio:Array(String)}), 'other') AS via_dev"""
+
+
+def live_where(start, end, host, proto, port, country, site, asn, iface):
+    """The live filters (the page's dropdowns and interface toggles): WHERE
+    conditions, a HAVING on the conversation's interface, and the params."""
+    conds, p = ["1"], base_params(start, end) | {
+        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO}
+    having = None
+    if iface:
+        p["f_ifaces"] = [i for i in iface if i in live.INTERFACES or i == "other"]
+        having = "via_dev IN {f_ifaces:Array(String)}"
+    for name, value, cond, check in [
+            ("host", host, "local = toIPv6({f_host:String})", check_ip),
+            ("proto", proto, "Proto = {f_proto:UInt32}", int),
+            ("port", port, "rport = {f_port:UInt32}", int),
+            ("country", country, "rcc = {f_country:String}", check_country),
+            ("site", site, "lmatched.site = {f_site:String}", check_site),  # "site" alone is an output column
+            ("asn", asn, "ras = {f_asn:UInt32}", int)]:
+        if value is not None and value != "":
+            p[f"f_{name}"] = check(value)
+            conds.append(cond)
+    return " AND ".join(conds), having, p
+
+
+def live_cte():
+    return LIVE if dns.status["enabled"] else LIVE_NODNS
 
 
 @app.get("/api/live/flows")
@@ -587,32 +686,15 @@ def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[i
     those interfaces."""
     seconds = max(60, min(seconds, 900))
     now = int(time.time())
-    conds, p = ["1"], base_params(now - seconds, now) | {
-        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO}
-    having = "1"
-    if iface:
-        p["f_ifaces"] = [i for i in iface if i in live.INTERFACES or i == "other"]
-        having = "via_dev IN {f_ifaces:Array(String)}"
-    for name, value, cond, check in [
-            ("host", host, "local = toIPv6({f_host:String})", check_ip),
-            ("proto", proto, "Proto = {f_proto:UInt32}", int),
-            ("port", port, "rport = {f_port:UInt32}", int),
-            ("country", country, "rcc = {f_country:String}", check_country),
-            ("site", site, "lmatched.site = {f_site:String}", check_site),  # "site" alone is the output column
-            ("asn", asn, "ras = {f_asn:UInt32}", int)]:
-        if value is not None and value != "":
-            p[f"f_{name}"] = check(value)
-            conds.append(cond)
-    rows = query(f"""WITH {LIVE if dns.status["enabled"] else LIVE_NODNS}
+    where, having, p = live_where(now - seconds, now, host, proto, port, country, site, asn, iface)
+    rows = query(f"""WITH {live_cte()}
         SELECT {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service,
                ras AS asn, {ASN_NAME} AS asn_name, any(rcc) AS country, anyIf(site, site != '') AS site,
                sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last,
-               groupUniqArray(pif) AS ifs,
-               if(arrayFirst(x -> has(ifs, x), {{prio:Array(String)}}) != '',
-                  arrayFirst(x -> has(ifs, x), {{prio:Array(String)}}), 'other') AS via_dev
-        FROM lmatched WHERE {" AND ".join(conds)} GROUP BY local, remote, Proto, rport, ras
-        HAVING {having}
+               {VIA}
+        FROM lmatched WHERE {where} GROUP BY {CONVERSATION}
+        HAVING {having or "1"}
         ORDER BY last DESC, down + up DESC LIMIT {LIVE_LIMIT + 1}""", **p)
     for r in rows:
         r["via"] = live.INTERFACES.get(r["via_dev"], {}).get("label", "Firewall / other")
@@ -620,6 +702,52 @@ def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[i
     return {"seconds": seconds, "now": now, "capped": len(rows) > LIVE_LIMIT,
             "interfaces": [{"device": d, "label": i.get("label", d)} for d, i in live.INTERFACES.items()],
             "flows": name_rows(rows[:LIVE_LIMIT], "host")}
+
+
+RECENT_MINUTES = (5, 10, 15, 20, 30, 60, 120)
+
+
+@app.get("/api/live/series")
+def live_series(minutes: int = 15, host: Optional[str] = None, proto: Optional[int] = None,
+                port: Optional[int] = None, country: Optional[str] = None, site: Optional[str] = None,
+                asn: Optional[int] = None, iface: Optional[list[str]] = Query(None)):
+    """Recent traffic over the last few minutes under the live filters: the
+    download/upload chart and the same split by device (top STACK + other)."""
+    if minutes not in RECENT_MINUTES:
+        raise HTTPException(400, f"minutes must be one of {list(RECENT_MINUTES)}")
+    now = int(time.time())
+    start = now - minutes * 60
+    step = 30 if minutes <= 15 else 60 if minutes <= 30 else 120
+    where, having, p = live_where(start, now, host, proto, port, country, site, asn, iface)
+    p["step"] = step
+    # The interface toggles pick whole conversations (see VIA).
+    if having:
+        where += f""" AND ({CONVERSATION}) IN (
+            SELECT {CONVERSATION} FROM (SELECT {CONVERSATION}, {VIA} FROM lmatched WHERE {where} GROUP BY {CONVERSATION})
+            WHERE {having})"""
+    rows = query(f"""WITH {live_cte()}
+        SELECT toUInt32(toStartOfInterval(t, toIntervalSecond({{step:UInt32}}))) AS ts,
+               {IP.format(col='local')} AS ip, sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up
+        FROM lmatched WHERE {where} GROUP BY ts, local""", **p)
+    ts = buckets(start, now, step)
+    index = {t: i for i, t in enumerate(ts)}
+    down, up, per, totals = [0.0] * len(ts), [0.0] * len(ts), {}, {}
+    for r in rows:
+        i = index.get(r["ts"])
+        if i is None:
+            continue
+        down[i] += r["down"] * 8 / step
+        up[i] += r["up"] * 8 / step
+        per.setdefault(r["ip"], [0.0] * len(ts))[i] += (r["down"] + r["up"]) * 8 / step
+        totals[r["ip"]] = totals.get(r["ip"], 0) + r["down"] + r["up"]
+    top = sorted(totals, key=lambda k: -totals[k])[:STACK]
+    rest = [k for k in totals if k not in top]
+    by = [{"key": k, "label": name_of(k) or k, "bytes": totals[k], "values": per[k]} for k in top]
+    if rest:
+        by.append({"key": "other", "label": "Everything else", "bytes": sum(totals[k] for k in rest),
+                   "values": [sum(per[k][i] for k in rest) for i in range(len(ts))]})
+    return {"minutes": minutes, "step": step, "t": ts, "down": down, "up": up,
+            "total_down": sum(r["down"] for r in rows), "total_up": sum(r["up"] for r in rows), "by": by}
 
 
 @app.get("/api/health")

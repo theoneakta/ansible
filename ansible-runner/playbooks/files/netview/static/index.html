@@ -198,6 +198,9 @@
   <div class="spacer"></div>
   <div class="timebar" id="timebar">
     <span id="zoom"></span>
+    <div class="seg" id="scopes" title="Which traffic: through the internet, between LAN devices, or both">
+      <button data-s="internet">Internet</button><button data-s="lan">LAN</button><button data-s="all">All</button>
+    </div>
     <div class="seg" id="ranges">
       <button data-r="1h">1h</button><button data-r="6h">6h</button>
       <button data-r="24h">24h</button><button data-r="7d">7d</button>
@@ -254,7 +257,14 @@ function timeParams(q = parseHash().q) {
   const p = new URLSearchParams();
   if (q.get("from") && q.get("to")) { p.set("from", q.get("from")); p.set("to", q.get("to")); }
   else p.set("range", q.get("range") || localGet("range") || "6h");
+  const scope = currentScope(q);
+  if (scope !== "internet") p.set("scope", scope);
   return p;
+}
+// Internet / LAN / All: in the hash, else the last one picked.
+function currentScope(q = parseHash().q) {
+  const s = q.get("scope") || localGet("scope") || "internet";
+  return ["internet", "lan", "all"].includes(s) ? s : "internet";
 }
 // A link that keeps the current time window; extra = {key: value|null}.
 function link(path, extra = {}, keepFilters = false) {
@@ -471,7 +481,8 @@ function top5(rows, totalValue, key, label, href, value = total) {
 }
 
 // ---------------------------------------------------------------- explore (overview + every drill-down)
-const SPLITS = {total: "Total", host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service"};
+const SPLITS = {total: "Total", host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
+const INTERNET_ONLY = ["site", "asn", "country"];  // meaningless between LAN devices
 // How each dimension shows in a donut / tab: its top list, key, label, drill link.
 const DIMS = {
   host: {top: "hosts", title: "Devices", key: r => r.host, label: r => r.host_name || r.host, href: r => drill("host", r.host)},
@@ -479,6 +490,7 @@ const DIMS = {
   country: {top: "countries", title: "Countries", key: r => r.country, label: r => r.country ? flag(r.country) : "unknown", href: r => r.country ? drill("country", r.country) : null},
   svc: {top: "services", title: "Services", key: r => `${r.proto_num}/${r.port}`, label: r => `${r.proto}/${r.port}${r.service ? " " + r.service : ""}`, href: r => drill("svc", `${r.proto_num}/${r.port}`)},
   asn: {top: "asns", title: "Networks", key: r => `AS${r.asn} ${r.asn_name}`, label: r => r.asn_name || (r.asn ? "AS" + r.asn : "unknown"), href: r => r.asn ? drill("asn", r.asn) : null},
+  remote: {top: "remotes", title: "Peers", key: r => r.rip, label: r => r.rip_name || r.rip, href: r => drill("remote", r.rip)},
 };
 
 async function explore() {
@@ -486,7 +498,8 @@ async function explore() {
   const params = timeParams(q), applied = {};
   FILTER_KEYS.forEach(k => q.get(k) && (params.set(k, q.get(k)), applied[k] = q.get(k)));
   const only = k => applied[k] && Object.keys(applied).length === 1;
-  const splits = Object.keys(SPLITS).filter(k => !applied[k]);
+  const scope = currentScope(q), lanOnly = scope === "lan";
+  const splits = Object.keys(SPLITS).filter(k => !applied[k] && !(lanOnly && INTERNET_ONLY.includes(k)));
   let by = q.get("by");
   if (!splits.includes(by)) by = "total";
   const bp = new URLSearchParams(params); bp.set("by", by);
@@ -494,7 +507,7 @@ async function explore() {
     : only("site") ? api(`/api/site/${encodeURIComponent(applied.site)}`, timeParams(q)) : null;
   const [d, b, x] = await Promise.all([api("/api/explore", params), by === "total" ? null : api("/api/breakdown", bp), extra]);
   const t = d.totals, tops = d.tops, filtered = Object.keys(applied).length > 0, all = total(t);
-  const named = all ? 100 * (1 - t.unnamed / all) : 0;
+  const named = t.internet ? 100 * (1 - t.unnamed / t.internet) : 0;
 
   const chipLabel = (k, v) => ({
     host: () => d.names.host ? `${d.names.host} (${v})` : v,
@@ -502,14 +515,16 @@ async function explore() {
     country: () => flag(v),
     svc: () => { const r = tops.services[0]; return r ? `${r.proto}/${r.port}${r.service ? " " + r.service : ""}` : v; },
   }[k] || (() => v))();
-  const title = !filtered ? "All internet traffic"
+  const title = !filtered ? {internet: "All internet traffic", lan: "All LAN traffic", all: "All traffic"}[scope]
     : only("host") ? (d.names.host ? `${esc(d.names.host)} <span class="ip">${esc(applied.host)}</span>` : esc(applied.host))
     : only("site") ? esc(applied.site) : Object.entries(applied).map(([k, v]) => esc(chipLabel(k, v))).join(" &middot; ");
   const w = d.window;
-  const sub = q.get("from") ? `${when(w.start)} – ${hm(w.end)}` : `last ${timeParams(q).get("range")}`;
+  const sub = (q.get("from") ? `${when(w.start)} – ${hm(w.end)}` : `last ${timeParams(q).get("range")}`) +
+    {internet: " · internet", lan: " · between LAN devices", all: " · internet and LAN"}[scope];
 
   // Three donuts: the first three dimensions not already filtered.
-  const donutDims = ["host", "site", "country", "svc", "asn"].filter(k => !applied[k] && (k !== "site" || d.dns)).slice(0, 3);
+  const donutDims = (lanOnly ? ["host", "remote", "svc"] : ["host", "site", "country", "svc", "asn"])
+    .filter(k => !applied[k] && (k !== "site" || d.dns)).slice(0, 3);
   // One tabbed table: what only this page has, then every unfiltered dimension.
   const tabList = [];
   if (x && only("host")) {
@@ -535,16 +550,16 @@ async function explore() {
       {k: "domain", label: "Domain"}, {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
       {k: "devices", label: "Devices", n: 1}, {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {bar: r => r.lookups, limit: 10})});
   }
-  const dimTab = (k, cols) => !applied[k] && tabList.push({id: k, label: DIMS[k] ? DIMS[k].title : "Remote addresses",
-    html: () => table(tops[DIMS[k] ? DIMS[k].top : "remotes"], cols, {limit: 10, bar: total, href: DIMS[k] ? DIMS[k].href : r => drill("remote", r.rip)})});
+  const dimTab = (k, cols, label) => !applied[k] && !(lanOnly && INTERNET_ONLY.includes(k)) && tabList.push({id: k, label: label || DIMS[k].title,
+    html: () => table(tops[DIMS[k].top], cols, {limit: 10, bar: total, href: DIMS[k].href})});
   dimTab("host", [{k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)}, DOWN, UP, {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)}]);
   if (d.dns) dimTab("site", [{k: "site", label: "Website", fmt: r => siteCell(r.site)}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("asn", [{k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "AS" + r.asn)} <span class="tag">AS${r.asn}</span>` : `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("country", [{k: "country", label: "Country", fmt: r => flag(r.country) || `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("svc", [{k: "port", label: "Service", fmt: svcText}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
-  dimTab("remote", [{k: "rip", label: "Remote", fmt: r => esc(r.rip)},
-    {k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
-    {k: "country", label: "", fmt: r => flag(r.country)}, DOWN, UP]);
+  dimTab("remote", [{k: "rip", label: lanOnly ? "Peer" : "Remote", fmt: r => r.rip_name ? hostCell(r.rip, r.rip_name, drill("remote", r.rip)) : esc(r.rip)},
+    ...(lanOnly ? [] : [{k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
+                        {k: "country", label: "", fmt: r => flag(r.country)}]), DOWN, UP], lanOnly ? "Peers" : scope === "all" ? "Remotes & peers" : "Remote addresses");
 
   $main.innerHTML = `
     ${filtered ? `<div class="chips"><span class="crumb"><a href="${link("/")}">All traffic</a> &rsaquo;</span>
@@ -553,10 +568,12 @@ async function explore() {
     <div class="hero">
       <div class="title"><h2>${title}</h2><div class="sub">${esc(sub)}</div></div>
       <div class="kpis">
-        <div class="kpi"><div class="v">${bytes(t.down)}</div><div class="l">${sw(css("--s1"))}downloaded</div></div>
-        <div class="kpi"><div class="v">${bytes(t.up)}</div><div class="l">${sw(css("--s2"))}uploaded</div></div>
-        <div class="kpi"><div class="v">${num(applied.host ? t.remotes : t.hosts)}</div><div class="l">${applied.host ? "remote addresses" : "devices"}</div></div>
-        ${d.dns ? `<div class="kpi"><div class="v">${named.toFixed(0)}%</div><div class="l">has a website name</div></div>` : ""}
+        ${lanOnly && !applied.host ? `<div class="kpi"><div class="v">${bytes(t.lan)}</div><div class="l">${sw(css("--s1"))}between devices</div></div>` : `
+        <div class="kpi"><div class="v">${bytes(t.down)}</div><div class="l">${sw(css("--s1"))}${scope === "internet" ? "downloaded" : "received"}</div></div>
+        <div class="kpi"><div class="v">${bytes(t.up)}</div><div class="l">${sw(css("--s2"))}${scope === "internet" ? "uploaded" : "sent"}</div></div>`}
+        ${scope === "all" ? `<div class="kpi"><div class="v">${bytes(applied.host ? t.lan + t.lan_rx : t.lan)}</div><div class="l">of it LAN to LAN</div></div>` : ""}
+        <div class="kpi"><div class="v">${num(applied.host ? t.remotes : t.hosts)}</div><div class="l">${applied.host ? (lanOnly ? "peers" : "remote addresses") : "devices"}</div></div>
+        ${d.dns && !lanOnly ? `<div class="kpi"><div class="v">${named.toFixed(0)}%</div><div class="l">of internet traffic has a website name</div></div>` : ""}
       </div>
     </div>
     <div class="card">
@@ -568,7 +585,8 @@ async function explore() {
     ${donutDims.length ? `<div class="row three">${donutDims.map(k => `<div class="card"><div class="head"><h3>${DIMS[k].title}</h3></div>${
       donut(k, top5(tops[DIMS[k].top], all, DIMS[k].key, DIMS[k].label, DIMS[k].href), {title: DIMS[k].title})}</div>`).join("")}</div>` : ""}
     <div class="card">${tabs(filtered ? "explore-f" : "explore", tabList)}</div>
-    <p class="hint">Drag across the chart to zoom in. Click a slice, legend entry or row to drill down.</p>`;
+    <p class="hint">Drag across the chart to zoom in. Click a slice, legend entry or row to drill down.${scope === "internet" ? "" :
+      " LAN traffic comes from the Proxmox nodes (traffic crossing a VM bridge), de-duplicated; in the split charts a LAN byte counts once, under the device that sent it."}</p>`;
 
   document.querySelectorAll("[data-rm]").forEach(btn => btn.onclick = () => location.hash = link("/explore", {[btn.dataset.rm]: null, by: null}, true));
   document.querySelectorAll("#split button").forEach(btn => btn.onclick = () => location.hash = link("/explore", {by: btn.dataset.by === "total" ? null : btn.dataset.by}, true));
@@ -859,13 +877,55 @@ async function livePage() {
     match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
            site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn});
 
-  // Two lists under one filter: the firewall's devices (now) and the recent flows.
+  // Recent traffic: the filtered traffic over the last few minutes, as a chart.
+  const RECENT = [5, 10, 15, 20, 30, 60, 120];
+  let recentMin = +(localGet("recentMin") || 15), recentView = localGet("recentView") || "total", recentU = null;
+  if (!RECENT.includes(recentMin)) recentMin = 15;
+  const minLabel = m => m < 60 ? `${m} min` : `${m / 60} h`;
+  const recentHtml = () => `
+    <div class="head" style="margin-bottom:.6rem">
+      <div class="seg" id="rmin">${RECENT.map(m => `<button data-m="${m}" class="${m === recentMin ? "active" : ""}">${minLabel(m)}</button>`).join("")}</div>
+      <div class="spacer"></div>
+      <div class="seg" id="rview"><button data-v="total" class="${recentView === "total" ? "active" : ""}">Total</button><button data-v="device" class="${recentView === "device" ? "active" : ""}">By device</button></div>
+    </div>
+    <div class="chart" id="rc"><div class="empty">Loading…</div></div><div id="rl"></div><p class="hint" id="rh"></p>`;
+  async function recentTick() {
+    if (localGet("tab:live") !== "recent" || !document.getElementById("rc")) return;
+    const p = new URLSearchParams({minutes: recentMin});
+    Object.entries(picks).forEach(([k, v]) => Array.isArray(v) ? v.forEach(x => p.append(k, x)) : p.set(k, v));
+    const d = await api("/api/live/series", p);
+    const el = document.getElementById("rc"); if (!el) return;
+    forget(recentU); el.innerHTML = "";
+    if (recentView === "device" && d.by.length) {
+      const sc = stackChart(el, d.t, d.by, {group: "live", live: true, step: d.step, height: 240});
+      recentU = sc.u;
+      document.getElementById("rl").innerHTML = stackLegend(d.by, sc.colors, s => drill("host", s.key));
+    } else {
+      recentU = dirChart(el, {t: d.t, down: d.down, up: d.up}, {live: true, step: d.step, height: 240});
+      document.getElementById("rl").innerHTML = dirLegend();
+    }
+    const filtered = Object.keys(picks).length > 0;
+    document.getElementById("rh").textContent = `${bytes(d.total_down)} received · ${bytes(d.total_up)} sent in the last ${minLabel(d.minutes)}` +
+      `${filtered ? " under the filters above" : ""} (the search box doesn't apply here) · flows arrive up to a minute late, so the newest minute fills in as they do`;
+  }
+
+  // Under one filter: the firewall's devices (now), the recent flows, the recent traffic chart.
   const lt = document.getElementById("ltabs");
   lt.innerHTML = tabs("live", [
     {id: "talkers", label: "Devices now", html: () => `<div id="lt-talkers"><div class="empty">Waiting for the first sample…</div></div>`},
     {id: "flows", label: "Flows (last 2 min)", html: () => `<div id="lt-flows"><div class="empty">Loading flows…</div></div>`},
+    {id: "recent", label: "Recent traffic", html: recentHtml},
   ]);
-  lt.addEventListener("tab", () => renderLists());
+  lt.addEventListener("tab", e => { renderLists(); if (e.detail === "recent") safe(recentTick)(); });
+  lt.addEventListener("click", e => {
+    const m = e.target.closest("#rmin button"), v = e.target.closest("#rview button");
+    if (!m && !v) return;
+    if (m) { recentMin = +m.dataset.m; localSet("recentMin", recentMin); }
+    if (v) { recentView = v.dataset.v; localSet("recentView", recentView); }
+    document.querySelectorAll("#rmin button").forEach(b => b.classList.toggle("active", +b.dataset.m === recentMin));
+    document.querySelectorAll("#rview button").forEach(b => b.classList.toggle("active", b.dataset.v === recentView));
+    safe(recentTick)();
+  });
   function renderLists() {
     const match = liveFilter(filterText);
     const tEl = document.getElementById("lt-talkers");
@@ -932,12 +992,14 @@ async function livePage() {
     if (fEl) fEl.innerHTML = `<div class="empty">Filtering…</div>`;
     renderLists();
     safe(flowTick)();
+    safe(recentTick)();
   }
   document.querySelectorAll("#lview button").forEach(b => b.onclick = () => { view = b.dataset.v; localSet("liveView", view); drawChart(true); tick(); });
 
   const safe = fn => async () => { try { await fn(); } catch (e) { setErr(e.message); } };
   await safe(tick)(); safe(topTick)(); safe(flowTick)();
-  timers.push(setInterval(safe(tick), 2000), setInterval(safe(topTick), 5000), setInterval(safe(flowTick), 10000));
+  timers.push(setInterval(safe(tick), 2000), setInterval(safe(topTick), 5000), setInterval(safe(flowTick), 10000),
+              setInterval(safe(recentTick), 15000));
 }
 
 // ---------------------------------------------------------------- router
@@ -954,6 +1016,8 @@ async function route() {
     <button title="Back to the preset" id="unzoom">&times;</button></span>` : "";
   if (zoomed) document.getElementById("unzoom").onclick = () => location.hash = link(path, {from: null, to: null}, true);
   document.getElementById("timebar").style.visibility = page === "live" || page === "new" ? "hidden" : "";
+  document.querySelectorAll("#scopes button").forEach(b => b.classList.toggle("active", b.dataset.s === currentScope(q)));
+  document.getElementById("scopes").style.display = page === "explore" ? "" : "none";
   timers.forEach(clearInterval); timers = [];
   charts.forEach(u => u.destroy()); charts = [];
   $main.classList.add("loading");
@@ -972,6 +1036,13 @@ document.getElementById("ranges").onclick = e => {
   if (!e.target.dataset.r) return;
   localSet("range", e.target.dataset.r);
   location.hash = link(parseHash().path, {range: e.target.dataset.r, from: null, to: null}, true);
+};
+document.getElementById("scopes").onclick = e => {
+  const s = e.target.dataset.s; if (!s) return;
+  localSet("scope", s);
+  // Website, network and country filters mean nothing on the LAN: drop them there.
+  const drop = s === "lan" ? Object.fromEntries(INTERNET_ONLY.map(k => [k, null])) : {};
+  location.hash = link(parseHash().path, {scope: s === "internet" ? null : s, by: null, ...drop}, true);
 };
 window.addEventListener("hashchange", route);
 route();
