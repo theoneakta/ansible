@@ -166,7 +166,7 @@ sub split_widths {
 # break mid-word), then the rest of the page width is shared by how much text it holds.
 sub col_widths {
     my ($rows, $n) = @_;
-    my $CH = 105;     # average width of one 9 pt character, in twips
+    my $CH = 115;     # average width of one 9 pt character (bold included), in twips
     my $PAD = 240;    # left + right cell margins
     my (@min, @want);
     for my $i (0 .. $n - 1) {
@@ -454,15 +454,19 @@ sub flowchart {
         my $per = 5;
         for (my $k = 0; $k < @chain; $k += $per) {
             my @seg = @chain[$k .. ($k + $per - 1 < $#chain ? $k + $per - 1 : $#chain)];
-            my $n = @seg; my $aw = 520;
-            my $bw = int(($TEXT_W - $aw * ($per - 1)) / $per);
+            my @arrows;    # the edges drawn in this row
+            for my $i (0 .. $#seg) { push @arrows, $out{ $seg[$i] }[0] if $i < $#seg || ($k + $per <= $#chain && $i == $#seg) }
+            # Arrows with a label get room for it; boxes share what is left
+            my @aw = map { $_->[2] ? 1500 : 520 } @arrows;
+            my $asum = 0; $asum += $_ for @aw;
+            my $bw = int(($TEXT_W - $asum) / @seg);
             my @w; my $cells = '';
             for my $i (0 .. $#seg) {
                 push @w, $bw; $cells .= $box->($seg[$i], $bw);
-                if ($i < $#seg || ($k + $per <= $#chain && $i == $#seg)) {
-                    my $e = $out{ $seg[$i] }[0];
-                    my $lab = $e->[2] ? para(inline($e->[2], sz => 13, color => $MUTED), style => 'TableText', jc => 'center') : '';
-                    push @w, $aw; $cells .= tc($lab . para(run("\x{2192}", color => $NAVY, sz => 28, b => 1), style => 'TableText', jc => 'center'), $aw, valign => 'center');
+                if ($i < @arrows) {
+                    my $e = $arrows[$i];
+                    my $lab = $e->[2] ? para(inline($e->[2], sz => 14, color => $MUTED), style => 'TableText', jc => 'center') : '';
+                    push @w, $aw[$i]; $cells .= tc($lab . para(run("\x{2192}", color => $NAVY, sz => 28, b => 1), style => 'TableText', jc => 'center'), $aw[$i], valign => 'center');
                 }
             }
             $xml .= tbl(row($cells, cantsplit => 1), \@w, noborders => 1, mar => '<w:top w:w="40" w:type="dxa"/><w:left w:w="40" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/><w:right w:w="40" w:type="dxa"/>');
