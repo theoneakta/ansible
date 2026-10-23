@@ -401,6 +401,13 @@ flowchart TB
 | **[Server page template](SERVER-PAGE-TEMPLATE.md)** | The layout of every server's Loop page | The information we track changes |
 | **[Lab evidence](../legacy-migration/README.md)** | Proof for the lab-proven paths | After each lab test |
 
+**Word copies** (for reading offline, printing, or sending): [all guides in one file](word/Migration-Governance.docx), with a table of contents, or one file per guide in [`word/`](word/). The graphics are drawn natively in Word, so they can be edited there. The Markdown files stay the source. After changing a guide, regenerate the copies from the `migration-governance` folder:
+
+```powershell
+perl tools/md2docx.pl word/Migration-Governance.docx README.md SYSADMIN.md DBA.md SCRIPTS-AND-VSCODE.md SERVER-PAGE-TEMPLATE.md
+perl tools/md2docx.pl word/DBA-Guide.docx DBA.md    # same for each guide
+```
+
 ### 4.2 Where to start
 
 | You are | Read, in this order |
