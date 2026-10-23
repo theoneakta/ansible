@@ -95,6 +95,7 @@
   <nav>
     <a href="#/" data-page="overview">Overview</a>
     <a href="#/hosts" data-page="hosts">Hosts</a>
+    <a href="#/sites" data-page="sites">Websites</a>
     <a href="#/new" data-page="new">New today</a>
   </nav>
   <div class="spacer"></div>
@@ -140,7 +141,9 @@ const flag = cc => cc && cc.trim().length === 2
 function hostCell(ip, name) {
   return `<a href="#/host/${esc(ip)}">${name ? `<span class="name">${esc(name)}</span><span class="ip">${esc(ip)}</span>` : esc(ip)}</a>`;
 }
-const svc = r => `${esc(r.proto)}/${r.port}${r.service ? ` <span class="tag">${esc(r.service)}</span>` : ""}`;
+const siteCell = s => s ? `<a href="#/site/${encodeURIComponent(s)}">${esc(s)}</a>` : `<span class="muted">(no DNS name)</span>`;
+const NO_DNS = `<p class="muted">The DNS collector isn't set up - run netview_stack.yml to give it its OPNsense API key.</p>`;
+const svc = r =>`${esc(r.proto)}/${r.port}${r.service ? ` <span class="tag">${esc(r.service)}</span>` : ""}`;
 
 // ---------------------------------------------------------------- tables
 // cols: [{k, label, n (numeric), fmt(row), sort (key or fn)}]; rows sortable by header click.
@@ -218,6 +221,7 @@ async function overview() {
         {k: "port", label: "Service", fmt: svc},
         {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)},
         {k: "hosts", label: "Hosts", n: 1}], {bar: r => r.bytes})}</div>
+      <div class="card"><h3>Most visited websites</h3>${d.dns ? table(d.sites, SITE_COLS.slice(0, 5), {bar: r => r.visits}) : NO_DNS}</div>
     </div>`;
   chart(document.getElementById("c1"), d.series);
 }
@@ -275,6 +279,56 @@ async function host(ip) {
         {k: "received", label: "Received", n: 1, fmt: r => `<span class="down">${bytes(r.received)}</span>`},
         {k: "ports", label: "Their ports", fmt: r => `<span class="muted">${esc(r.ports)}</span>`}],
         {bar: r => r.sent + r.received})}</div>
+      <div class="card wide"><h3>Websites visited</h3>${d.dns ? table(d.sites, [
+        {k: "site", label: "Website", fmt: r => siteCell(r.site)}, VISITS_COL, DOWN, UP,
+        {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)}, LAST_COL], {sortable: true, bar: r => r.visits}) : NO_DNS}</div>
+    </div>`;
+  chart(document.getElementById("c1"), d.series);
+}
+
+const VISITS_COL = {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)};
+const LAST_COL = {k: "last", label: "Last", n: 1, fmt: r => `<span title="${when(r.last)}">${ago(r.last)}</span>`};
+const SITE_COLS = [
+  {k: "site", label: "Website", fmt: r => siteCell(r.site)}, VISITS_COL,
+  {k: "devices", label: "Devices", n: 1}, DOWN, UP,
+  {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)}, LAST_COL];
+
+async function sites() {
+  const d = await api(`/api/sites?range=${range}`);
+  if (!d.dns) { $main.innerHTML = `<div class="card">${NO_DNS}</div>`; return; }
+  const tr = d.traffic, named = tr.total ? 100 * (1 - tr.unmatched / tr.total) : 0;
+  const render = () => {
+    const q = (document.getElementById("q")?.value || "").toLowerCase();
+    document.getElementById("st").innerHTML = table(d.sites.filter(r => !q || r.site.includes(q)), SITE_COLS,
+      {sortable: true, bar: r => r.visits});
+  };
+  $main.innerHTML = `<div class="card">
+      <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;flex-wrap:wrap">
+        <h2 style="margin:0">Websites <span class="muted">(${d.sites.length})</span></h2>
+        <div class="spacer"></div><input class="filter" id="q" placeholder="Filter websites">
+      </div><div id="st"></div>
+      <p class="muted" style="font-size:.8rem">From the firewall's DNS log. A visit is one device using a site within
+        5 minutes. Traffic is matched to the site the device looked up for that address: ${named.toFixed(0)}% of the
+        internet traffic in this range has a name, the rest went to addresses nobody looked up through the firewall
+        (hard-coded IPs, private DNS, peer-to-peer).</p>
+    </div>`;
+  document.getElementById("q").oninput = render;
+  render();
+}
+
+async function site(name) {
+  const d = await api(`/api/site/${encodeURIComponent(name)}?range=${range}`);
+  $main.innerHTML = `
+    <div class="grid">
+      <div class="card wide"><h2>${esc(d.site)}</h2><div class="chart" id="c1"></div></div>
+      <div class="card wide"><h3>Devices</h3>${table(d.devices, [
+        {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)}, VISITS_COL, DOWN, UP,
+        {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
+        {k: "first", label: "First", n: 1, fmt: r => `<span title="${when(r.first)}">${ago(r.first)}</span>`}, LAST_COL],
+        {sortable: true, bar: r => r.visits})}</div>
+      <div class="card wide"><h3>Names looked up</h3>${table(d.domains, [
+        {k: "domain", label: "Domain"}, {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
+        {k: "devices", label: "Devices", n: 1}, LAST_COL], {bar: r => r.lookups})}</div>
     </div>`;
   chart(document.getElementById("c1"), d.series);
 }
@@ -303,7 +357,8 @@ async function newToday() {
 // ---------------------------------------------------------------- router
 async function route() {
   const h = location.hash.replace(/^#/, "") || "/";
-  const page = h.startsWith("/host/") ? "hosts" : h === "/hosts" ? "hosts" : h === "/new" ? "new" : "overview";
+  const page = h.startsWith("/host/") || h === "/hosts" ? "hosts" : h.startsWith("/site/") || h === "/sites" ? "sites"
+    : h === "/new" ? "new" : "overview";
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.dataset.page === page));
   document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", b.dataset.r === range));
   document.getElementById("ranges").style.visibility = page === "new" ? "hidden" : "";
@@ -312,6 +367,8 @@ async function route() {
   try {
     if (h.startsWith("/host/")) await host(decodeURIComponent(h.slice(6)));
     else if (h === "/hosts") await hosts();
+    else if (h.startsWith("/site/")) await site(decodeURIComponent(h.slice(6)));
+    else if (h === "/sites") await sites();
     else if (h === "/new") await newToday();
     else await overview();
   } catch (e) {

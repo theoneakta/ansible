@@ -12,19 +12,27 @@ Which exporter answers what (see akvorado_stack.yml):
                      between VMs on two nodes is seen by both, so per-host LAN
                      figures take the busiest exporter rather than the sum.
 
-Read-only: every query runs with readonly=2. Device names come from
-names.json, written by the playbook from the firewall's DHCP leases.
+Websites come from the firewall's DNS query log (dns.py, the one part that
+writes - to its own netview database): lookups say who visited what, and
+flows are matched to the domain the device last looked up for that IP.
+
+The views' queries run with readonly=2. Device names come from names.json,
+written by the playbook from the firewall's DHCP leases.
 """
 import ipaddress
 import json
 import os
 import pathlib
+import re
 import time
+from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+import dns
 
 CH_URL = os.environ.get("CLICKHOUSE_URL", "http://clickhouse:8123")
 NAMES_FILE = pathlib.Path(os.environ.get("NAMES_FILE", "/data/names.json"))
@@ -36,7 +44,13 @@ STATIC = pathlib.Path(__file__).parent / "static"
 # range -> (seconds, chart step in seconds)
 RANGES = {"1h": (3600, 60), "6h": (21600, 300), "24h": (86400, 900), "7d": (604800, 3600)}
 
-app = FastAPI(title="netview")
+@asynccontextmanager
+async def lifespan(_app):
+    dns.start()
+    yield
+
+
+app = FastAPI(title="netview", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -104,6 +118,58 @@ ASN_NAME = "dictGetOrDefault('asns', 'name', toUInt32(ras), '')"
 
 def base_params(secs):
     return {"wan": WAN_EXPORTER, "lanexp": LAN_EXPORTERS, "lan": LAN_ROLE, "secs": secs}
+
+
+# Internet flows with the website each one went to: the domain that device
+# last looked up for that remote IP (a day of lookups back, for connections
+# opened before the range). No match = site ''.
+MATCHED = f"""{WAN},
+dips AS (
+    SELECT client, ip, t AS dt, site, domain FROM netview.dns_ips
+    WHERE t > now() - INTERVAL {{secs:UInt32}} SECOND - INTERVAL 1 DAY
+),
+matched AS (
+    SELECT w.t AS t, w.dl AS dl, w.local AS local, w.remote AS remote, w.b AS b,
+           d.site AS site, d.domain AS domain
+    FROM wan AS w ASOF LEFT JOIN dips AS d
+      ON w.local = d.client AND w.remote = d.ip AND w.t >= d.dt
+)"""
+# A visit: one device using a site within a 5-minute window - so the sites a
+# device looks up every few seconds in the background don't top the list.
+VISITS = "uniq(client, toStartOfInterval(t, INTERVAL 5 MINUTE))"
+DNS_SINCE = "t > now() - INTERVAL {secs:UInt32} SECOND"
+
+
+def no_dns():
+    return not dns.status["enabled"]
+
+
+def check_site(site):
+    site = site.lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{1,253}", site):
+        raise HTTPException(400, "not a domain name")
+    return site
+
+
+def site_rows(secs, ip=None, limit=300):
+    """Websites by visits, with their traffic - the whole LAN, or one device."""
+    p = base_params(secs) | {"ip": ip or ""}
+    me = "AND client = toIPv6({ip:String})" if ip else ""
+    visits = query(f"""
+        SELECT site, {VISITS} AS visits, uniq(client) AS devices, count() AS lookups,
+               toUInt32(max(t)) AS last
+        FROM netview.dns WHERE {DNS_SINCE} {me}
+        GROUP BY site ORDER BY visits DESC LIMIT {int(limit)}""", **p)
+    traffic = query(f"""WITH {MATCHED}
+        SELECT site, sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up FROM matched
+        {"WHERE local = toIPv6({ip:String})" if ip else ""}
+        GROUP BY site""", **p)
+    by_site = {r["site"]: r for r in traffic}
+    rows = [r | {"down": by_site.get(r["site"], {}).get("down", 0), "up": by_site.get(r["site"], {}).get("up", 0)}
+            for r in visits]
+    unmatched = by_site.get("", {})
+    total = sum(r["down"] + r["up"] for r in traffic)
+    return rows, {"total": total, "unmatched": unmatched.get("down", 0) + unmatched.get("up", 0)}
 
 
 # ------------------------------------------------------------------ names
@@ -185,9 +251,10 @@ def overview(range: str = "6h"):
         SELECT {PROTO} AS proto, rport AS port, {SERVICE} AS service,
                sum(b) AS bytes, uniq(local) AS hosts
         FROM wan GROUP BY Proto, rport ORDER BY bytes DESC LIMIT 10""", **p)
+    sites = [] if no_dns() else site_rows(secs, limit=10)[0]
     return {"range": range, "series": series(chart, secs, step), "totals": totals,
             "hosts": name_rows(hosts, "ip"), "asns": asns, "countries": countries,
-            "services": services}
+            "services": services, "sites": sites, "dns": dns.status["enabled"]}
 
 
 @app.get("/api/hosts")
@@ -255,10 +322,50 @@ def host(ip: str, range: str = "24h"):
               WHERE SrcAddr = toIPv6({{ip:String}}) OR DstAddr = toIPv6({{ip:String}})
               GROUP BY ip, exp)
         GROUP BY ip ORDER BY sent + received DESC LIMIT 25""", **p)
+    sites = [] if no_dns() else site_rows(secs, ip=ip, limit=50)[0]
     info = names().get(ip, {})
     return {"range": range, "ip": ip, "name": info.get("name", ""), "mac": info.get("mac", ""),
             "series": series(chart, secs, step), "peers": peers, "services": services,
-            "lan_peers": name_rows(lan_peers, "ip")}
+            "lan_peers": name_rows(lan_peers, "ip"), "sites": sites, "dns": dns.status["enabled"]}
+
+
+@app.get("/api/sites")
+def sites(range: str = "24h"):
+    secs, _ = window(range)
+    if no_dns():
+        return {"range": range, "dns": False, "sites": [], "traffic": {}}
+    rows, traffic = site_rows(secs)
+    return {"range": range, "dns": True, "sites": rows, "traffic": traffic}
+
+
+@app.get("/api/site/{site}")
+def site(site: str, range: str = "24h"):
+    site = check_site(site)
+    secs, step = window(range)
+    if no_dns():
+        raise HTTPException(404, "the DNS collector isn't set up")
+    p = base_params(secs) | {"site": site, "step": step}
+    chart = query(f"""WITH {MATCHED}
+        SELECT toUInt32(toStartOfInterval(t, toIntervalSecond({{step:UInt32}}))) AS ts,
+               sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up
+        FROM matched WHERE site = {{site:String}} GROUP BY ts ORDER BY ts""", **p)
+    devices = query(f"""
+        SELECT {IP.format(col='client')} AS ip, {VISITS} AS visits, count() AS lookups,
+               toUInt32(min(t)) AS first, toUInt32(max(t)) AS last
+        FROM netview.dns WHERE {DNS_SINCE} AND site = {{site:String}}
+        GROUP BY client ORDER BY visits DESC""", **p)
+    traffic = query(f"""WITH {MATCHED}
+        SELECT {IP.format(col='local')} AS ip, sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up
+        FROM matched WHERE site = {{site:String}} GROUP BY local""", **p)
+    domains = query(f"""
+        SELECT domain, count() AS lookups, uniq(client) AS devices, toUInt32(max(t)) AS last
+        FROM netview.dns WHERE {DNS_SINCE} AND site = {{site:String}}
+        GROUP BY domain ORDER BY lookups DESC LIMIT 30""", **p)
+    by_ip = {r["ip"]: r for r in traffic}
+    devices = [d | {"down": by_ip.get(d["ip"], {}).get("down", 0), "up": by_ip.get(d["ip"], {}).get("up", 0)}
+               for d in devices]
+    return {"range": range, "site": site, "series": series(chart, secs, step),
+            "devices": name_rows(devices, "ip"), "domains": domains}
 
 
 @app.get("/api/new")
@@ -291,4 +398,4 @@ def new():
 @app.get("/api/health")
 def health():
     return {"clickhouse": query("SELECT version() AS v")[0]["v"], "names": len(names()),
-            "wan_exporter": WAN_EXPORTER, "lan_exporters": LAN_EXPORTERS}
+            "wan_exporter": WAN_EXPORTER, "lan_exporters": LAN_EXPORTERS, "dns": dns.status}
