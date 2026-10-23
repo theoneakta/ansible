@@ -8,7 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <style>
   /* Surfaces: the ansible-runner GUI's. Series: the dataviz reference palette,
-     dark steps, fixed order (validated adjacent-pair CVD-safe); "other" is neutral. */
+     dark steps, fixed order (validated on #131a24: adjacent CVD dE >= 8.4,
+     normal-vision >= 19.3, all >= 3:1); "other" is neutral. */
   :root {
     color-scheme: dark;
     --bg: #0b0f16;
@@ -17,13 +18,12 @@
     --border: #262f3d;
     --text: #e6edf3;
     --muted: #8b96a5;
-    --accent: #ff5c4d;
     --accent2: #ffb454;
     --link: #79b8ff;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --other: #5c6675;
     --fail: #f85149;
-    --radius: 10px;
+    --radius: 12px;
   }
   * { box-sizing: border-box; }
   body {
@@ -35,7 +35,7 @@
 
   header {
     display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-    padding: .8rem 1.4rem;
+    padding: .7rem 1.4rem;
     background: linear-gradient(120deg, #1a0d0d, #1c1108 70%);
     border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
@@ -49,63 +49,94 @@
   nav a .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--s3); margin-right: .35rem; vertical-align: 1px; }
   .spacer { flex: 1; }
   .timebar { display: flex; align-items: center; gap: .5rem; }
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; flex-wrap: wrap; }
   .seg button {
-    background: var(--surface); color: var(--muted); border: 0; padding: .35rem .75rem; cursor: pointer; font: inherit;
+    background: var(--surface); color: var(--muted); border: 0; padding: .3rem .7rem; cursor: pointer; font: inherit; font-size: .85rem;
   }
   .seg button.active { background: var(--surface2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent2); }
   .seg button:disabled { opacity: .4; cursor: default; }
 
-  main { padding: 1.2rem 1.4rem; max-width: 1500px; margin: 0 auto; }
-  h2 { font-size: 1.1rem; margin: 0 0 .8rem; }
-  h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 .6rem; font-weight: 600; }
+  main { padding: 1.4rem; max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
+  h2 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; font-weight: 600; }
   .muted { color: var(--muted); }
   .small { font-size: .8rem; }
-  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; min-width: 0; }
-  .card.wide { grid-column: 1 / -1; }
-  .head { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; margin-bottom: .6rem; }
-  .head h3 { margin: 0; }
-  .stats { display: flex; gap: 2.2rem; flex-wrap: wrap; }
-  .stat .v { font-size: 1.55rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stat .l { font-size: .75rem; color: var(--muted); }
-  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: .4rem; vertical-align: 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; min-width: 0; }
+  .head { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; margin-bottom: .9rem; }
+  .row { display: grid; gap: 1.25rem; }
+  .row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .row.split { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .row.half { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
-  .chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  /* Title + KPI strip: no card, just air. */
+  .hero { display: flex; align-items: flex-end; gap: 2rem; flex-wrap: wrap; }
+  .hero .title { flex: 1 1 260px; }
+  .hero .sub { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
+  .kpis { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .kpi .v { font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: .75rem; color: var(--muted); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: .4rem; vertical-align: 0; flex: none; }
+
+  .chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
   .chip {
     display: inline-flex; align-items: center; gap: .4rem; background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 999px; padding: .25rem .4rem .25rem .7rem; font-size: .85rem;
+    border-radius: 999px; padding: .2rem .35rem .2rem .7rem; font-size: .85rem;
   }
   .chip b { font-weight: 500; color: var(--muted); }
   .chip button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 .25rem; }
   .chip button:hover { color: var(--text); }
   .crumb { color: var(--muted); font-size: .85rem; }
 
+  .tabs { display: flex; gap: .2rem; border-bottom: 1px solid var(--border); margin: -.2rem 0 .8rem; overflow-x: auto; }
+  .tabs button {
+    background: none; border: 0; color: var(--muted); font: inherit; padding: .5rem .8rem; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent2); }
+  .tabs button:hover { color: var(--text); }
+
   .tbl { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: .38rem .5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th, td { text-align: left; padding: .42rem .5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { color: var(--muted); font-weight: 500; font-size: .75rem; }
+  tbody tr:last-child td { border-bottom: 0; }
   th.sort { cursor: pointer; } th.sort:hover { color: var(--text); }
   td.n, th.n { text-align: right; }
   tr[data-href] { cursor: pointer; }
-  tr:hover td { background: var(--surface2); }
-  .bar { height: 3px; border-radius: 2px; background: var(--s1); margin-top: 3px; opacity: .8; }
+  tbody tr:hover td { background: var(--surface2); }
+  .bar { height: 3px; border-radius: 2px; background: var(--s1); margin-top: 3px; opacity: .7; }
   .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .3rem; margin-left: .3rem; }
   .name { font-weight: 500; }
   .ip { color: var(--muted); font-size: .8rem; margin-left: .4rem; }
+  .more { background: none; border: 0; color: var(--link); cursor: pointer; font: inherit; font-size: .85rem; padding: .5rem 0 0; }
   input.filter {
-    background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
-    padding: .35rem .6rem; font: inherit; width: 240px; max-width: 100%;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px;
+    padding: .4rem .7rem; font: inherit; width: 320px; max-width: 100%;
   }
-  .err { color: var(--fail); padding: 1rem; }
+  input.filter:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
+  .err { color: var(--fail); }
   .loading { opacity: .55; transition: opacity .2s; }
   .chart { width: 100%; position: relative; min-height: 60px; }
-  .hint { font-size: .75rem; color: var(--muted); }
+  .hint { font-size: .75rem; color: var(--muted); margin: .6rem 0 0; }
 
-  .legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin-top: .6rem; font-size: .82rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: .3rem 1rem; margin-top: .7rem; font-size: .82rem; }
   .legend a, .legend span.item { color: var(--text); display: inline-flex; align-items: center; }
   .legend a:hover { text-decoration: underline; }
   .legend .v { color: var(--muted); margin-left: .35rem; font-variant-numeric: tabular-nums; }
+
+  /* Donut: the ring, a center readout, a legend list beside it. */
+  .donut { display: flex; gap: 1rem; align-items: center; }
+  .donut svg { width: 132px; height: 132px; flex: none; }
+  .donut path { cursor: pointer; transition: opacity .15s; }
+  .donut svg:hover path { opacity: .55; }
+  .donut svg path:hover { opacity: 1; }
+  .donut .center-v { font-size: 15px; font-weight: 600; fill: var(--text); }
+  .donut .center-l { font-size: 10px; fill: var(--muted); }
+  .dleg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .3rem; font-size: .82rem; }
+  .dleg a, .dleg span.item { color: var(--text); display: flex; align-items: center; min-width: 0; }
+  .dleg .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .dleg .pct { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: .5rem; }
+  .empty { color: var(--muted); font-size: .85rem; padding: 2rem 0; text-align: center; }
 
   .tip {
     position: absolute; pointer-events: none; z-index: 5; background: #0b0f16f2; border: 1px solid var(--border);
@@ -117,20 +148,20 @@
   .uplot { font-family: inherit; }
   .u-select { background: #ffb45422; border-left: 1px solid var(--accent2); border-right: 1px solid var(--accent2); }
 
-  .ifaces { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 1rem; }
-  .iface { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .8rem 1rem; cursor: pointer; }
+  .ifaces { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .iface { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .7rem .9rem; cursor: pointer; }
   .iface.active { border-color: var(--accent2); }
-  .iface .lbl { font-size: .8rem; color: var(--muted); display: flex; justify-content: space-between; }
-  .iface .rates { display: flex; gap: 1rem; font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; margin: .25rem 0; }
-  .iface svg { width: 100%; height: 36px; display: block; }
-  .peers td { font-size: .8rem; color: var(--muted); padding-left: 2rem; }
-  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--s3); margin-right: .4rem; animation: pulse 2s infinite; }
+  .iface .lbl { font-size: .78rem; color: var(--muted); display: flex; justify-content: space-between; }
+  .iface .rates { display: flex; gap: 1rem; font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; margin: .2rem 0; }
+  .iface svg { width: 100%; height: 30px; display: block; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--s3); margin-right: .4rem; animation: pulse 2s infinite; vertical-align: 2px; }
   @keyframes pulse { 50% { opacity: .3; } }
   @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
-  @media (max-width: 640px) {
-    .grid { grid-template-columns: 1fr; }
-    main, header { padding-left: 1rem; padding-right: 1rem; }
-    .stats { gap: 1.2rem; }
+  @media (max-width: 1000px) { .row.three { grid-template-columns: 1fr 1fr; } .row.split { grid-template-columns: 1fr; } }
+  @media (max-width: 680px) {
+    .row.three, .row.half { grid-template-columns: 1fr; }
+    main { padding: 1rem; } header { padding-left: 1rem; padding-right: 1rem; }
+    .kpis { gap: 1.2rem; }
   }
 </style>
 </head>
@@ -174,6 +205,7 @@ function unit(n, units, k = 1000) {
 const bytes = n => unit(n, ["B", "KB", "MB", "GB", "TB"]);
 const bps = n => unit(n, ["b/s", "kb/s", "Mb/s", "Gb/s"]);
 const num = n => Number(n || 0).toLocaleString();
+const pct = (a, b) => b ? (100 * a / b < 1 ? "<1%" : Math.round(100 * a / b) + "%") : "";
 function ago(t) {
   if (!t) return "";
   const s = Math.max(0, Date.now() / 1000 - t);
@@ -191,7 +223,7 @@ const sw = color => `<i class="sw" style="background:${color}"></i>`;
 const lastCell = t => `<span title="${when(t)}">${ago(t)}</span>`;
 
 // ---------------------------------------------------------------- state & links
-// Hash: #/<page>[/<arg>]?range=6h | from=..&to=.. & filters (host, remote, asn, country, svc, site) & by
+// Hash: #/<page>?range=6h | from=..&to=.. & filters (host, site, asn, country, svc, remote) & by
 const FILTER_KEYS = ["host", "site", "asn", "country", "svc", "remote"];
 const FILTER_NAMES = {host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
 function parseHash() {
@@ -208,6 +240,7 @@ function timeParams(q = parseHash().q) {
 function link(path, extra = {}, keepFilters = false) {
   const cur = parseHash().q, p = timeParams(cur);
   if (keepFilters) FILTER_KEYS.forEach(k => cur.get(k) && p.set(k, cur.get(k)));
+  if (keepFilters && cur.get("by")) p.set("by", cur.get("by"));
   for (const [k, v] of Object.entries(extra)) v == null ? p.delete(k) : p.set(k, v);
   return "#" + path + "?" + p.toString();
 }
@@ -226,11 +259,12 @@ const svcText = r => `${esc(r.proto)}/${r.port}${r.service ? ` <span class="tag"
 const NO_DNS = `<p class="muted">The DNS collector isn't set up - run netview_stack.yml to give it its OPNsense API key.</p>`;
 
 // ---------------------------------------------------------------- tables
-// cols: [{k, label, n (numeric), fmt(row), sort (key or fn)}]; opts.href(row) makes rows drill-downs.
+// cols: [{k, label, n (numeric), fmt(row), sort}]; opts: href(row) drill-down rows, bar(row), limit, sortable.
 function table(rows, cols, opts = {}) {
   const id = "t" + Math.random().toString(36).slice(2);
   const max = opts.bar ? Math.max(1, ...rows.map(opts.bar)) : 0;
-  const body = rows.length ? rows.map(r => {
+  const shown = opts.limit && !opts.all ? rows.slice(0, opts.limit) : rows;
+  const body = shown.length ? shown.map(r => {
     const href = opts.href ? opts.href(r) : null;
     return `<tr${href ? ` data-href="${esc(href)}"` : ""}>` + cols.map((c, i) =>
       `<td class="${c.n ? "n" : ""}">${c.fmt ? c.fmt(r) : esc(r[c.k])}${i === 0 && max ? `<div class="bar" style="width:${(100 * opts.bar(r) / max).toFixed(1)}%"></div>` : ""}</td>`
@@ -242,6 +276,7 @@ function table(rows, cols, opts = {}) {
       if (e.target.closest("a")) return;  // a link inside the row wins
       location.hash = tr.dataset.href;
     });
+    el.querySelector(".more")?.addEventListener("click", () => { opts.all = true; el.outerHTML = table(rows, cols, opts); });
     if (!opts.sortable) return;
     el.querySelectorAll("th.sort").forEach(th => th.onclick = () => {
       const c = cols[+th.dataset.i], key = typeof c.sort === "function" ? c.sort : r => r[c.sort || c.k];
@@ -250,15 +285,35 @@ function table(rows, cols, opts = {}) {
       el.outerHTML = table(rows, cols, opts);
     });
   });
+  const more = opts.limit && !opts.all && rows.length > opts.limit ? `<button class="more">Show all ${rows.length}</button>` : "";
   return `<div class="tbl" id="${id}"><table><thead><tr>${cols.map((c, i) =>
-    `<th class="${c.n ? "n " : ""}${opts.sortable ? "sort" : ""}" data-i="${i}">${c.label}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
+    `<th class="${c.n ? "n " : ""}${opts.sortable ? "sort" : ""}" data-i="${i}">${c.label}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>${more}</div>`;
 }
 const DOWN = {k: "down", label: "Down", n: 1, fmt: r => bytes(r.down)};
 const UP = {k: "up", label: "Up", n: 1, fmt: r => bytes(r.up)};
 const total = r => (r.down || 0) + (r.up || 0);
 
-// ---------------------------------------------------------------- charts
-// Color follows the entity: a key keeps its slot while the page lives.
+// Tabs: [{id, label, html()}]; the choice is remembered per group.
+function tabs(group, list) {
+  const id = "tabs" + Math.random().toString(36).slice(2);
+  let cur = localGet("tab:" + group);
+  if (!list.some(t => t.id === cur)) cur = list[0]?.id;
+  setTimeout(() => {
+    const el = document.getElementById(id); if (!el) return;
+    const show = tid => {
+      cur = tid; localSet("tab:" + group, tid);
+      el.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === tid));
+      el.querySelector(".tabbody").innerHTML = list.find(t => t.id === tid).html();
+      el.dispatchEvent(new CustomEvent("tab", {detail: tid, bubbles: true}));
+    };
+    el.querySelectorAll(".tabs button").forEach(b => b.onclick = () => show(b.dataset.t));
+    if (cur) show(cur);
+  });
+  return `<div id="${id}" class="tabset"><div class="tabs">${list.map(t => `<button data-t="${t.id}">${t.label}</button>`).join("")}</div><div class="tabbody"></div></div>`;
+}
+
+// ---------------------------------------------------------------- color
+// Color follows the entity: a key keeps its slot while the page lives, in every chart of its group.
 const colorMaps = {};
 function colorsFor(group, keys) {
   const m = colorMaps[group] ||= new Map();
@@ -271,7 +326,7 @@ function colorsFor(group, keys) {
   return keys.map(k => css(k === "other" ? "--other" : m.get(k)));
 }
 
-// Hover layer: crosshair + one tooltip listing every series at that time.
+// ---------------------------------------------------------------- time charts (uPlot)
 function tooltip(rowsAt) {
   let tip;
   return {hooks: {
@@ -301,12 +356,13 @@ function zoomHook(u) {
   u.setSelect({left: 0, width: 0, top: 0, height: 0}, false);
   location.hash = link(parseHash().path, {from, to, range: null}, true);
 }
+function forget(u) { if (u) { u.destroy(); charts = charts.filter(x => x !== u); } }
 
-// Down/up area chart (bits/s).
+// Download/upload areas (bits/s).
 function dirChart(el, s, opts = {}) {
   const c1 = css("--s1"), c2 = css("--s2");
   const u = new uPlot({
-    width: el.clientWidth, height: opts.height || 240, legend: {show: false},
+    width: el.clientWidth, height: opts.height || 260, legend: {show: false},
     cursor: {drag: {x: !opts.live, y: false}, points: {size: 7, stroke: css("--surface"), width: 2}},
     scales: {x: {time: true}, y: {range: (u, min, max) => [0, Math.max(max * 1.1, 1000)]}},
     series: [{}, {stroke: c1, fill: c1 + "38", width: 2, points: {show: false}},
@@ -321,7 +377,7 @@ function dirChart(el, s, opts = {}) {
 }
 const dirLegend = () => `<div class="legend"><span class="item">${sw(css("--s1"))}Download</span><span class="item">${sw(css("--s2"))}Upload</span></div>`;
 
-// Stacked area: series [{key, label, values}] summed bottom-up; 2px surface gaps between fills.
+// Stacked areas: [{key, label, values}] summed bottom-up, surface-colored seams between fills.
 function stackChart(el, t, list, opts = {}) {
   const colors = colorsFor(opts.group || "stack", list.map(s => s.key));
   const raw = list.map(s => s.values), acc = t.map(() => 0);
@@ -341,131 +397,171 @@ function stackChart(el, t, list, opts = {}) {
   charts.push(u);
   return {u, colors};
 }
-function stackLegend(list, colors, href) {
+function stackLegend(list, colors, href, value = s => bytes(s.bytes)) {
   return `<div class="legend">${list.map((s, i) => {
-    const h = href && s.key !== "other" ? href(s) : null, inner = `${sw(colors[i])}${esc(s.label)}<span class="v">${bytes(s.bytes)}</span>`;
+    const h = href && s.key !== "other" ? href(s) : null, inner = `${sw(colors[i])}${esc(s.label)}<span class="v">${value(s)}</span>`;
     return h ? `<a href="${esc(h)}" title="Drill into ${esc(s.label)}">${inner}</a>` : `<span class="item">${inner}</span>`;
   }).join("")}</div>`;
 }
 window.addEventListener("resize", () => charts.forEach(u => u.root.parentElement && u.setSize({width: u.root.parentElement.clientWidth, height: u.height})));
 
+// ---------------------------------------------------------------- donut
+// Part-to-whole at a glance: top 5 + "everything else" (<= 6 segments), 2px seams,
+// the center shows the hovered segment. items: [{key, label, value, href}].
+function donut(group, items, opts = {}) {
+  const sum = items.reduce((a, s) => a + s.value, 0);
+  if (!sum) return `<div class="empty">Nothing in this window.</div>`;
+  const colors = colorsFor(group, items.map(s => s.key));
+  const fmt = opts.fmt || bytes, R = 60, r = 40, C = 66;
+  let a0 = -Math.PI / 2;
+  const arc = (a1, a2) => {
+    const big = a2 - a1 > Math.PI ? 1 : 0, p = (rad, a) => `${(C + rad * Math.cos(a)).toFixed(2)},${(C + rad * Math.sin(a)).toFixed(2)}`;
+    return `M${p(R, a1)}A${R},${R} 0 ${big} 1 ${p(R, a2)}L${p(r, a2)}A${r},${r} 0 ${big} 0 ${p(r, a1)}Z`;
+  };
+  const id = "d" + Math.random().toString(36).slice(2);
+  const paths = items.map((s, i) => {
+    const a = s.value / sum * 2 * Math.PI, a1 = a0, a2 = a0 + Math.min(a, 2 * Math.PI - 1e-4);
+    a0 += a;
+    return `<path d="${arc(a1, a2)}" fill="${colors[i]}" stroke="${css("--surface")}" stroke-width="2" data-i="${i}"><title>${esc(s.label)}: ${fmt(s.value)} (${pct(s.value, sum)})</title></path>`;
+  }).join("");
+  setTimeout(() => {
+    const el = document.getElementById(id); if (!el) return;
+    const v = el.querySelector(".center-v"), l = el.querySelector(".center-l");
+    el.querySelectorAll("path").forEach(p => {
+      const s = items[+p.dataset.i];
+      p.onmouseenter = () => { v.textContent = pct(s.value, sum); l.textContent = s.label.length > 18 ? s.label.slice(0, 17) + "…" : s.label; };
+      p.onmouseleave = () => { v.textContent = fmt(sum); l.textContent = opts.center || "total"; };
+      if (s.href) p.onclick = () => location.hash = s.href;
+    });
+  });
+  return `<div class="donut" id="${id}"><svg viewBox="0 0 132 132" role="img" aria-label="${esc(opts.title || "share")}">${paths}
+      <text x="66" y="66" text-anchor="middle" class="center-v">${fmt(sum)}</text>
+      <text x="66" y="80" text-anchor="middle" class="center-l">${esc(opts.center || "total")}</text></svg>
+    <div class="dleg">${items.map((s, i) => {
+      const inner = `${sw(colors[i])}<span class="lbl">${esc(s.label)}</span><span class="pct">${pct(s.value, sum)}</span>`;
+      return s.href ? `<a href="${esc(s.href)}" title="${esc(s.label)}: ${fmt(s.value)}">${inner}</a>` : `<span class="item" title="${fmt(s.value)}">${inner}</span>`;
+    }).join("")}</div></div>`;
+}
+// Top 5 of a list + the rest of the total.
+function top5(rows, totalValue, key, label, href, value = total) {
+  const items = rows.slice(0, 5).filter(r => value(r) > 0).map(r => ({key: key(r), label: label(r), value: value(r), href: href(r)}));
+  const rest = totalValue - items.reduce((a, s) => a + s.value, 0);
+  if (rest > totalValue * 0.001) items.push({key: "other", label: "Everything else", value: rest});
+  return items;
+}
+
 // ---------------------------------------------------------------- explore (overview + every drill-down)
-const SPLITS = {host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
+const SPLITS = {total: "Total", host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service"};
+// How each dimension shows in a donut / tab: its top list, key, label, drill link.
+const DIMS = {
+  host: {top: "hosts", title: "Devices", key: r => r.host, label: r => r.host_name || r.host, href: r => drill("host", r.host)},
+  site: {top: "sites", title: "Websites", key: r => r.site, label: r => r.site || "(no DNS name)", href: r => r.site ? drill("site", r.site) : null},
+  country: {top: "countries", title: "Countries", key: r => r.country, label: r => r.country ? flag(r.country) : "unknown", href: r => r.country ? drill("country", r.country) : null},
+  svc: {top: "services", title: "Services", key: r => `${r.proto_num}/${r.port}`, label: r => `${r.proto}/${r.port}${r.service ? " " + r.service : ""}`, href: r => drill("svc", `${r.proto_num}/${r.port}`)},
+  asn: {top: "asns", title: "Networks", key: r => `AS${r.asn} ${r.asn_name}`, label: r => r.asn_name || (r.asn ? "AS" + r.asn : "unknown"), href: r => r.asn ? drill("asn", r.asn) : null},
+};
 
 async function explore() {
   const {q} = parseHash();
   const params = timeParams(q), applied = {};
   FILTER_KEYS.forEach(k => q.get(k) && (params.set(k, q.get(k)), applied[k] = q.get(k)));
+  const only = k => applied[k] && Object.keys(applied).length === 1;
   const splits = Object.keys(SPLITS).filter(k => !applied[k]);
   let by = q.get("by");
-  if (!splits.includes(by)) by = applied.host ? (splits.includes("site") ? "site" : "svc") : "host";
+  if (!splits.includes(by)) by = "total";
   const bp = new URLSearchParams(params); bp.set("by", by);
-  const extra = applied.host && Object.keys(applied).length === 1 ? api(`/api/host/${encodeURIComponent(applied.host)}`, timeParams(q))
-    : applied.site && Object.keys(applied).length === 1 ? api(`/api/site/${encodeURIComponent(applied.site)}`, timeParams(q)) : null;
-  const [d, b, x] = await Promise.all([api("/api/explore", params), api("/api/breakdown", bp), extra]);
-  const t = d.totals, tops = d.tops, filtered = Object.keys(applied).length > 0;
-  const named = total(t) ? 100 * (1 - t.unnamed / total(t)) : 0;
+  const extra = only("host") ? api(`/api/host/${encodeURIComponent(applied.host)}`, timeParams(q))
+    : only("site") ? api(`/api/site/${encodeURIComponent(applied.site)}`, timeParams(q)) : null;
+  const [d, b, x] = await Promise.all([api("/api/explore", params), by === "total" ? null : api("/api/breakdown", bp), extra]);
+  const t = d.totals, tops = d.tops, filtered = Object.keys(applied).length > 0, all = total(t);
+  const named = all ? 100 * (1 - t.unnamed / all) : 0;
 
-  // Chips name what's filtered, from the (single-row) top list of that dimension.
   const chipLabel = (k, v) => ({
     host: () => d.names.host ? `${d.names.host} (${v})` : v,
     asn: () => { const r = tops.asns.find(r => String(r.asn) === v); return r && r.asn_name ? `${r.asn_name} (AS${v})` : `AS${v}`; },
     country: () => flag(v),
     svc: () => { const r = tops.services[0]; return r ? `${r.proto}/${r.port}${r.service ? " " + r.service : ""}` : v; },
   }[k] || (() => v))();
-  const title = !filtered ? "All internet traffic" : applied.host && Object.keys(applied).length === 1
-    ? (d.names.host ? `${esc(d.names.host)} <span class="ip">${esc(applied.host)}</span>` : esc(applied.host))
-    : applied.site && Object.keys(applied).length === 1 ? esc(applied.site) : "Filtered traffic";
+  const title = !filtered ? "All internet traffic"
+    : only("host") ? (d.names.host ? `${esc(d.names.host)} <span class="ip">${esc(applied.host)}</span>` : esc(applied.host))
+    : only("site") ? esc(applied.site) : Object.entries(applied).map(([k, v]) => esc(chipLabel(k, v))).join(" &middot; ");
+  const w = d.window;
+  const sub = q.get("from") ? `${when(w.start)} – ${hm(w.end)}` : `last ${timeParams(q).get("range")}`;
 
-  const card = (key, label, cols, href, bar = total) => applied[key] ? "" :
-    `<div class="card"><h3>${label}</h3>${table(tops[cols[0]], cols[1], {href, bar})}</div>`;
+  // Three donuts: the first three dimensions not already filtered.
+  const donutDims = ["host", "site", "country", "svc", "asn"].filter(k => !applied[k] && (k !== "site" || d.dns)).slice(0, 3);
+  // One tabbed table: what only this page has, then every unfiltered dimension.
+  const tabList = [];
+  if (x && only("host")) {
+    if (x.dns) tabList.push({id: "visited", label: "Websites visited", html: () => table(x.sites, [
+      {k: "site", label: "Website", fmt: r => siteCell(r.site)},
+      {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)}, DOWN, UP,
+      {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {sortable: true, bar: r => r.visits, limit: 10, href: r => drill("site", r.site)})});
+    tabList.push({id: "lan", label: "LAN peers", html: () => table(x.lan_peers, [
+      {k: "ip", label: "Peer", fmt: r => hostCell(r.ip, r.ip_name, link("/explore", {host: r.ip, by: null}))},
+      {k: "sent", label: "Sent", n: 1, fmt: r => bytes(r.sent)},
+      {k: "received", label: "Received", n: 1, fmt: r => bytes(r.received)},
+      {k: "ports", label: "Their ports", fmt: r => `<span class="muted">${esc(r.ports)}</span>`}],
+      {bar: r => r.sent + r.received, limit: 10, href: r => link("/explore", {host: r.ip, by: null})}) +
+      `<p class="hint">From the Proxmox nodes' softflowd - only traffic that crosses a VM bridge.${x.mac ? ` MAC ${esc(x.mac)}.` : ""}</p>`});
+  }
+  if (x && only("site")) {
+    tabList.push({id: "visitors", label: "Devices visiting", html: () => table(x.devices, [
+      {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)},
+      {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)},
+      {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
+      {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {sortable: true, bar: r => r.visits, limit: 10, href: r => drill("host", r.ip)})});
+    tabList.push({id: "names", label: "Names looked up", html: () => table(x.domains, [
+      {k: "domain", label: "Domain"}, {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
+      {k: "devices", label: "Devices", n: 1}, {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {bar: r => r.lookups, limit: 10})});
+  }
+  const dimTab = (k, cols) => !applied[k] && tabList.push({id: k, label: DIMS[k] ? DIMS[k].title : "Remote addresses",
+    html: () => table(tops[DIMS[k] ? DIMS[k].top : "remotes"], cols, {limit: 10, bar: total, href: DIMS[k] ? DIMS[k].href : r => drill("remote", r.rip)})});
+  dimTab("host", [{k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)}, DOWN, UP, {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)}]);
+  if (d.dns) dimTab("site", [{k: "site", label: "Website", fmt: r => siteCell(r.site)}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
+  dimTab("asn", [{k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "AS" + r.asn)} <span class="tag">AS${r.asn}</span>` : `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
+  dimTab("country", [{k: "country", label: "Country", fmt: r => flag(r.country) || `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
+  dimTab("svc", [{k: "port", label: "Service", fmt: svcText}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
+  dimTab("remote", [{k: "rip", label: "Remote", fmt: r => esc(r.rip)},
+    {k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
+    {k: "country", label: "", fmt: r => flag(r.country)}, DOWN, UP]);
+
   $main.innerHTML = `
     ${filtered ? `<div class="chips"><span class="crumb"><a href="${link("/")}">All traffic</a> &rsaquo;</span>
       ${Object.entries(applied).map(([k, v]) => `<span class="chip"><b>${FILTER_NAMES[k]}</b>${esc(chipLabel(k, v))}
         <button title="Remove this filter" data-rm="${k}">&times;</button></span>`).join("")}</div>` : ""}
-    <div class="grid">
-      <div class="card wide">
-        <h2>${title}</h2>
-        <div class="stats">
-          <div class="stat"><div class="v">${bytes(t.down)}</div><div class="l">${sw(css("--s1"))}downloaded</div></div>
-          <div class="stat"><div class="v">${bytes(t.up)}</div><div class="l">${sw(css("--s2"))}uploaded</div></div>
-          ${applied.host ? "" : `<div class="stat"><div class="v">${num(t.hosts)}</div><div class="l">devices</div></div>`}
-          <div class="stat"><div class="v">${num(t.remotes)}</div><div class="l">remote addresses</div></div>
-          <div class="stat"><div class="v">${num(t.flows)}</div><div class="l">flows</div></div>
-          ${d.dns ? `<div class="stat"><div class="v">${named.toFixed(0)}%</div><div class="l">traffic with a website name</div></div>` : ""}
-        </div>
+    <div class="hero">
+      <div class="title"><h2>${title}</h2><div class="sub">${esc(sub)}</div></div>
+      <div class="kpis">
+        <div class="kpi"><div class="v">${bytes(t.down)}</div><div class="l">${sw(css("--s1"))}downloaded</div></div>
+        <div class="kpi"><div class="v">${bytes(t.up)}</div><div class="l">${sw(css("--s2"))}uploaded</div></div>
+        <div class="kpi"><div class="v">${num(applied.host ? t.remotes : t.hosts)}</div><div class="l">${applied.host ? "remote addresses" : "devices"}</div></div>
+        ${d.dns ? `<div class="kpi"><div class="v">${named.toFixed(0)}%</div><div class="l">has a website name</div></div>` : ""}
       </div>
-      <div class="card wide">
-        <div class="head"><h3>Traffic</h3><div class="spacer"></div><span class="hint">Drag across a chart to zoom in</span></div>
-        <div class="chart" id="c1"></div>${dirLegend()}
-      </div>
-      <div class="card wide">
-        <div class="head"><h3>Traffic by</h3>
-          <div class="seg" id="split">${splits.map(k => `<button data-by="${k}" class="${k === by ? "active" : ""}"
-            ${k === "site" && !d.dns ? "disabled" : ""}>${SPLITS[k]}</button>`).join("")}</div>
-          <div class="spacer"></div><span class="hint">Click a name to drill in</span></div>
-        <div class="chart" id="c2"></div><div id="l2"></div>
-      </div>
-      ${x && applied.host ? deviceExtras(x) : ""}
-      ${x && applied.site ? siteExtras(x) : ""}
-      ${card("host", "Devices", ["hosts", [
-        {k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)}, DOWN, UP,
-        {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)}]], r => drill("host", r.host))}
-      ${d.dns ? card("site", "Websites (by traffic)", ["sites", [
-        {k: "site", label: "Website", fmt: r => siteCell(r.site)}, DOWN, UP,
-        {k: "hosts", label: "Devices", n: 1}]], r => r.site ? drill("site", r.site) : null) : ""}
-      ${card("asn", "Networks (AS)", ["asns", [
-        {k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "AS" + r.asn)} <span class="tag">AS${r.asn}</span>` : `<span class="muted">unknown</span>`},
-        DOWN, UP, {k: "hosts", label: "Devices", n: 1}]], r => r.asn ? drill("asn", r.asn) : null)}
-      ${card("country", "Countries", ["countries", [
-        {k: "country", label: "Country", fmt: r => flag(r.country) || `<span class="muted">unknown</span>`}, DOWN, UP,
-        {k: "hosts", label: "Devices", n: 1}]], r => r.country ? drill("country", r.country) : null)}
-      ${card("svc", "Services (remote port)", ["services", [
-        {k: "port", label: "Service", fmt: svcText}, DOWN, UP,
-        {k: "hosts", label: "Devices", n: 1}]], r => drill("svc", `${r.proto_num}/${r.port}`))}
-      ${card("remote", "Remote addresses", ["remotes", [
-        {k: "rip", label: "Remote", fmt: r => esc(r.rip)},
-        {k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
-        {k: "country", label: "", fmt: r => flag(r.country)}, DOWN, UP]], r => drill("remote", r.rip))}
-    </div>`;
+    </div>
+    <div class="card">
+      <div class="head"><h3>Traffic</h3><div class="spacer"></div>
+        <div class="seg" id="split">${splits.map(k => `<button data-by="${k}" class="${k === by ? "active" : ""}"
+          ${k === "site" && !d.dns ? "disabled" : ""}>${SPLITS[k]}</button>`).join("")}</div></div>
+      <div class="chart" id="c1"></div><div id="l1"></div>
+    </div>
+    ${donutDims.length ? `<div class="row three">${donutDims.map(k => `<div class="card"><div class="head"><h3>${DIMS[k].title}</h3></div>${
+      donut(k, top5(tops[DIMS[k].top], all, DIMS[k].key, DIMS[k].label, DIMS[k].href), {title: DIMS[k].title})}</div>`).join("")}</div>` : ""}
+    <div class="card">${tabs(filtered ? "explore-f" : "explore", tabList)}</div>
+    <p class="hint">Drag across the chart to zoom in. Click a slice, legend entry or row to drill down.</p>`;
 
   document.querySelectorAll("[data-rm]").forEach(btn => btn.onclick = () => location.hash = link("/explore", {[btn.dataset.rm]: null, by: null}, true));
-  document.querySelectorAll("#split button").forEach(btn => btn.onclick = () => location.hash = link("/explore", {by: btn.dataset.by}, true));
-  dirChart(document.getElementById("c1"), d.series, {step: d.window.step});
-  const sc = stackChart(document.getElementById("c2"), b.t, b.series, {group: by, step: b.window.step});
-  document.getElementById("l2").innerHTML = stackLegend(b.series, sc.colors,
-    by === "site" ? s => s.key ? drill("site", s.key) : null
-    : by === "asn" ? s => drill("asn", s.key.split(" ")[0].slice(2))
-    : s => drill(by, s.key));
-}
-
-function deviceExtras(x) {
-  return `
-    <div class="card wide"><h3>Websites visited</h3>${x.dns ? table(x.sites, [
-      {k: "site", label: "Website", fmt: r => siteCell(r.site)},
-      {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)}, DOWN, UP,
-      {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
-      {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {sortable: true, bar: r => r.visits, href: r => drill("site", r.site)}) : NO_DNS}</div>
-    <div class="card"><h3>LAN peers</h3>${table(x.lan_peers, [
-      {k: "ip", label: "Peer", fmt: r => hostCell(r.ip, r.ip_name)},
-      {k: "sent", label: "Sent", n: 1, fmt: r => bytes(r.sent)},
-      {k: "received", label: "Received", n: 1, fmt: r => bytes(r.received)},
-      {k: "ports", label: "Their ports", fmt: r => `<span class="muted">${esc(r.ports)}</span>`}],
-      {bar: r => r.sent + r.received, href: r => link("/explore", {host: r.ip, by: null})})}
-      <p class="hint">From the Proxmox nodes' softflowd - only traffic that crosses a VM bridge.${x.mac ? ` MAC ${esc(x.mac)}.` : ""}</p></div>`;
-}
-
-function siteExtras(x) {
-  return `
-    <div class="card"><h3>Devices visiting</h3>${table(x.devices, [
-      {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)},
-      {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)},
-      {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
-      {k: "first", label: "First", n: 1, fmt: r => lastCell(r.first)},
-      {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {sortable: true, bar: r => r.visits, href: r => drill("host", r.ip)})}</div>
-    <div class="card"><h3>Names looked up</h3>${table(x.domains, [
-      {k: "domain", label: "Domain"}, {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
-      {k: "devices", label: "Devices", n: 1}, {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {bar: r => r.lookups})}</div>`;
+  document.querySelectorAll("#split button").forEach(btn => btn.onclick = () => location.hash = link("/explore", {by: btn.dataset.by === "total" ? null : btn.dataset.by}, true));
+  if (by === "total") {
+    dirChart(document.getElementById("c1"), d.series, {step: w.step});
+    document.getElementById("l1").innerHTML = dirLegend();
+  } else {
+    const sc = stackChart(document.getElementById("c1"), b.t, b.series, {group: by, step: b.window.step});
+    document.getElementById("l1").innerHTML = stackLegend(b.series, sc.colors,
+      by === "site" ? s => s.key ? drill("site", s.key) : null
+      : by === "asn" ? s => drill("asn", s.key.split(" ")[0].slice(2))
+      : s => drill(by, s.key));
+  }
 }
 
 // ---------------------------------------------------------------- lists
@@ -473,58 +569,66 @@ async function hosts() {
   const d = await api("/api/hosts", timeParams());
   const cols = [
     {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.name), sort: r => r.name || r.ip},
-    {k: "mac", label: "MAC", fmt: r => `<span class="muted">${esc(r.mac)}</span>`},
     DOWN, UP,
-    {k: "lan", label: "LAN traffic", n: 1, fmt: r => bytes(r.lan)},
+    {k: "lan", label: "LAN", n: 1, fmt: r => bytes(r.lan)},
     {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)},
-    {k: "lan_peers", label: "LAN peers", n: 1},
-    {k: "flows", label: "Flows", n: 1, fmt: r => num(r.flows)},
-    {k: "last", label: "Last seen", n: 1, fmt: r => lastCell(r.last)}];
+    {k: "last", label: "Last seen", n: 1, fmt: r => lastCell(r.last)},
+    {k: "mac", label: "MAC", fmt: r => `<span class="muted small">${esc(r.mac)}</span>`}];
+  const internet = d.hosts.reduce((a, r) => a + total(r), 0);
   const render = () => {
     const f = (document.getElementById("q")?.value || "").toLowerCase();
     const rows = d.hosts.filter(r => !f || (r.ip + " " + r.name + " " + r.mac).toLowerCase().includes(f));
-    document.getElementById("ht").innerHTML = table(rows, cols, {sortable: true, bar: r => total(r) + r.lan, href: r => drill("host", r.ip)});
+    document.getElementById("ht").innerHTML = table(rows, cols, {sortable: true, bar: r => total(r) + r.lan, limit: 25, href: r => drill("host", r.ip)});
   };
-  $main.innerHTML = `<div class="card">
-      <div class="head"><h2 style="margin:0">Devices <span class="muted">(${d.hosts.length})</span></h2>
-        <div class="spacer"></div><input class="filter" id="q" placeholder="Filter by name, IP, MAC"></div>
+  const byDown = [...d.hosts].sort((a, b) => b.down - a.down), byUp = [...d.hosts].sort((a, b) => b.up - a.up);
+  $main.innerHTML = `
+    <div class="hero"><div class="title"><h2>Devices</h2><div class="sub">${d.hosts.length} seen &middot; ${bytes(internet)} of internet traffic</div></div></div>
+    <div class="row half">
+      <div class="card"><div class="head"><h3>Share of downloads</h3></div>${donut("host",
+        top5(byDown, byDown.reduce((a, r) => a + r.down, 0), r => r.ip, r => r.name || r.ip, r => drill("host", r.ip), r => r.down), {center: "downloaded"})}</div>
+      <div class="card"><div class="head"><h3>Share of uploads</h3></div>${donut("host",
+        top5(byUp, byUp.reduce((a, r) => a + r.up, 0), r => r.ip, r => r.name || r.ip, r => drill("host", r.ip), r => r.up), {center: "uploaded"})}</div>
+    </div>
+    <div class="card">
+      <div class="head"><h3>All devices</h3><div class="spacer"></div><input class="filter" id="q" placeholder="Filter by name, IP, MAC"></div>
       <div id="ht"></div>
-      <p class="hint">Internet figures come from the firewall. LAN traffic comes from the Proxmox nodes' softflowd (the busiest node per device), so it only covers devices on or talking to a VM bridge.</p>
+      <p class="hint">Internet figures come from the firewall. LAN traffic comes from the Proxmox nodes' softflowd, so it only covers devices on or talking to a VM bridge.</p>
     </div>`;
   document.getElementById("q").oninput = render;
   render();
 }
 
 async function sites() {
-  const d = await api("/api/sites", timeParams());
+  const tp = timeParams(), bp = timeParams(); bp.set("by", "site");
+  const [d, b] = await Promise.all([api("/api/sites", tp), api("/api/breakdown", bp)]);
   if (!d.dns) { $main.innerHTML = `<div class="card">${NO_DNS}</div>`; return; }
   const cols = [
     {k: "site", label: "Website", fmt: r => siteCell(r.site)},
     {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)},
     {k: "devices", label: "Devices", n: 1}, DOWN, UP,
-    {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
     {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}];
   const render = () => {
     const f = (document.getElementById("q")?.value || "").toLowerCase();
     document.getElementById("st").innerHTML = table(d.sites.filter(r => !f || r.site.includes(f)), cols,
-      {sortable: true, bar: r => r.visits, href: r => drill("site", r.site)});
+      {sortable: true, bar: r => r.visits, limit: 25, href: r => drill("site", r.site)});
   };
-  // Top websites over time, by traffic.
-  const bp = timeParams(); bp.set("by", "site");
+  const visits = d.sites.reduce((a, r) => a + r.visits, 0);
   $main.innerHTML = `
-    <div class="card" style="margin-bottom:1rem"><div class="head"><h3>Website traffic over time</h3><div class="spacer"></div>
-      <span class="hint">Drag to zoom &middot; click a name to drill in</span></div><div class="chart" id="c1"></div><div id="l1"></div></div>
+    <div class="hero"><div class="title"><h2>Websites</h2><div class="sub">${d.sites.length} sites &middot; ${num(visits)} visits</div></div></div>
+    <div class="row split">
+      <div class="card"><div class="head"><h3>Website traffic over time</h3></div><div class="chart" id="c1"></div><div id="l1"></div></div>
+      <div class="card"><div class="head"><h3>Most visited</h3></div>${donut("site",
+        top5(d.sites, visits, r => r.site, r => r.site, r => drill("site", r.site), r => r.visits), {fmt: num, center: "visits"})}</div>
+    </div>
     <div class="card">
-      <div class="head"><h2 style="margin:0">Most visited websites <span class="muted">(${d.sites.length})</span></h2>
-        <div class="spacer"></div><input class="filter" id="q" placeholder="Filter websites"></div>
+      <div class="head"><h3>All websites</h3><div class="spacer"></div><input class="filter" id="q" placeholder="Filter websites"></div>
       <div id="st"></div>
       <p class="hint">From the firewall's DNS log. A visit is one device using a site within 5 minutes. Traffic is
         matched to the site the device looked up for that address.</p>
     </div>`;
   document.getElementById("q").oninput = render;
   render();
-  const b = await api("/api/breakdown", bp);
-  const sc = stackChart(document.getElementById("c1"), b.t, b.series, {group: "site", step: b.window.step});
+  const sc = stackChart(document.getElementById("c1"), b.t, b.series, {group: "site", step: b.window.step, height: 230});
   document.getElementById("l1").innerHTML = stackLegend(b.series, sc.colors, s => s.key ? drill("site", s.key) : null);
 }
 
@@ -532,89 +636,128 @@ async function newToday() {
   const d = await api("/api/new");
   const firstCol = {k: "first", label: "First seen", n: 1, fmt: r => lastCell(r.first)};
   $main.innerHTML = `
-    <p class="muted">First seen in the last 24 hours, compared with the flows kept since ${when(d.history_start)}${
-      Date.now() / 1000 - d.history_start < 8 * 86400 ? " (under a week of history, so expect a lot to look new)" : ""}.</p>
-    <div class="grid">
-      <div class="card wide"><h3>New devices</h3>${table(d.hosts, [
+    <div class="hero"><div class="title"><h2>New today</h2><div class="sub">First seen in the last 24 hours, compared with the flows kept since ${when(d.history_start)}${
+      Date.now() / 1000 - d.history_start < 8 * 86400 ? " (under a week of history, so expect a lot to look new)" : ""}</div></div>
+      <div class="kpis">
+        <div class="kpi"><div class="v">${num(d.hosts.length)}</div><div class="l">new devices</div></div>
+        <div class="kpi"><div class="v">${num(d.asns.length)}</div><div class="l">first contacts with a network</div></div>
+        <div class="kpi"><div class="v">${num(d.countries.length)}</div><div class="l">first contacts with a country</div></div>
+      </div></div>
+    <div class="card">${tabs("new", [
+      {id: "hosts", label: "New devices", html: () => table(d.hosts, [
         {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)}, firstCol,
-        {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}], {sortable: true, href: r => drill("host", r.ip)})}</div>
-      <div class="card"><h3>Networks contacted for the first time</h3>${table(d.asns, [
+        {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}], {sortable: true, limit: 15, href: r => drill("host", r.ip)})},
+      {id: "asns", label: "First contact: networks", html: () => table(d.asns, [
         {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)},
         {k: "name", label: "Network", fmt: r => `${esc(r.name || "")} <span class="tag">AS${r.asn}</span>`},
         firstCol, {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}],
-        {sortable: true, bar: r => r.bytes, href: r => link("/explore", {host: r.ip, asn: r.asn, by: null})})}</div>
-      <div class="card"><h3>Countries contacted for the first time</h3>${table(d.countries, [
+        {sortable: true, bar: r => r.bytes, limit: 15, href: r => link("/explore", {host: r.ip, asn: r.asn, by: null})})},
+      {id: "countries", label: "First contact: countries", html: () => table(d.countries, [
         {k: "ip", label: "Device", fmt: r => hostCell(r.ip, r.ip_name)},
         {k: "country", label: "Country", fmt: r => flag(r.country)},
         firstCol, {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}],
-        {sortable: true, bar: r => r.bytes, href: r => link("/explore", {host: r.ip, country: r.country, by: null})})}</div>
-    </div>`;
+        {sortable: true, bar: r => r.bytes, limit: 15, href: r => link("/explore", {host: r.ip, country: r.country, by: null})})},
+    ])}</div>`;
 }
 
 // ---------------------------------------------------------------- live
+// Live filter: every word must match some field; host: ip: port: proto: site: cc: as: target one field.
+function liveFilter(text) {
+  const terms = text.toLowerCase().split(/\s+/).filter(Boolean).map(t => {
+    const m = t.match(/^(host|ip|port|proto|site|cc|as):(.+)$/);
+    return m ? {f: m[1], v: m[2]} : {v: t};
+  });
+  return fields => terms.every(({f, v}) => f
+    ? f === "port" ? String(fields.port ?? "") === v : String(fields[f] ?? "").toLowerCase().includes(v)
+    : Object.values(fields).some(x => String(x ?? "").toLowerCase().includes(v)));
+}
+
 async function livePage() {
-  let sel = localGet("liveIface"), since = 0, big = null, topU = null;
-  const hist = {};          // device -> {t: [], down: [], up: []}
-  const talk = {t: [], by: {}};  // live top talkers: ip -> [bits/s per sample]
+  let sel = localGet("liveIface"), since = 0, big = null, view = localGet("liveView") || "throughput";
+  let filterText = localGet("liveFilter") || "", flows = null, top = null;
+  const names = {};
+  const hist = {};                 // device -> {label, t, down, up}
+  const talk = {t: [], by: {}};    // ip -> bits/s per top-talkers sample
   const KEEP = 600;
   $main.innerHTML = `
-    <div class="head"><h2 style="margin:0"><span class="pulse"></span>Live</h2>
-      <span class="hint">straight from the firewall &middot; throughput every 2 s, top talkers every 5 s &middot; last 10 minutes</span>
-      <span class="spacer"></span><span class="err small" id="lerr" style="padding:0"></span></div>
+    <div class="hero"><div class="title"><h2><span class="pulse"></span>Live</h2>
+      <div class="sub">Straight from the firewall: throughput every 2 s, devices every 5 s, last 10 minutes</div></div>
+      <span class="err small" id="lerr"></span></div>
     <div class="ifaces" id="ifaces"></div>
-    <div class="grid">
-      <div class="card wide"><div class="head"><h3 id="bigt">Throughput</h3></div><div class="chart" id="c1"></div>${dirLegend()}</div>
-      <div class="card wide"><div class="head"><h3>Top talkers over time</h3><span class="spacer"></span>
-        <span class="hint">download + upload per device &middot; click a name to drill in</span></div>
-        <div class="chart" id="c2"></div><div id="l2"></div></div>
-      <div class="card wide"><div class="head"><h3>Top talkers now</h3><span class="spacer"></span><span class="hint" id="topt"></span></div>
-        <div id="top"></div></div>
+    <div class="row split">
+      <div class="card"><div class="head"><h3 id="bigt">Throughput</h3><div class="spacer"></div>
+        <div class="seg" id="lview"><button data-v="throughput">Interface</button><button data-v="talkers">By device</button></div></div>
+        <div class="chart" id="c1"></div><div id="l1"></div></div>
+      <div class="card"><div class="head"><h3>Bandwidth right now</h3></div><div id="ldonut"><div class="empty">Waiting for the first sample…</div></div></div>
+    </div>
+    <div class="card">
+      <div class="head"><h3>Who's talking</h3><div class="spacer"></div>
+        <input class="filter" id="lf" placeholder="Filter: name, IP, website, port:443, proto:udp, cc:us" value="${esc(filterText)}"></div>
+      <div id="ltabs"></div>
     </div>`;
 
-  const spark = (h) => {
+  const spark = h => {
     const n = h.t.length; if (n < 2) return "";
-    const max = Math.max(1, ...h.down, ...h.up), W = 200, H = 36;
+    const max = Math.max(1, ...h.down, ...h.up), W = 200, H = 30;
     const path = arr => arr.map((v, i) => `${(i / (n - 1) * W).toFixed(1)},${(H - 2 - v / max * (H - 4)).toFixed(1)}`).join(" ");
     return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${css("--s1")}" stroke-width="2" vector-effect="non-scaling-stroke" points="${path(h.down)}"/>
       <polyline fill="none" stroke="${css("--s2")}" stroke-width="2" vector-effect="non-scaling-stroke" points="${path(h.up)}"/></svg>`;
   };
+  const setErr = m => { const el = document.getElementById("lerr"); if (el) el.textContent = m || ""; };
+
+  // The chart: the selected interface's throughput, or the devices stacked.
+  function drawChart(fresh) {
+    const el = document.getElementById("c1"); if (!el) return;
+    document.querySelectorAll("#lview button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
+    if (fresh) { forget(big); big = null; el.innerHTML = ""; }
+    if (view === "throughput") {
+      const h = hist[sel]; if (!h || h.t.length < 2) return;
+      document.getElementById("bigt").textContent = `Throughput - ${h.label}`;
+      if (big) big.setData([h.t, h.down, h.up]);
+      else { big = dirChart(el, h, {live: true, step: 2}); document.getElementById("l1").innerHTML = dirLegend(); }
+    } else {
+      document.getElementById("bigt").textContent = "Devices";
+      if (talk.t.length < 2) return;
+      const recent = ip => talk.by[ip].slice(-12).reduce((a, b) => a + b, 0);
+      const ips = Object.keys(talk.by).sort((a, b) => recent(b) - recent(a));
+      const keep = ips.slice(0, 7).filter(ip => recent(ip) > 0), rest = ips.filter(ip => !keep.includes(ip));
+      const list = keep.map(ip => ({key: ip, label: names[ip] || ip, values: talk.by[ip]}));
+      if (rest.length) list.push({key: "other", label: "Everything else", values: talk.t.map((_, i) => rest.reduce((a, ip) => a + talk.by[ip][i], 0))});
+      forget(big); el.innerHTML = "";
+      const sc = stackChart(el, talk.t, list, {group: "live", live: true, step: 5});
+      big = sc.u;
+      document.getElementById("l1").innerHTML = stackLegend(list, sc.colors, s => drill("host", s.key), s => bps(s.values[s.values.length - 1]));
+    }
+  }
 
   async function tick() {
     const d = await api("/api/live", new URLSearchParams({since}));
-    document.getElementById("lerr").textContent = d.error ? "firewall: " + d.error : "";
+    setErr(d.error ? "firewall: " + d.error : "");
     for (const f of d.interfaces) {
       const h = hist[f.device] ||= {label: f.label, t: [], down: [], up: []};
       for (const [t, down, up] of f.points) { h.t.push(t); h.down.push(down); h.up.push(up); since = Math.max(since, t); }
       while (h.t.length && h.t[0] < d.now - KEEP) { h.t.shift(); h.down.shift(); h.up.shift(); }
     }
     if (!sel || !hist[sel]) sel = Object.keys(hist)[0];
-    const el = document.getElementById("ifaces");
-    if (!el) return;
+    const el = document.getElementById("ifaces"); if (!el) return;
     el.innerHTML = Object.entries(hist).map(([dev, h]) => {
       const n = h.t.length - 1;
-      return `<div class="iface ${dev === sel ? "active" : ""}" data-dev="${esc(dev)}">
+      return `<div class="iface ${dev === sel && view === "throughput" ? "active" : ""}" data-dev="${esc(dev)}">
         <div class="lbl"><span>${esc(h.label)}</span><span>${esc(dev)}</span></div>
         <div class="rates"><span>${sw(css("--s1"))}${n >= 0 ? bps(h.down[n]) : "…"}</span><span>${sw(css("--s2"))}${n >= 0 ? bps(h.up[n]) : "…"}</span></div>
         ${spark(h)}</div>`;
     }).join("");
     el.querySelectorAll(".iface").forEach(c => c.onclick = () => {
-      sel = c.dataset.dev; localSet("liveIface", sel);
-      if (big) { big.destroy(); charts = charts.filter(u => u !== big); big = null; }
-      tick();
+      sel = c.dataset.dev; view = "throughput"; localSet("liveIface", sel); localSet("liveView", view); drawChart(true); tick();
     });
-    const h = hist[sel];
-    if (!h) return;
-    document.getElementById("bigt").textContent = `Throughput - ${h.label}`;
-    const s = {t: h.t, down: h.down, up: h.up};
-    if (!big && h.t.length > 1) big = dirChart(document.getElementById("c1"), s, {live: true, step: 2, height: 260});
-    else if (big) big.setData([s.t, s.down, s.up]);
+    if (view === "throughput") drawChart(false);
   }
 
   async function topTick() {
     const d = await api("/api/live/top");
-    document.getElementById("lerr").textContent = d.error ? "firewall: " + d.error : document.getElementById("lerr").textContent;
+    if (d.error) setErr("firewall: " + d.error);
     if (!d.t || (talk.t.length && d.t === talk.t[talk.t.length - 1])) return;
-    // History for the stacked chart: every device seen keeps a column per sample.
+    top = d;
     talk.t.push(d.t);
     const now = new Map(d.hosts.map(h => [h.ip, h]));
     for (const ip of new Set([...Object.keys(talk.by), ...now.keys()])) {
@@ -623,36 +766,62 @@ async function livePage() {
       arr.push(h ? h.down + h.up : 0);
     }
     while (talk.t.length && talk.t[0] < d.t - KEEP) { talk.t.shift(); Object.values(talk.by).forEach(a => a.shift()); }
-    names = Object.assign(names, Object.fromEntries(d.hosts.map(h => [h.ip, h.name])));
-    // Top 7 by the last minute, the rest as "other".
-    const recent = ip => talk.by[ip].slice(-12).reduce((a, b) => a + b, 0);
-    const ips = Object.keys(talk.by).sort((a, b) => recent(b) - recent(a));
-    const top = ips.slice(0, 7).filter(ip => recent(ip) > 0), rest = ips.filter(ip => !top.includes(ip));
-    const list = top.map(ip => ({key: ip, label: names[ip] || ip, values: talk.by[ip], bytes: 0}));
-    if (rest.length) list.push({key: "other", label: "Everything else", values: talk.t.map((_, i) => rest.reduce((a, ip) => a + talk.by[ip][i], 0)), bytes: 0});
-    if (talk.t.length > 1 && list.length) {
-      topU?.destroy(); charts = charts.filter(u => u !== topU);
-      const sc = stackChart(document.getElementById("c2"), talk.t, list, {group: "live", live: true, step: 5, height: 240});
-      topU = sc.u;
-      document.getElementById("l2").innerHTML = `<div class="legend">${list.map((s, i) => s.key === "other"
-        ? `<span class="item">${sw(sc.colors[i])}${esc(s.label)}</span>`
-        : `<a href="${drill("host", s.key)}">${sw(sc.colors[i])}${esc(s.label)}<span class="v">${bps(s.values[s.values.length - 1])}</span></a>`).join("")}</div>`;
-    }
-    document.getElementById("topt").textContent = "updated " + new Date(d.t * 1000).toLocaleTimeString();
-    const max = Math.max(1, ...d.hosts.map(h => h.down + h.up));
-    document.getElementById("top").innerHTML = `<div class="tbl"><table><thead><tr><th>Device</th><th class="n">Download</th>
-      <th class="n">Upload</th><th>Talking to (now)</th></tr></thead><tbody>${d.hosts.slice(0, 25).map(h => `
-      <tr data-href="${esc(drill("host", h.ip))}"><td>${hostCell(h.ip, h.name)}<div class="bar" style="width:${(100 * (h.down + h.up) / max).toFixed(1)}%"></div></td>
-        <td class="n">${bps(h.down)}</td><td class="n">${bps(h.up)}</td>
-        <td class="small">${h.peers.slice(0, 3).map(p => `${p.name ? esc(p.name) : `<a href="${drill("remote", p.ip)}">${esc(p.ip)}</a>`} <span class="muted">${bps(p.rate)}</span>`).join(", ")}${h.peers.length > 3 ? ` <span class="muted">+${h.peers.length - 3}</span>` : ""}</td></tr>`).join("")
-      || `<tr><td colspan="4" class="muted">Waiting for the first sample…</td></tr>`}</tbody></table></div>`;
-    document.querySelectorAll("#top tr[data-href]").forEach(tr => tr.onclick = e => { if (!e.target.closest("a")) location.hash = tr.dataset.href; });
+    Object.assign(names, Object.fromEntries(d.hosts.map(h => [h.ip, h.name])));
+    const byRate = [...d.hosts].sort((a, b) => total(b) - total(a));
+    const el = document.getElementById("ldonut");
+    if (el) el.innerHTML = donut("live", top5(byRate, byRate.reduce((a, h) => a + total(h), 0), h => h.ip, h => h.name || h.ip,
+      h => drill("host", h.ip)), {fmt: bps, center: "right now", title: "Bandwidth by device"});
+    if (view === "talkers") drawChart(true);
+    renderLists();
   }
 
-  let names = {};
-  const safe = fn => async () => { try { await fn(); } catch (e) { const el = document.getElementById("lerr"); if (el) el.textContent = e.message; } };
-  await safe(tick)(); safe(topTick)();
-  timers.push(setInterval(safe(tick), 2000), setInterval(safe(topTick), 5000));
+  async function flowTick() {
+    if (localGet("tab:live") !== "flows") return;
+    flows = await api("/api/live/flows", new URLSearchParams({seconds: 120}));
+    renderLists();
+  }
+
+  // Two lists under one filter: the firewall's devices (now) and the recent flows.
+  const lt = document.getElementById("ltabs");
+  lt.innerHTML = tabs("live", [
+    {id: "talkers", label: "Devices now", html: () => `<div id="lt-talkers"><div class="empty">Waiting for the first sample…</div></div>`},
+    {id: "flows", label: "Flows (last 2 min)", html: () => `<div id="lt-flows"><div class="empty">Loading flows…</div></div>`},
+  ]);
+  lt.addEventListener("tab", () => { renderLists(); safe(flowTick)(); });
+  function renderLists() {
+    const match = liveFilter(filterText);
+    const tEl = document.getElementById("lt-talkers");
+    if (tEl && top) {
+      const rows = top.hosts.filter(h => match({host: h.name, ip: h.ip + " " + h.peers.map(p => p.ip).join(" "), site: h.peers.map(p => p.name).join(" ")}));
+      const max = Math.max(1, ...rows.map(total));
+      tEl.innerHTML = `<div class="tbl"><table><thead><tr><th>Device</th><th class="n">Download</th><th class="n">Upload</th><th>Talking to</th></tr></thead><tbody>${
+        rows.slice(0, 30).map(h => `<tr data-href="${esc(drill("host", h.ip))}"><td>${hostCell(h.ip, h.name)}<div class="bar" style="width:${(100 * total(h) / max).toFixed(1)}%"></div></td>
+          <td class="n">${bps(h.down)}</td><td class="n">${bps(h.up)}</td>
+          <td class="small">${h.peers.slice(0, 3).map(p => `${p.name ? esc(p.name) : `<a href="${drill("remote", p.ip)}">${esc(p.ip)}</a>`} <span class="muted">${bps(p.rate)}</span>`).join(", ")}${h.peers.length > 3 ? ` <span class="muted">+${h.peers.length - 3}</span>` : ""}</td></tr>`).join("")
+        || `<tr><td colspan="4" class="muted">${top.hosts.length ? "Nothing matches the filter." : "Nobody is talking."}</td></tr>`}</tbody></table></div>
+        <p class="hint">${rows.length} of ${top.hosts.length} devices &middot; updated ${new Date(top.t * 1000).toLocaleTimeString()}</p>`;
+      tEl.querySelectorAll("tr[data-href]").forEach(tr => tr.onclick = e => { if (!e.target.closest("a")) location.hash = tr.dataset.href; });
+    }
+    const fEl = document.getElementById("lt-flows");
+    if (fEl && flows) {
+      const rows = flows.flows.filter(f => match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
+        site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn}));
+      fEl.innerHTML = table(rows, [
+        {k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)},
+        {k: "rip", label: "Remote", fmt: r => `<a href="${drill("remote", r.rip)}">${esc(r.rip)}</a>${r.site ? ` <span class="tag">${esc(r.site)}</span>` : ""}`},
+        {k: "asn_name", label: "Network", fmt: r => `<span class="small">${esc(r.asn_name || "")}</span> ${flag(r.country)}`},
+        {k: "port", label: "Service", fmt: svcText},
+        DOWN, UP,
+        {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {limit: 50, sortable: true}) +
+        `<p class="hint">${num(rows.length)} of ${num(flows.flows.length)} conversations in the last ${flows.seconds / 60} minutes &middot; flows arrive up to a minute late (the firewall reports a long connection once a minute)</p>`;
+    }
+  }
+  document.getElementById("lf").oninput = e => { filterText = e.target.value; localSet("liveFilter", filterText); renderLists(); };
+  document.querySelectorAll("#lview button").forEach(b => b.onclick = () => { view = b.dataset.v; localSet("liveView", view); drawChart(true); tick(); });
+
+  const safe = fn => async () => { try { await fn(); } catch (e) { setErr(e.message); } };
+  await safe(tick)(); safe(topTick)(); safe(flowTick)();
+  timers.push(setInterval(safe(tick), 2000), setInterval(safe(topTick), 5000), setInterval(safe(flowTick), 10000));
 }
 
 // ---------------------------------------------------------------- router
@@ -660,7 +829,7 @@ async function route() {
   const {path, q} = parseHash();
   const page = path === "/live" ? "live" : path === "/hosts" ? "hosts" : path === "/sites" ? "sites"
     : path === "/new" ? "new" : "explore";
-  const navPage = page === "explore" && (q.get("host")) ? "hosts" : page === "explore" && q.get("site") ? "sites" : page;
+  const navPage = page === "explore" && q.get("host") ? "hosts" : page === "explore" && q.get("site") ? "sites" : page;
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.dataset.page === navPage));
   const zoomed = q.get("from") && q.get("to");
   const range = q.get("range") || localGet("range") || "6h";
@@ -679,7 +848,7 @@ async function route() {
     else if (page === "new") await newToday();
     else await explore();
   } catch (e) {
-    $main.innerHTML = `<div class="err">Couldn't load: ${esc(e.message)}</div>`;
+    $main.innerHTML = `<div class="card err">Couldn't load: ${esc(e.message)}</div>`;
   }
   $main.classList.remove("loading");
 }

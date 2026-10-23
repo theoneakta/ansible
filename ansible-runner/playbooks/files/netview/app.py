@@ -536,6 +536,23 @@ def live_top():
     return {"t": top["t"], "hosts": hosts, "error": live.status["top_error"]}
 
 
+@app.get("/api/live/flows")
+def live_flows(seconds: int = 120):
+    """The latest internet conversations (device, remote, service), newest
+    first, from the flows - the firewall reports a long connection once a
+    minute, so this trails real time by up to that."""
+    seconds = max(60, min(seconds, 900))
+    now = int(time.time())
+    rows = query(f"""WITH {matched()}
+        SELECT {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
+               Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service,
+               ras AS asn, {ASN_NAME} AS asn_name, any(rcc) AS country, anyIf(site, site != '') AS site,
+               sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last
+        FROM matched GROUP BY local, remote, Proto, rport, ras
+        ORDER BY last DESC, down + up DESC LIMIT 2000""", **base_params(now - seconds, now))
+    return {"seconds": seconds, "now": now, "flows": name_rows(rows, "host")}
+
+
 @app.get("/api/health")
 def health():
     return {"clickhouse": query("SELECT version() AS v")[0]["v"], "names": len(names()),
