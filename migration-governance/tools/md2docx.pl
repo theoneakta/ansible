@@ -162,6 +162,39 @@ sub split_widths {
     return @w;
 }
 
+# Column widths: every column first gets room for its longest word (so labels never
+# break mid-word), then the rest of the page width is shared by how much text it holds.
+sub col_widths {
+    my ($rows, $n) = @_;
+    my $CH = 105;     # average width of one 9 pt character, in twips
+    my $PAD = 240;    # left + right cell margins
+    my (@min, @want);
+    for my $i (0 .. $n - 1) {
+        my ($word, $len) = (3, 3);
+        for my $r (@$rows) {
+            my $t = plain($r->[$i] // '');
+            for my $wd (split /\s+/, $t) { $word = length $wd if length $wd > $word }
+            $len = length $t if length $t > $len;
+        }
+        $word = 22 if $word > 22;    # long paths and commands may wrap
+        $len  = 80 if $len > 80;
+        push @min,  $word * $CH + $PAD;
+        push @want, $len * $CH + $PAD;
+    }
+    my $sum = 0; $sum += $_ for @min;
+    my @w;
+    if ($sum >= $TEXT_W) {
+        @w = map { int($_ * $TEXT_W / $sum) } @min;
+    } else {
+        my @extra = map { my $e = $want[$_] - $min[$_]; $e > 0 ? $e : 0 } 0 .. $n - 1;
+        my $es = 0; $es += $_ for @extra;
+        my $left = $TEXT_W - $sum;
+        @w = map { int($min[$_] + ($es ? $left * $extra[$_] / $es : $left / $n)) } 0 .. $n - 1;
+    }
+    my $t = 0; $t += $_ for @w; $w[-1] += $TEXT_W - $t;
+    return @w;
+}
+
 # Lines of markdown inside a cell or callout -> paragraphs
 sub mini_blocks {
     my ($text, %o) = @_;
@@ -199,10 +232,7 @@ sub pipe_table {
     shift @rows if @rows && $rows[0][0] =~ /^:?-+:?$/;
     my $n = @$header;
     my $kv = !grep { $_ ne '' } @$header;
-    my @len = map { my $i = $_; my $m = length plain($header->[$i]);
-        for my $r (@rows) { my $l = length plain($r->[$i] // ''); $m = $l if $l > $m } $m < 5 ? 5 : $m > 70 ? 70 : $m } 0 .. $n - 1;
-    @len = (28, 72) if $kv && $n == 2;
-    my @w = split_widths($n, @len);
+    my @w = $kv && $n == 2 ? split_widths(2, 28, 72) : col_widths([$header, @rows], $n);
     my $xml = '';
     unless ($kv) {
         $xml .= row(join('', map { tc(para(inline($header->[$_], b => 1, color => 'FFFFFF'), style => 'TableText'), $w[$_], fill => $NAVY) } 0 .. $n - 1), header => 1);
@@ -332,7 +362,7 @@ sub matrix {
         ['SQL 2025',    qw(X X X X X X S:RTM S:RTM S:RTM)],
     );
     my %st = (S => [$NAVY, 'FFFFFF'], L => ['2F7D5B', 'FFFFFF'], U => [$GREY, $MUTED], X => ['FFFFFF', 'A0A9B3']);
-    my @w = (1290, (976) x 9); $w[-1] += $TEXT_W - (1290 + 976 * 9);
+    my @w = (1170, (990) x 9); $w[-1] += $TEXT_W - (1170 + 990 * 9);
     my $xml = row(tc(para(run('SQL \\ Windows', b => 1, color => 'FFFFFF', sz => 16), style => 'TableText'), $w[0], fill => $DEEP)
         . join('', map { tc(para(run($os[$_], b => 1, color => 'FFFFFF', sz => 18), style => 'TableText', jc => 'center'), $w[$_ + 1], fill => $DEEP) } 0 .. 8), header => 1);
     for my $r (@rows) {
@@ -358,7 +388,7 @@ sub matrix {
                . tc(para(run($t, sz => 16), style => 'TableText'), 4640);
         if ($i % 2) { $legend .= row($lrow); $lrow = '' }
     }
-    return tbl($xml, \@w, bcolor => 'FFFFFF') . tbl($legend, \@lw, noborders => 1);
+    return tbl($xml, \@w, bcolor => 'FFFFFF', mar => '<w:top w:w="50" w:type="dxa"/><w:left w:w="30" w:type="dxa"/><w:bottom w:w="50" w:type="dxa"/><w:right w:w="30" w:type="dxa"/>') . tbl($legend, \@lw, noborders => 1);
 }
 
 # ---- mermaid
