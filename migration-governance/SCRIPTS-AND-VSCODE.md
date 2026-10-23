@@ -204,7 +204,15 @@ You don't need an extension, a password or a token. **Git for Windows** includes
 
 ```mermaid
 flowchart LR
-    A["Azure DevOps<br/>Repos → Clone"] --> B["Clone in VS Code<br/>(or copy the HTTPS URL)"] --> C["Choose a local folder<br/>C:\Repos"] --> D["Sign in once<br/>with your work account"] --> E["Switch to<br/>develop"]
+    A["Azure DevOps<br/>Repos → Clone"]
+    B["Clone in VS Code<br/>(or copy the HTTPS URL)"]
+    C["Choose a local folder<br/>C:\Repos"]
+    D["Sign in once<br/>with your work account"]
+    E["Switch to<br/>develop"]
+    A --> B
+    B --> C
+    C --> D
+    D --> E
 
     classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
     class A,B,C,D,E step
@@ -577,7 +585,13 @@ GitHub Copilot in VS Code reads this file from the repository automatically. It 
 
 ```mermaid
 flowchart LR
-    A["<b>1 · Collect</b><br/>everyone's scripts<br/>in the repository"] --> B["<b>2 · Compare</b><br/>catalogue: who covers<br/>what, on which versions"] --> C["<b>3 · Converge</b><br/>a few standard scripts,<br/>best parts merged in"] --> D["<b>4 · Enterprise-owned</b><br/>team ownership, releases,<br/>signing, central feed"]
+    A["<b>1 · Collect</b><br/>everyone's scripts<br/>in the repository"]
+    B["<b>2 · Compare</b><br/>catalogue: who covers<br/>what, on which versions"]
+    C["<b>3 · Converge</b><br/>a few standard scripts,<br/>best parts merged in"]
+    D["<b>4 · Enterprise-owned</b><br/>team ownership, releases,<br/>signing, central feed"]
+    A --> B
+    B --> C
+    C --> D
 
     classDef now fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
     classDef target fill:#1b4a78,stroke:#5fa8e8,color:#ffffff

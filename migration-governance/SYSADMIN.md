@@ -132,7 +132,9 @@ Source: Microsoft, [Windows Server upgrade paths](https://learn.microsoft.com/en
 
 ```mermaid
 flowchart LR
-    A["2008 R2 SP1<br/>baseline + snapshot"] -- "works, not supported<br/>~25 min, 3 reboots" --> B["2012 R2<br/>+ April 2014 Update<br/>+ <b>all final updates</b>"]
+    A["2008 R2 SP1<br/>baseline + snapshot"]
+    B["2012 R2<br/>+ April 2014 Update<br/>+ <b>all final updates</b>"]
+    A -- "works, not supported<br/>~25 min, 3 reboots" --> B
     B -- "supported OS path<br/>~1 h" --> C["2025<br/>checks + snapshot"]
 
     classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
