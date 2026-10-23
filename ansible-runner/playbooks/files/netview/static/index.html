@@ -125,6 +125,15 @@
   .filterbar input.filter { width: 220px; }
   .clear { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: .38rem .7rem; font: inherit; font-size: .85rem; cursor: pointer; }
   .clear:hover { color: var(--text); }
+  .multi { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+  .multi button {
+    background: var(--surface2); color: var(--muted); border: 0; border-right: 1px solid var(--border);
+    padding: .38rem .65rem; font: inherit; font-size: .85rem; cursor: pointer;
+  }
+  .multi button:last-child { border-right: 0; }
+  .multi button.on { background: #ffb4541f; color: var(--text); box-shadow: inset 0 -2px 0 var(--accent2); }
+  .multi button .n { color: var(--muted); font-size: .75rem; margin-left: .3rem; }
+  .iface.dim { opacity: .45; }
   .err { color: var(--fail); }
   .loading { opacity: .55; transition: opacity .2s; }
   .chart { width: 100%; position: relative; min-height: 60px; }
@@ -698,6 +707,8 @@ async function livePage() {
   let picks = {};
   try { picks = JSON.parse(localGet("liveDrops") || "{}") || {}; } catch {}
   for (const k of ["proto", "port", "asn"]) if (picks[k] && !/^\d+$/.test(picks[k])) delete picks[k];  // saved by an older page
+  if (picks.iface && !(Array.isArray(picks.iface) && picks.iface.length)) delete picks.iface;
+  const ifacePicked = dev => !picks.iface || picks.iface.includes(dev);
   const names = {};
   const hist = {};                 // device -> {label, t, down, up}
   const talk = {t: [], by: {}};    // ip -> bits/s per top-talkers sample
@@ -716,6 +727,7 @@ async function livePage() {
     <div class="card">
       <div class="head"><h3>Who's talking</h3><div class="spacer"></div><span class="hint" style="margin:0">Lists fill from the last 2 minutes of traffic</span></div>
       <div class="filterbar" id="lbar">
+        <div class="drop">Interface<div class="multi" id="lif"><button data-dev="" class="on">All</button></div></div>
         ${LIVE_DROPS.map(d => `<label class="drop">${d.label}<select data-k="${d.k}"><option value="">All</option></select></label>`).join("")}
         <label class="drop">Search<input class="filter" id="lf" placeholder="name, IP, port:443, cc:us…" value="${esc(filterText)}"></label>
         <button class="clear" id="lclear">Clear filters</button>
@@ -769,7 +781,7 @@ async function livePage() {
     const el = document.getElementById("ifaces"); if (!el) return;
     el.innerHTML = Object.entries(hist).map(([dev, h]) => {
       const n = h.t.length - 1;
-      return `<div class="iface ${dev === sel && view === "throughput" ? "active" : ""}" data-dev="${esc(dev)}">
+      return `<div class="iface ${dev === sel && view === "throughput" ? "active" : ""} ${ifacePicked(dev) ? "" : "dim"}" data-dev="${esc(dev)}">
         <div class="lbl"><span>${esc(h.label)}</span><span>${esc(dev)}</span></div>
         <div class="rates"><span>${sw(css("--s1"))}${n >= 0 ? bps(h.down[n]) : "…"}</span><span>${sw(css("--s2"))}${n >= 0 ? bps(h.up[n]) : "…"}</span></div>
         ${spark(h)}</div>`;
@@ -810,7 +822,7 @@ async function livePage() {
   async function flowTick() {
     const p = new URLSearchParams({seconds: 120});
     const filtered = Object.keys(picks).length > 0;
-    Object.entries(picks).forEach(([k, v]) => p.set(k, v));
+    Object.entries(picks).forEach(([k, v]) => Array.isArray(v) ? v.forEach(x => p.append(k, x)) : p.set(k, v));
     const [s, f] = await Promise.all([api("/api/live/flows", new URLSearchParams({seconds: 120})),
                                       filtered ? api("/api/live/flows", p) : null]);
     sample = s; flows = f || s;
@@ -821,7 +833,14 @@ async function livePage() {
   // Dropdown options: the values in the recent flows, busiest first, with a
   // count; a picked value stays listed even when it has gone quiet.
   function fillDrops() {
-    if (!sample || document.activeElement?.closest?.("#lbar select")) return;  // don't rebuild an open list
+    if (!sample) return;
+    // Interface: one toggle per firewall interface (multi-select), "All" clears them.
+    const counts = {};
+    sample.flows.forEach(f => counts[f.via_dev] = (counts[f.via_dev] || 0) + 1);
+    const ifs = [...sample.interfaces, ...(counts.other ? [{device: "other", label: "Firewall / other"}] : [])];
+    document.getElementById("lif").innerHTML = `<button data-dev="" class="${picks.iface ? "" : "on"}">All</button>` +
+      ifs.map(i => `<button data-dev="${esc(i.device)}" class="${picks.iface?.includes(i.device) ? "on" : ""}" title="${esc(i.device)}">${esc(i.label)}<span class="n">${num(counts[i.device] || 0)}</span></button>`).join("");
+    if (document.activeElement?.closest?.("#lbar select")) return;  // don't rebuild an open list
     for (const d of LIVE_DROPS) {
       const el = document.querySelector(`#lbar select[data-k="${d.k}"]`); if (!el) continue;
       const seen = new Map();
@@ -836,7 +855,7 @@ async function livePage() {
       el.classList.toggle("on", !!picks[d.k]);
     }
   }
-  const flowMatches = (f, match) => LIVE_DROPS.every(d => !picks[d.k] || d.val(f) === picks[d.k]) &&
+  const flowMatches = (f, match) => ifacePicked(f.via_dev) && LIVE_DROPS.every(d => !picks[d.k] || d.val(f) === picks[d.k]) &&
     match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
            site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn});
 
@@ -853,7 +872,7 @@ async function livePage() {
     if (tEl && top) {
       // The firewall's live list only knows devices and peers: the Device pick
       // narrows it directly, the other picks keep devices with matching flows.
-      const flowPicks = LIVE_DROPS.some(d => d.k !== "host" && picks[d.k]);
+      const flowPicks = !!picks.iface || LIVE_DROPS.some(d => d.k !== "host" && picks[d.k]);
       const withFlows = flowPicks && flows ? new Set(flows.flows.filter(f => flowMatches(f, () => true)).map(f => f.host)) : null;
       const rows = top.hosts.filter(h => (!picks.host || h.ip === picks.host) && (!withFlows || withFlows.has(h.ip)) &&
         match({host: h.name, ip: h.ip + " " + h.peers.map(p => p.ip).join(" "), site: h.peers.map(p => p.name).join(" ")}));
@@ -874,6 +893,7 @@ async function livePage() {
         {k: "rip", label: "Remote", fmt: r => `<a href="${drill("remote", r.rip)}">${esc(r.rip)}</a>${r.site ? ` <span class="tag">${esc(r.site)}</span>` : ""}`},
         {k: "asn_name", label: "Network", fmt: r => `<span class="small">${esc(r.asn_name || "")}</span> ${flag(r.country)}`},
         {k: "port", label: "Service", fmt: svcText},
+        {k: "via", label: "Via", fmt: r => `<span class="small">${esc(r.via)}</span>`},
         DOWN, UP,
         {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {limit: 50, sortable: true}) +
         `<p class="hint">${num(rows.length)} conversations${Object.keys(picks).length || filterText ? " match" : ""} in the last ${flows.seconds / 60} minutes${
@@ -888,6 +908,18 @@ async function livePage() {
     el.blur();
     refilter();
   });
+  document.getElementById("lif").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const dev = b.dataset.dev;
+    if (!dev) delete picks.iface;
+    else {
+      const set = new Set(picks.iface || []);
+      set.has(dev) ? set.delete(dev) : set.add(dev);
+      if (set.size) picks.iface = [...set]; else delete picks.iface;
+    }
+    localSet("liveDrops", JSON.stringify(picks));
+    fillDrops(); tick(); refilter();
+  };
   document.getElementById("lclear").onclick = () => {
     picks = {}; filterText = ""; document.getElementById("lf").value = "";
     localSet("liveDrops", "{}"); localSet("liveFilter", "");

@@ -537,38 +537,88 @@ def live_top():
 
 
 LIVE_LIMIT = 2000
+# The firewall interfaces by kind (live.INTERFACES, from the playbook). A
+# conversation seen on several takes the first of PRIO: the firewall records
+# the upload half of policy-routed VPN traffic as leaving through the WAN.
+LAN_IFS = [d for d, i in live.INTERFACES.items() if i.get("kind", "wan" if i.get("external") else "lan") == "lan"]
+PRIO = sorted(live.INTERFACES, key=lambda d: {"vpn": 0, "wan": 1, "lan": 2}.get(
+    live.INTERFACES[d].get("kind", "wan" if live.INTERFACES[d].get("external") else "lan"), 1))
+
+# Every recent flow touching the LAN, read from the LAN device's side, with
+# the interface it crossed (pif): the firewall's flows (internet, VPN,
+# Tailscale, the firewall itself) and the Proxmox nodes' LAN-to-LAN ones.
+LIVE = f"""
+livef AS (
+    SELECT TimeReceived AS t,
+           DstNetRole = {{lan:String}} AND SrcNetRole != {{lan:String}} AS dl,
+           if(dl, DstAddr, SrcAddr) AS local, if(dl, SrcAddr, DstAddr) AS remote,
+           if(dl, SrcAS, DstAS) AS ras,
+           replaceAll(toString(if(dl, SrcCountry, DstCountry)), '\\0', '') AS rcc,
+           if(dl, SrcPort, DstPort) AS rport, Proto, Bytes * SamplingRate AS b,
+           if(ExporterName = {{wan:String}},
+              if(InIfName IN {{lanifs:Array(String)}}, OutIfName, InIfName),
+              {{lanif:String}}) AS pif
+    FROM flows
+    WHERE TimeReceived {BETWEEN}
+      AND ((ExporterName = {{wan:String}} AND (SrcNetRole = {{lan:String}} OR DstNetRole = {{lan:String}}))
+        OR (ExporterName IN {{lanexp:Array(String)}} AND SrcNetRole = {{lan:String}} AND DstNetRole = {{lan:String}}))
+),
+dips AS (
+    SELECT client, ip, t AS dt, site FROM netview.dns_ips
+    WHERE t BETWEEN toDateTime({{start:UInt32}}) - INTERVAL 1 DAY AND toDateTime({{end:UInt32}})
+),
+lmatched AS (
+    SELECT l.*, d.site AS site
+    FROM livef AS l ASOF LEFT JOIN dips AS d
+      ON l.local = d.client AND l.remote = d.ip AND l.t >= d.dt
+)"""
+LIVE_NODNS = LIVE.split("dips AS (")[0] + "lmatched AS (SELECT *, '' AS site FROM livef)"
 
 
 @app.get("/api/live/flows")
 def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[int] = None,
                port: Optional[int] = None, country: Optional[str] = None, site: Optional[str] = None,
-               asn: Optional[int] = None):
-    """The latest internet conversations (device, remote, service), newest
-    first, from the flows - the firewall reports a long connection once a
-    minute, so this trails real time by up to that. The live page's dropdowns
-    filter here, so a pick searches every recent flow, not the newest
-    LIVE_LIMIT."""
+               asn: Optional[int] = None, iface: Optional[list[str]] = Query(None)):
+    """The latest conversations of the LAN's devices (device, remote, service,
+    interface), newest first, from the flows - the firewall reports a long
+    connection once a minute, so this trails real time by up to that. The
+    live page's dropdowns filter here, so a pick searches every recent flow,
+    not the newest LIVE_LIMIT; iface (repeatable) keeps conversations on
+    those interfaces."""
     seconds = max(60, min(seconds, 900))
     now = int(time.time())
-    conds, p = ["1"], base_params(now - seconds, now)
+    conds, p = ["1"], base_params(now - seconds, now) | {
+        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO}
+    having = "1"
+    if iface:
+        p["f_ifaces"] = [i for i in iface if i in live.INTERFACES or i == "other"]
+        having = "via_dev IN {f_ifaces:Array(String)}"
     for name, value, cond, check in [
             ("host", host, "local = toIPv6({f_host:String})", check_ip),
             ("proto", proto, "Proto = {f_proto:UInt32}", int),
             ("port", port, "rport = {f_port:UInt32}", int),
             ("country", country, "rcc = {f_country:String}", check_country),
-            ("site", site, "matched.site = {f_site:String}", check_site),  # "site" alone is the output column
+            ("site", site, "lmatched.site = {f_site:String}", check_site),  # "site" alone is the output column
             ("asn", asn, "ras = {f_asn:UInt32}", int)]:
         if value is not None and value != "":
             p[f"f_{name}"] = check(value)
             conds.append(cond)
-    rows = query(f"""WITH {matched()}
+    rows = query(f"""WITH {LIVE if dns.status["enabled"] else LIVE_NODNS}
         SELECT {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service,
                ras AS asn, {ASN_NAME} AS asn_name, any(rcc) AS country, anyIf(site, site != '') AS site,
-               sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last
-        FROM matched WHERE {" AND ".join(conds)} GROUP BY local, remote, Proto, rport, ras
+               sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last,
+               groupUniqArray(pif) AS ifs,
+               if(arrayFirst(x -> has(ifs, x), {{prio:Array(String)}}) != '',
+                  arrayFirst(x -> has(ifs, x), {{prio:Array(String)}}), 'other') AS via_dev
+        FROM lmatched WHERE {" AND ".join(conds)} GROUP BY local, remote, Proto, rport, ras
+        HAVING {having}
         ORDER BY last DESC, down + up DESC LIMIT {LIVE_LIMIT + 1}""", **p)
+    for r in rows:
+        r["via"] = live.INTERFACES.get(r["via_dev"], {}).get("label", "Firewall / other")
+        del r["ifs"]
     return {"seconds": seconds, "now": now, "capped": len(rows) > LIVE_LIMIT,
+            "interfaces": [{"device": d, "label": i.get("label", d)} for d, i in live.INTERFACES.items()],
             "flows": name_rows(rows[:LIVE_LIMIT], "host")}
 
 
