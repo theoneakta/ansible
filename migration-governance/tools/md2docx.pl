@@ -668,7 +668,7 @@ sub convert {
 
 my $body = '';
 if (@MD > 1) {
-    $body .= banner("MIGRATION GOVERNANCE  \x{b7}  COMPLETE EXPORT", 'Migration Governance',
+    $body .= banner("MIGRATION GOVERNANCE  \x{b7}  GLOBAL DOCUMENT", 'Migration Governance',
                     "Governance guide  \x{b7}  Sysadmin guide  \x{b7}  DBA guide  \x{b7}  Scripts & VS Code  \x{b7}  Server page template",
                     'Discovery', 'Install & configure', 'Migration', 'Decommissioning');
     $body .= para(run('Contents', b => 1, color => $NAVY, sz => 32), before => 240, after => 120);
