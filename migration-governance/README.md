@@ -286,7 +286,15 @@ Once an uncertain path has worked on a clone and in production, it's **proven** 
 
 ```mermaid
 flowchart LR
-    A["Clone the<br/>production VM"] --> B["Isolate the clone<br/>(no production network)"] --> C["Run the path<br/>on the clone, timed"] --> D["Test with the app<br/>(app owner)"] --> E{"OK?"}
+    A["Clone the<br/>production VM"]
+    B["Isolate the clone<br/>(no production network)"]
+    C["Run the path<br/>on the clone, timed"]
+    D["Test with the app<br/>(app owner)"]
+    E{"OK?"}
+    A --> B
+    B --> C
+    C --> D
+    D --> E
     E -- "yes" --> F["Same steps on production<br/>in the change window"]
     E -- "no" --> G["Fix the runbook,<br/>re-clone, retry"]
     G --> A
@@ -439,7 +447,15 @@ perl tools/md2docx.pl word/DBA-Guide.docx DBA.md    # same for each guide
 
 ```mermaid
 flowchart LR
-    S["Scripts run"] --> SP["SharePoint<br/>output + summary"] --> L["Loop server page<br/>findings, flags, decisions"] --> G["Gate signed<br/>on the Loop page"] --> N["Next phase"]
+    S["Scripts run"]
+    SP["SharePoint<br/>output + summary"]
+    L["Loop server page<br/>findings, flags, decisions"]
+    G["Gate signed<br/>on the Loop page"]
+    N["Next phase"]
+    S --> SP
+    SP --> L
+    L --> G
+    G --> N
     ADO["Azure DevOps<br/>story"] -. "links" .- L
     SN["ServiceNow<br/>tickets"] -. "links" .- L
 
@@ -997,7 +1013,17 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["Rehearsal<br/>(timed; on a clone<br/>if uncertain)"] --> B["Cut-over plan<br/>+ rollback plan<br/>approved"] --> C["Freeze and<br/>final backup"] --> D["Move data<br/>and apps"] --> E["Switch DNS,<br/>aliases, jobs"] --> F["Validate<br/>(IT, then app owner)"]
+    A["Rehearsal<br/>(timed; on a clone<br/>if uncertain)"]
+    B["Cut-over plan<br/>+ rollback plan<br/>approved"]
+    C["Freeze and<br/>final backup"]
+    D["Move data<br/>and apps"]
+    E["Switch DNS,<br/>aliases, jobs"]
+    F["Validate<br/>(IT, then app owner)"]
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
     F -- "fails" --> R["Rollback<br/>(source is still intact)"]
     F -- "passes" --> G["Gate 3"]
 
@@ -1040,7 +1066,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Q["Quiet period<br/>2–4 weeks<br/>monitor connections"] --> O["Power off<br/>(don't delete)<br/>2–4 weeks"] --> FB["Final backup<br/>kept per retention"] --> RM["Remove from<br/>every system"] --> G4["Gate 4"]
+    Q["Quiet period<br/>2–4 weeks<br/>monitor connections"]
+    O["Power off<br/>(don't delete)<br/>2–4 weeks"]
+    FB["Final backup<br/>kept per retention"]
+    RM["Remove from<br/>every system"]
+    G4["Gate 4"]
+    Q --> O
+    O --> FB
+    FB --> RM
+    RM --> G4
 
     classDef step fill:#1b4a78,stroke:#5fa8e8,color:#ffffff
     classDef good fill:#dbe8f4,stroke:#1b4a78,color:#0b1f36
@@ -1060,7 +1094,15 @@ Use this path for a server whose disposition at Gate 1 was **retire**. There is 
 
 ```mermaid
 flowchart LR
-    A["Gate 1<br/>disposition: RETIRE"] --> B["Announce<br/>date + contact"] --> C["Data decision<br/>carried out<br/>(archive or hand over)"] --> D["Scream test<br/>disable, don't delete<br/>covers a month-end"] --> E{"Anyone<br/>affected?"}
+    A["Gate 1<br/>disposition: RETIRE"]
+    B["Announce<br/>date + contact"]
+    C["Data decision<br/>carried out<br/>(archive or hand over)"]
+    D["Scream test<br/>disable, don't delete<br/>covers a month-end"]
+    E{"Anyone<br/>affected?"}
+    A --> B
+    B --> C
+    C --> D
+    D --> E
     E -- "yes" --> F["Re-enable,<br/>back to Gate 1<br/>(new disposition)"]
     E -- "no" --> G["Power off,<br/>final backup,<br/>removal checklist"] --> H["Gate 4"]
 
