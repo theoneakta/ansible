@@ -11,12 +11,13 @@
 # with netview_names to names.json, which the app re-reads when it changes.
 # Re-run with --tags names to refresh them only.
 #
-# Visited websites: the app polls the firewall's DNS query log (Unbound) with
-# its own API user "netview", whose only privilege is the read-only DNS
-# overview. This playbook creates that user once, and a key when the collector
-# has none (/opt/netview/.env, root 0600 - delete it to get a new key; the old
-# one is revoked). Lookups go to ClickHouse database "netview", kept
-# netview_dns_retention_days. netview_dns: false turns it off.
+# Visited websites and the live page: the app polls the firewall's DNS query
+# log (Unbound) and its traffic counters with its own API user "netview",
+# whose only privileges are the read-only DNS overview and Reporting: Traffic.
+# This playbook creates that user (and keeps its privileges to those two), and
+# a key when the collector has none (/opt/netview/.env, root 0600 - delete it
+# to get a new key; the old one is revoked). Lookups go to ClickHouse database
+# "netview", kept netview_dns_retention_days. netview_dns: false turns both off.
 #
 # Prerequisite: akvorado_stack.yml on the same host.
 # Run:  ./run.sh netview_stack.yml                  (192.168.3.150)
@@ -36,6 +37,15 @@
     netview_firewall: 192.168.3.1
     netview_dns: true
     netview_dns_retention_days: 30
+    # Live page: the firewall interfaces shown, by device (as in
+    # akvorado_stack.yml's ifindexes). external = towards the internet, so
+    # download is what the firewall receives there.
+    netview_live_interfaces:
+      ix0: {label: Internet, external: true}
+      wg0: {label: VPN (PIA), external: true}
+      ix1: {label: LAN, external: false}
+      tailscale0: {label: Tailscale, external: true}
+    netview_live_top_iface: lan  # OPNsense interface key whose hosts get live rates
     # Exporter names as in akvorado_stack.yml: the firewall answers for the
     # internet, the Proxmox nodes' softflowd for LAN-to-LAN.
     netview_wan_exporter: opnsense
@@ -251,6 +261,8 @@
                 # Our own lookups reach the firewall from this host's address.
                 COLLECTOR_IP: {{ ansible_host | default(inventory_hostname) }}
                 DNS_RETENTION_DAYS: "{{ netview_dns_retention_days }}"
+                LIVE_INTERFACES: '{{ netview_live_interfaces | to_json }}'
+                LIVE_TOP_IFACE: {{ netview_live_top_iface }}
               volumes:
                 - ./names.json:/data/names.json:ro
               networks: [akvorado]
