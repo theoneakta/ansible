@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>netview</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<style>
+  /* Same palette as the ansible-runner GUI. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f16;
+    --surface: #131a24;
+    --surface2: #1a2330;
+    --border: #262f3d;
+    --text: #e6edf3;
+    --muted: #8b96a5;
+    --accent: #ff5c4d;
+    --accent2: #ffb454;
+    --down: #58a6ff;
+    --up: #ffb454;
+    --ok: #2ea043;
+    --fail: #f85149;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif; font-size: 14px;
+  }
+  a { color: var(--down); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: .8rem 1.4rem;
+    background: linear-gradient(120deg, #1a0d0d, #1c1108 70%);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; }
+  header h1 span { color: var(--accent2); }
+  nav { display: flex; gap: .25rem; }
+  nav a {
+    color: var(--muted); padding: .35rem .8rem; border-radius: 999px; border: 1px solid transparent;
+  }
+  nav a.active { color: var(--text); border-color: var(--border); background: var(--surface); }
+  nav a:hover { text-decoration: none; color: var(--text); }
+  .spacer { flex: 1; }
+  .ranges { display: flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .ranges button {
+    background: var(--surface); color: var(--muted); border: 0; padding: .35rem .75rem; cursor: pointer;
+    font: inherit;
+  }
+  .ranges button.active { background: var(--surface2); color: var(--accent2); }
+
+  main { padding: 1.2rem 1.4rem; max-width: 1400px; margin: 0 auto; }
+  h2 { font-size: 1.05rem; margin: 0 0 .8rem; }
+  h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 .6rem; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; min-width: 0; }
+  .card.wide { grid-column: 1 / -1; }
+  .stats { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .stat .v { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: .75rem; color: var(--muted); }
+  .down { color: var(--down); } .up { color: var(--up); }
+
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; cursor: default; }
+  th.sort { cursor: pointer; }
+  td.n, th.n { text-align: right; }
+  tr:hover td { background: var(--surface2); }
+  .bar { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--down), var(--up)); margin-top: 3px; opacity: .7; }
+  .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .3rem; margin-left: .3rem; }
+  .name { font-weight: 500; }
+  .ip { color: var(--muted); font-size: .8rem; margin-left: .4rem; }
+  input.filter {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+    padding: .35rem .6rem; font: inherit; width: 240px;
+  }
+  .err { color: var(--fail); padding: 1rem; }
+  .loading { opacity: .5; transition: opacity .2s; }
+  .chart { width: 100%; }
+  .uplot, .u-legend { color: var(--text); font-family: inherit; }
+  .u-legend .u-value { font-variant-numeric: tabular-nums; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } main, header { padding-left: 1rem; padding-right: 1rem; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>net<span>view</span></h1>
+  <nav>
+    <a href="#/" data-page="overview">Overview</a>
+    <a href="#/hosts" data-page="hosts">Hosts</a>
+    <a href="#/new" data-page="new">New today</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="ranges" id="ranges">
+    <button data-r="1h">1h</button><button data-r="6h">6h</button>
+    <button data-r="24h">24h</button><button data-r="7d">7d</button>
+  </div>
+</header>
+<main id="main"></main>
+
+<script>
+const $main = document.getElementById("main");
+let range = localGet("range") || "6h";
+let charts = [];
+
+function localGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+// ---------------------------------------------------------------- formatting
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+function bytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (i ? n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0) : n) + " " + u[i];
+}
+function bps(n) {
+  const u = ["b/s", "kb/s", "Mb/s", "Gb/s"]; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return n.toFixed(n < 10 && i ? 2 : n < 100 && i ? 1 : 0) + " " + u[i];
+}
+const num = n => Number(n || 0).toLocaleString();
+function ago(t) {
+  if (!t) return "";
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 129600) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+const when = t => t ? new Date(t * 1000).toLocaleString() : "";
+const flag = cc => cc && cc.trim().length === 2
+  ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1A5 + c.charCodeAt(0))) + " " + cc : "";
+function hostCell(ip, name) {
+  return `<a href="#/host/${esc(ip)}">${name ? `<span class="name">${esc(name)}</span><span class="ip">${esc(ip)}</span>` : esc(ip)}</a>`;
+}
+const svc = r => `${esc(r.proto)}/${r.port}${r.service ? ` <span class="tag">${esc(r.service)}</span>` : ""}`;
+
+// ---------------------------------------------------------------- tables
+// cols: [{k, label, n (numeric), fmt(row), sort (key or fn)}]; rows sortable by header click.
+function table(rows, cols, opts = {}) {
+  const id = "t" + Math.random().toString(36).slice(2);
+  const max = opts.bar ? Math.max(1, ...rows.map(opts.bar)) : 0;
+  const body = rows.length ? rows.map(r => "<tr>" + cols.map((c, i) =>
+    `<td class="${c.n ? "n" : ""}">${c.fmt ? c.fmt(r) : esc(r[c.k])}${i === 0 && max ? `<div class="bar" style="width:${(100 * opts.bar(r) / max).toFixed(1)}%"></div>` : ""}</td>`
+  ).join("") + "</tr>").join("") : `<tr><td colspan="${cols.length}" class="muted">Nothing in this range.</td></tr>`;
+  setTimeout(() => {
+    const el = document.getElementById(id); if (!el || !opts.sortable) return;
+    el.querySelectorAll("th.sort").forEach(th => th.onclick = () => {
+      const c = cols[+th.dataset.i], key = typeof c.sort === "function" ? c.sort : r => r[c.sort || c.k];
+      const dir = opts.sorted === th.dataset.i ? -opts.dir : -1; opts.sorted = th.dataset.i; opts.dir = dir;
+      rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * dir);
+      el.outerHTML = table(rows, cols, opts);
+    });
+  });
+  return `<div class="tbl" id="${id}"><table><thead><tr>${cols.map((c, i) =>
+    `<th class="${c.n ? "n " : ""}${opts.sortable ? "sort" : ""}" data-i="${i}">${c.label}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+const DOWN = {k: "down", label: "Down", n: 1, fmt: r => `<span class="down">${bytes(r.down)}</span>`};
+const UP = {k: "up", label: "Up", n: 1, fmt: r => `<span class="up">${bytes(r.up)}</span>`};
+const total = r => (r.down || 0) + (r.up || 0);
+
+// ---------------------------------------------------------------- chart
+function chart(el, s) {
+  const st = getComputedStyle(document.documentElement), css = {getPropertyValue: n => st.getPropertyValue(n).trim()};
+  const axis = {stroke: css.getPropertyValue("--muted"), grid: {stroke: css.getPropertyValue("--border"), width: 1}, ticks: {show: false}};
+  const opts = {
+    width: el.clientWidth, height: 240,
+    series: [{},
+      {label: "Download", stroke: css.getPropertyValue("--down"), fill: css.getPropertyValue("--down") + "33", width: 1.5, value: (u, v) => v == null ? "" : bps(v)},
+      {label: "Upload", stroke: css.getPropertyValue("--up"), fill: css.getPropertyValue("--up") + "33", width: 1.5, value: (u, v) => v == null ? "" : bps(v)}],
+    axes: [axis, {...axis, size: 70, values: (u, vals) => vals.map(bps)}],
+    cursor: {points: {size: 6}},
+  };
+  const u = new uPlot(opts, [s.t, s.down, s.up], el);
+  charts.push(u);
+}
+window.addEventListener("resize", () => charts.forEach(u => u.setSize({width: u.root.parentElement.clientWidth, height: 240})));
+
+// ---------------------------------------------------------------- pages
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function overview() {
+  const d = await api(`/api/overview?range=${range}`);
+  const t = d.totals;
+  $main.innerHTML = `
+    <div class="grid">
+      <div class="card wide">
+        <div class="stats">
+          <div class="stat"><div class="v down">${bytes(t.down)}</div><div class="l">downloaded</div></div>
+          <div class="stat"><div class="v up">${bytes(t.up)}</div><div class="l">uploaded</div></div>
+          <div class="stat"><div class="v">${num(t.hosts)}</div><div class="l">LAN hosts on the internet</div></div>
+          <div class="stat"><div class="v">${num(t.remotes)}</div><div class="l">remote addresses</div></div>
+          <div class="stat"><div class="v">${num(t.flows)}</div><div class="l">flows</div></div>
+        </div>
+      </div>
+      <div class="card wide"><h3>Internet traffic</h3><div class="chart" id="c1"></div></div>
+      <div class="card"><h3>Top hosts</h3>${table(d.hosts, [
+        {k: "ip", label: "Host", fmt: r => hostCell(r.ip, r.ip_name)}, DOWN, UP,
+        {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)}], {bar: total})}</div>
+      <div class="card"><h3>Top networks (AS)</h3>${table(d.asns, [
+        {k: "name", label: "Network", fmt: r => `${esc(r.name || "AS" + r.asn)} <span class="tag">AS${r.asn}</span>`}, DOWN, UP,
+        {k: "hosts", label: "Hosts", n: 1}], {bar: total})}</div>
+      <div class="card"><h3>Top countries</h3>${table(d.countries, [
+        {k: "country", label: "Country", fmt: r => flag(r.country)}, DOWN, UP,
+        {k: "hosts", label: "Hosts", n: 1}], {bar: total})}</div>
+      <div class="card"><h3>Top services (remote port)</h3>${table(d.services, [
+        {k: "port", label: "Service", fmt: svc},
+        {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)},
+        {k: "hosts", label: "Hosts", n: 1}], {bar: r => r.bytes})}</div>
+    </div>`;
+  chart(document.getElementById("c1"), d.series);
+}
+
+async function hosts() {
+  const d = await api(`/api/hosts?range=${range}`);
+  const cols = [
+    {k: "ip", label: "Host", fmt: r => hostCell(r.ip, r.name), sort: r => r.name || r.ip},
+    {k: "mac", label: "MAC", fmt: r => `<span class="muted">${esc(r.mac)}</span>`},
+    DOWN, UP,
+    {k: "lan", label: "LAN traffic", n: 1, fmt: r => bytes(r.lan)},
+    {k: "remotes", label: "Remotes", n: 1, fmt: r => num(r.remotes)},
+    {k: "lan_peers", label: "LAN peers", n: 1},
+    {k: "flows", label: "Flows", n: 1, fmt: r => num(r.flows)},
+    {k: "last", label: "Last seen", n: 1, fmt: r => `<span title="${when(r.last)}">${ago(r.last)}</span>`}];
+  const render = () => {
+    const q = (document.getElementById("q")?.value || "").toLowerCase();
+    const rows = d.hosts.filter(r => !q || (r.ip + " " + r.name + " " + r.mac).toLowerCase().includes(q));
+    document.getElementById("ht").innerHTML = table(rows, cols, {sortable: true, bar: r => total(r) + r.lan});
+  };
+  $main.innerHTML = `<div class="card">
+      <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem">
+        <h2 style="margin:0">Hosts <span class="muted">(${d.hosts.length})</span></h2>
+        <div class="spacer"></div><input class="filter" id="q" placeholder="Filter by name, IP, MAC">
+      </div><div id="ht"></div>
+      <p class="muted" style="font-size:.8rem">Internet figures come from the firewall. LAN traffic comes from the Proxmox nodes' softflowd (the busiest node per host), so it only covers hosts on or talking to a VM bridge.</p>
+    </div>`;
+  document.getElementById("q").oninput = render;
+  render();
+}
+
+async function host(ip) {
+  const d = await api(`/api/host/${encodeURIComponent(ip)}?range=${range}`);
+  $main.innerHTML = `
+    <div class="grid">
+      <div class="card wide">
+        <h2>${d.name ? esc(d.name) + ` <span class="ip">${esc(d.ip)}</span>` : esc(d.ip)}
+          ${d.mac ? `<span class="tag">${esc(d.mac)}</span>` : ""}</h2>
+        <div class="chart" id="c1"></div>
+      </div>
+      <div class="card wide"><h3>Internet peers</h3>${table(d.peers, [
+        {k: "ip", label: "Remote", fmt: r => esc(r.ip)},
+        {k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
+        {k: "country", label: "Country", fmt: r => flag(r.country)},
+        DOWN, UP,
+        {k: "ports", label: "Remote ports", fmt: r => `<span class="muted">${esc(r.ports)}</span>`},
+        {k: "flows", label: "Flows", n: 1, fmt: r => num(r.flows)},
+        {k: "last", label: "Last", n: 1, fmt: r => `<span title="${when(r.last)}">${ago(r.last)}</span>`}], {sortable: true, bar: total})}</div>
+      <div class="card"><h3>Services used (remote port)</h3>${table(d.services, [
+        {k: "port", label: "Service", fmt: svc}, DOWN, UP,
+        {k: "remotes", label: "Remotes", n: 1}], {bar: total})}</div>
+      <div class="card"><h3>LAN peers</h3>${table(d.lan_peers, [
+        {k: "ip", label: "Peer", fmt: r => hostCell(r.ip, r.ip_name)},
+        {k: "sent", label: "Sent", n: 1, fmt: r => `<span class="up">${bytes(r.sent)}</span>`},
+        {k: "received", label: "Received", n: 1, fmt: r => `<span class="down">${bytes(r.received)}</span>`},
+        {k: "ports", label: "Their ports", fmt: r => `<span class="muted">${esc(r.ports)}</span>`}],
+        {bar: r => r.sent + r.received})}</div>
+    </div>`;
+  chart(document.getElementById("c1"), d.series);
+}
+
+async function newToday() {
+  const d = await api(`/api/new`);
+  const firstCol = {k: "first", label: "First seen", n: 1, fmt: r => `<span title="${when(r.first)}">${ago(r.first)}</span>`};
+  $main.innerHTML = `
+    <p class="muted">First seen in the last 24 hours, compared with the flows kept since ${when(d.history_start)}${
+      Date.now() / 1000 - d.history_start < 8 * 86400 ? " (under a week of history, so expect a lot to look new)" : ""}.</p>
+    <div class="grid">
+      <div class="card wide"><h3>New LAN hosts</h3>${table(d.hosts, [
+        {k: "ip", label: "Host", fmt: r => hostCell(r.ip, r.ip_name)}, firstCol,
+        {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}], {sortable: true})}</div>
+      <div class="card"><h3>Networks contacted for the first time</h3>${table(d.asns, [
+        {k: "ip", label: "Host", fmt: r => hostCell(r.ip, r.ip_name)},
+        {k: "name", label: "Network", fmt: r => `${esc(r.name || "")} <span class="tag">AS${r.asn}</span>`},
+        firstCol, {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}], {sortable: true, bar: r => r.bytes})}</div>
+      <div class="card"><h3>Countries contacted for the first time</h3>${table(d.countries, [
+        {k: "ip", label: "Host", fmt: r => hostCell(r.ip, r.ip_name)},
+        {k: "country", label: "Country", fmt: r => flag(r.country)},
+        firstCol, {k: "bytes", label: "Traffic", n: 1, fmt: r => bytes(r.bytes)}], {sortable: true, bar: r => r.bytes})}</div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------- router
+async function route() {
+  const h = location.hash.replace(/^#/, "") || "/";
+  const page = h.startsWith("/host/") ? "hosts" : h === "/hosts" ? "hosts" : h === "/new" ? "new" : "overview";
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.dataset.page === page));
+  document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", b.dataset.r === range));
+  document.getElementById("ranges").style.visibility = page === "new" ? "hidden" : "";
+  charts.forEach(u => u.destroy()); charts = [];
+  $main.classList.add("loading");
+  try {
+    if (h.startsWith("/host/")) await host(decodeURIComponent(h.slice(6)));
+    else if (h === "/hosts") await hosts();
+    else if (h === "/new") await newToday();
+    else await overview();
+  } catch (e) {
+    $main.innerHTML = `<div class="err">Couldn't load: ${esc(e.message)}</div>`;
+  }
+  $main.classList.remove("loading");
+}
+document.getElementById("ranges").onclick = e => {
+  if (!e.target.dataset.r) return;
+  range = e.target.dataset.r; localSet("range", range); route();
+};
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>
