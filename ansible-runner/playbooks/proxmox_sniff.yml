@@ -1,10 +1,10 @@
 ---
 # Network capture ("sniffing") on a Proxmox node: mirrors the traffic of one
 # of its bridges to a dedicated NIC on a capture VM - by default everything
-# pve6 exchanges with the LAN, to docker-apps2 (VM 102, 192.168.3.8), where
-# ntopng analyzes it.
+# pve6 exchanges with the LAN, to docker-apps2 (VM 102, 192.168.3.8), for a
+# capture tool there (tcpdump, Wireshark, an IDS).
 #
-#   pve6 vmbr0 uplink (nic6) --tc mirror--> tap102iN --> vmbrsniff --> VM 102 "sniff0" --> ntopng
+#   pve6 vmbr0 uplink (nic6) --tc mirror--> tap102iN --> vmbrsniff --> VM 102 "sniff0"
 #
 # What it sets up:
 #   1. On the node (root over SSH - add the node on the Hosts tab as "SSH
@@ -19,7 +19,7 @@
 #   2. Through the Proxmox API: a NIC on vmbrsniff for the capture VM
 #      (hot-plugged, firewall off, no IP).
 #   3. On the capture VM: that NIC up as "sniff0" without an address,
-#      promiscuous, and added to ntopng's interfaces.
+#      promiscuous.
 #
 # Modes (sniff_mode):
 #   uplink - both directions on the bridge's physical port(s): everything the
@@ -358,15 +358,13 @@
         sniff_mac: "{{ vm_config_after.json.data[sniff_netkey or sniff_free_netkey] | regex_search('([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}') | lower }}"
       when: sniff_state == 'present'
 
-- name: Capture setup - capture interface and ntopng on the VM
+- name: Capture setup - capture interface on the VM
   hosts: sniff_vm
   gather_facts: false
   become: true
   vars:
     sniff_state: present
     sniff_iface: sniff0
-    # ntopng's compose file on the capture VM; empty = leave ntopng alone.
-    sniff_ntopng_compose: /home/mbmondor/docker/ntopng/docker-compose.yml
   pre_tasks:
     - name: Use the group default login for hosts without their own
       ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
@@ -419,38 +417,14 @@
       when: sniff_netplan is changed or sniff_netplan_removed is changed
       changed_when: true
 
-    - name: Promiscuous mode (ntopng also asks for it while capturing)
+    - name: Promiscuous mode
       ansible.builtin.command: ip link set dev {{ sniff_iface }} up promisc on
       when: sniff_state == 'present'
       changed_when: false
-
-    - name: Check for ntopng's compose file
-      ansible.builtin.stat:
-        path: "{{ sniff_ntopng_compose }}"
-      register: ntopng_compose
-      when: sniff_ntopng_compose | length > 0
-
-    - name: Add (or remove) the capture interface in ntopng
-      ansible.builtin.lineinfile:
-        path: "{{ sniff_ntopng_compose }}"
-        regexp: '^(\s*)- --interface={{ sniff_iface }}$'
-        insertafter: '^\s*- --interface=tcp://'
-        line: "      - --interface={{ sniff_iface }}"
-        state: "{{ sniff_state }}"
-        backup: true
-      register: ntopng_compose_changed
-      when: sniff_ntopng_compose | length > 0 and ntopng_compose.stat.exists | default(false)
-
-    - name: Restart ntopng with the new interface list
-      ansible.builtin.command:
-        cmd: docker compose up -d
-        chdir: "{{ sniff_ntopng_compose | dirname }}"
-      when: ntopng_compose_changed is changed
-      changed_when: true
 
     - name: Report
       ansible.builtin.debug:
         msg: >-
           {{ 'Capture interface ' ~ sniff_iface ~ ' (' ~ sniff_mac ~ ') receives the mirrored traffic'
-             ~ ('; added to ntopng' if ntopng_compose_changed is changed else '') if sniff_state == 'present'
+             if sniff_state == 'present'
              else 'Capture setup removed.' }}

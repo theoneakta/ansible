@@ -1,0 +1,72 @@
+---
+# NetFlow export on the OPNsense firewall (Reporting > NetFlow) to Akvorado
+# (akvorado_stack.yml): the one place that sees every LAN device's traffic
+# to the internet, the VPN tunnels and Tailscale - Windows PCs, the NAS,
+# phones... included, nothing installed on them.
+#
+#   LAN device --> ix1 (LAN, captured both ways) --> OPNsense --> WAN / PIA
+#                     \--NetFlow v9--> samplicate --> 192.168.3.150:2055
+#
+# Captured on LAN only: everything routed passes there once, with the
+# devices' own (pre-NAT) addresses. LAN-to-LAN traffic doesn't cross the
+# firewall - see the Proxmox nodes' softflowd for that.
+# Akvorado names the firewall's interfaces from akvorado_stack.yml's
+# akvorado_static_exporters (by ifindex: ifconfig order, netstat -i "Link#").
+#
+# Through the OPNsense API (the root web login,
+# playbooks/files/opnsense_netflow_api.py). Re-running it is a no-op.
+#
+# Run:  ./run.sh opnsense_netflow.yml
+#       ./run.sh opnsense_netflow.yml -e '{"netflow_targets": ["192.168.3.150:2055"]}'
+
+- name: NetFlow export on OPNsense
+  hosts: "{{ netflow_opnsense | default('192.168.3.1') }}"
+  gather_facts: false
+  vars:
+    # Interface keys as in config.xml (lan, wan, opt1...).
+    netflow_interfaces: [lan]
+    # Interfaces where only outgoing traffic is captured (WANs with NAT, if
+    # captured too) - avoids counting a routed flow twice.
+    netflow_egress_only: []
+    netflow_targets: ["192.168.3.150:2055"]
+    netflow_version: v9
+    # Long-running connections reported every minute instead of every 30.
+    netflow_active_timeout: 60
+    netflow_inactive_timeout: 15
+
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - netflow_targets | length > 0
+          - netflow_targets | select('match', '^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$') | list | length == netflow_targets | length
+          - netflow_version in ['v5', 'v9']
+          - vault_win_user is defined
+        fail_msg: >-
+          Bad parameters, or no root login for {{ inventory_hostname }} (add it on the Hosts tab as
+          "SSH only" with a per-host root login). Targets are IPv4 address:port.
+
+    - name: NetFlow settings (OPNsense API)
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/opnsense_netflow_api.py"]
+      environment:
+        OPN_URL: "https://{{ inventory_hostname }}"
+        OPN_USER: "{{ vault_win_user }}"
+        OPN_PASS: "{{ vault_win_password }}"
+        NETFLOW_PARAMS: "{{ {'interfaces': netflow_interfaces, 'egress_only': netflow_egress_only,
+                             'targets': netflow_targets, 'version': netflow_version,
+                             'active_timeout': netflow_active_timeout,
+                             'inactive_timeout': netflow_inactive_timeout} | to_json }}"
+      vars:
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      delegate_to: localhost
+      register: netflow_api
+      changed_when: ((netflow_api.stdout or "{}") | from_json).changed | default(false)
+      failed_when: false
+      no_log: true
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "{{ (netflow_api.stdout or '{}') | from_json if netflow_api.stdout else netflow_api.stderr_lines[-5:] }}"
+      failed_when: netflow_api.rc != 0

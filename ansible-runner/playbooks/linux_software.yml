@@ -31,15 +31,15 @@
     docker_users: [theoneakta]
 
     # softflowd: exports NetFlow for the host's traffic to a collector - by
-    # default netflow2ng on the Docker host (192.168.3.8, UDP 2055), which
-    # feeds ntopng. Off unless requested (--softflowd / GUI).
+    # default Akvorado on 192.168.3.150 (UDP 2055, akvorado_stack.yml). Off
+    # unless requested (--softflowd / GUI).
     softflowd_enabled: false
-    softflowd_collector: "192.168.3.8:2055"
+    softflowd_collector: "192.168.3.150:2055"
     # Interface to watch; empty = the one holding the default route.
     softflowd_interface: ""
-    # NetFlow v9 (what netflow2ng and most collectors expect); maxlife=60 exports
-    # long-running flows every minute instead of only when they end, so ntopng
-    # shows them live.
+    # NetFlow v9 (what Akvorado and most collectors expect); maxlife=60 exports
+    # long-running flows every minute instead of only when they end, so the
+    # collector sees them live.
     softflowd_options: "-n {{ softflowd_collector }} -v 9 -t maxlife=60"
     # Rocky/RHEL: no package (not in EPEL 9/10) - built from this upstream
     # release instead (https://github.com/irino/softflowd).

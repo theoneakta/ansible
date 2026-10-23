@@ -83,7 +83,7 @@
     # Section 4 (host-based firewall) is off unless picked explicitly on the
     # GUI's "sections" mode or with -e <prefix>_section4=true: it turns on
     # ufw/firewalld/nftables with a default-deny inbound policy, which cuts
-    # off every service not explicitly allowed - e.g. Emby and ntopng run with
+    # off every service not explicitly allowed - e.g. Emby runs with
     # host networking on the Docker hosts (192.168.3.7/.8).
     ubtu22cis_section4: false
     ubtu24cis_section4: false

@@ -14,7 +14,7 @@
   gather_facts: false
   vars:
     trivy_github_user: theoneakta
-    # third-party repos we run code from (softflowd: built on the hosts that export NetFlow to ntopng)
+    # third-party repos we run code from (softflowd: built on the hosts that export NetFlow to Akvorado)
     trivy_extra_repos:
       - https://github.com/irino/softflowd.git
     dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"

@@ -319,7 +319,7 @@ def reconcile_interrupted_runs():
 # Inventory groups the GUI manages, and the OS each one means. "ssh" is for
 # machines reached over SSH that no install playbook may touch (a NAS, an
 # appliance): connection tests and read-only checks only.
-# "web" is a web application's login (e.g. ntopng.aktasolutions.com): the
+# "web" is a web application's login (e.g. emby.aktasolutions.com): the
 # vault keeps the URL's credentials for read-only checks through its API;
 # nothing connects to it over SSH or WinRM and no playbook targets it.
 HOST_GROUPS = ("windows", "linux", "ssh", "web")
@@ -469,7 +469,7 @@ _LOGIN_PAGE_RE = re.compile(r"login|signin|sign_in|auth", re.IGNORECASE)
 def test_web_host(host: str) -> dict:
     """DNS + HTTPS reachability, then the stored login: a valid one gets the
     page (2xx), a bad or missing one is redirected to the app's login page or
-    refused (401/403) - e.g. ntopng: 200 vs 302 to /lua/login.lua."""
+    refused (401/403) - e.g. 200 vs 302 to the login page."""
     url = f"https://{host}/"
     try:
         addrs = sorted({a[4][0] for a in socket.getaddrinfo(host, 443)})
@@ -860,7 +860,7 @@ class RunIn(BaseModel):
     docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
     docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
     softflowd: bool = False  # Linux hosts: softflowd NetFlow exporter
-    softflowd_collector: Optional[str] = None  # host:port, default 192.168.3.8:2055 (netflow2ng)
+    softflowd_collector: Optional[str] = None  # host:port, default 192.168.3.150:2055 (Akvorado)
 
 
 # Settings the GUI remembers between runs (gui/data/defaults.json on the
@@ -993,7 +993,7 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["softflowd_enabled"] = True
         if body.softflowd_collector:
             if not COLLECTOR_RE.match(body.softflowd_collector):
-                raise HTTPException(400, "softflowd collector must be host:port, e.g. 192.168.3.8:2055.")
+                raise HTTPException(400, "softflowd collector must be host:port, e.g. 192.168.3.150:2055.")
             extra_vars["softflowd_collector"] = body.softflowd_collector
     return extra_vars
 

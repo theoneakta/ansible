@@ -1,0 +1,463 @@
+---
+# Akvorado (flow collector + web console) on a Docker host, fed by NetFlow:
+#   softflowd (each Linux host) -> UDP 2055 -> akvorado-inlet -> Kafka
+#     -> akvorado-outlet -> ClickHouse <- akvorado-console (web UI, port 8081)
+# Upstream's Docker Compose quickstart (one release, pinned below), with this
+# network's settings in config/ and docker/docker-compose-local.yml.
+#
+# Prerequisites, once (Docker Engine on the collector, softflowd on the hosts
+# - linux_software.yml's default collector is this host):
+#   ./run.sh install.yml --docker --limit 192.168.3.150
+#   ./run.sh install.yml --softflowd
+# Run:  ./run.sh akvorado_stack.yml                  (192.168.3.150)
+#       ./run.sh akvorado_stack.yml -e akvorado_host=<ip>
+#
+# The hosts' softflowd sends unsampled NetFlow v9 with no SNMP behind it, so
+# the outlet gets a sampling rate of 1 and a static exporter list (one entry
+# per host of the "linux" group) instead of SNMP polling - flows from an
+# exporter missing from that list are dropped.
+#
+# No login: everyone is the console's default user (akvorado_user). LAN only -
+# put a reverse proxy with authentication in front to publish it.
+#
+# Built to survive CIS Level 1 (cis_hardening_linux.yml):
+#   7.1.12  unowned files get chowned to root -> every container UID/GID
+#           writing to the volumes gets a host account (checked after start);
+#   1.3.1.x SELinux enforcing -> /opt/akvorado labelled for containers.
+
+- name: Akvorado
+  hosts: "{{ akvorado_host | default('192.168.3.150') }}"
+  become: true
+  gather_facts: false
+  vars:
+    akvorado_version: "2026.10.0"
+    akvorado_dir: /opt/akvorado
+    # Traefik's public entrypoint (console). Its private one (8080: ClickHouse,
+    # Kafka UI, the orchestrator API) stays on 127.0.0.1.
+    akvorado_http_port: 8081
+    akvorado_user: admin
+
+    # Exporter names shown in the console (default: the IP address).
+    akvorado_exporter_names:
+      192.168.3.4: torrent
+      192.168.3.5: lububntu
+      192.168.3.7: docker-apps
+      192.168.3.8: docker-apps2
+      192.168.3.150: akvorado
+    akvorado_exporters: "{{ groups['linux'] }}"
+    # Exporters with several interfaces, named by ifindex - e.g. the firewall
+    # (opnsense_netflow.yml; ifindex = netstat -i "Link#"). A description
+    # "Transit: <provider>" or "VPN: <provider>" marks the interface as
+    # leaving the network (boundary external), anything else is internal.
+    akvorado_static_exporters:
+      192.168.3.1:
+        name: opnsense
+        ifindexes:
+          5: {name: ix0, description: "Transit: ISP"}
+          6: {name: ix1, description: LAN}
+          13: {name: wg0, description: "VPN: PIA"}
+          14: {name: tailscale0, description: Tailscale}
+
+    # Fills the Src/DstNetName and Role fields.
+    akvorado_networks:
+      192.168.3.0/24: {name: lan, role: lan}
+      100.64.0.0/10: {name: tailscale, role: vpn}
+
+    # Raw flows (IPs and ports) and the consolidated tables - sized for the
+    # 27 GB disk on 192.168.3.150.
+    akvorado_resolutions:
+      - {interval: 0, ttl: 168h}
+      - {interval: 1m, ttl: 168h}
+      - {interval: 5m, ttl: 2160h}
+      - {interval: 1h, ttl: 8760h}
+
+    # ClickHouse's share of RAM, and Kafka's heap - Kafka defaults to 1 GB.
+    clickhouse_ram_ratio: 0.4
+    akvorado_kafka_heap: 512m
+
+  pre_tasks:
+    # Same login handling as linux_software.yml.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+    - name: Gather facts
+      ansible.builtin.setup:
+        gather_subset: [min, selinux]
+
+    - name: Check Docker Compose is installed
+      ansible.builtin.command: docker compose version
+      changed_when: false
+      register: compose_check
+      failed_when: false
+
+    - name: Stop if it isn't
+      ansible.builtin.assert:
+        that: compose_check.rc == 0
+        fail_msg: "Docker isn't installed - run install.yml --docker on this host first."
+        quiet: true
+
+  tasks:
+    # ------------------------------------------------------------- release
+    - name: Create the project folder
+      ansible.builtin.file:
+        path: "{{ akvorado_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Read the installed release
+      ansible.builtin.slurp:
+        src: "{{ akvorado_dir }}/.release"
+      register: akvorado_release
+      failed_when: false
+
+    # The quickstart bundle brings the compose files and default configs; the
+    # files this playbook manages are written over it below.
+    - name: Install release {{ akvorado_version }}
+      when: (akvorado_release.content | default('') | b64decode | trim) != akvorado_version
+      block:
+        - name: Download the quickstart bundle
+          ansible.builtin.get_url:
+            url: "https://github.com/akvorado/akvorado/releases/download/v{{ akvorado_version }}/docker-compose-quickstart.tar.gz"
+            dest: "{{ akvorado_dir }}/quickstart-{{ akvorado_version }}.tar.gz"
+            mode: "0644"
+
+        - name: Unpack it
+          ansible.builtin.unarchive:
+            src: "{{ akvorado_dir }}/quickstart-{{ akvorado_version }}.tar.gz"
+            dest: "{{ akvorado_dir }}"
+            remote_src: true
+            owner: root
+            group: root
+
+        - name: Record the installed release
+          ansible.builtin.copy:
+            content: "{{ akvorado_version }}\n"
+            dest: "{{ akvorado_dir }}/.release"
+            mode: "0644"
+
+    # Docker CE on Rocky runs with SELinux support off (see the old
+    # ntopng_stack.yml history); a stored rule keeps the bind-mounted config
+    # readable if that's turned on, and survives the relabel a CIS run does.
+    - name: Label the project folder for containers (SELinux)
+      when: ansible_facts['selinux']['status'] | default('disabled') == 'enabled'
+      block:
+        - name: Install semanage
+          ansible.builtin.dnf:
+            name: policycoreutils-python-utils
+            state: present
+
+        - name: Store the label rule
+          ansible.builtin.shell: >-
+            semanage fcontext -l -C | grep -qF '{{ akvorado_dir }}(/.*)?' && echo present ||
+            semanage fcontext -a -t container_file_t '{{ akvorado_dir }}(/.*)?'
+          register: sefcontext
+          changed_when: sefcontext.stdout != 'present'
+
+        - name: Apply it
+          ansible.builtin.command: restorecon -R {{ akvorado_dir }}
+          when: sefcontext is changed
+
+    # ------------------------------------------------------------- config
+    - name: Main settings (Kafka, ClickHouse retention)
+      ansible.builtin.copy:
+        dest: "{{ akvorado_dir }}/config/akvorado.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (akvorado_stack.yml) - changes are overwritten.
+          kafka:
+            topic: flows
+            brokers:
+              - kafka:9092
+            topic-configuration:
+              num-partitions: 4
+              replication-factor: 1
+              config-entries:
+                # A buffer for ClickHouse, not storage.
+                segment.bytes: 268435456
+                retention.ms: 86400000 # 1 day
+                cleanup.policy: delete
+                compression.type: producer
+
+          clickhousedb:
+            servers:
+              - clickhouse:9000
+
+          clickhouse:
+            orchestrator-url: http://akvorado-orchestrator:8080
+            prometheus-endpoint: /metrics
+            resolutions:
+          {% for r in akvorado_resolutions %}
+              - interval: {{ r.interval }}
+                ttl: {{ r.ttl }}
+          {% endfor %}
+
+          inlet: !include "inlet.yaml"
+          outlet: !include "outlet.yaml"
+          console: !include "console.yaml"
+      register: akvorado_conf
+
+    - name: Outlet settings (exporters, networks, sampling)
+      ansible.builtin.copy:
+        dest: "{{ akvorado_dir }}/config/outlet.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (akvorado_stack.yml) - changes are overwritten.
+          geoip:
+            optional: true
+            asn-database:
+              - /usr/share/GeoIP/asn.mmdb
+            geo-database:
+              - /usr/share/GeoIP/country.mmdb
+
+          networks:
+            networks:
+          {% for net, attrs in akvorado_networks.items() %}
+              {{ net }}:
+                name: {{ attrs.name }}
+                role: {{ attrs.role }}
+          {% endfor %}
+
+          # softflowd: no SNMP, one interface per exporter.
+          metadata:
+            providers:
+              - type: static
+                exporters:
+          {% for ip in akvorado_exporters %}
+                  {{ ip }}:
+                    name: {{ akvorado_exporter_names[ip] | default(ip) }}
+                    default:
+                      name: softflowd
+                      description: Traffic seen by softflowd
+                      speed: 1000
+          {% endfor %}
+          {% for ip, exp in akvorado_static_exporters.items() %}
+                  {{ ip }}:
+                    name: {{ exp.name }}
+                    default:
+                      name: other
+                      description: Unknown interface
+                      speed: 1000
+                    ifindexes:
+          {% for idx, intf in exp.ifindexes.items() %}
+                      {{ idx }}:
+                        name: {{ intf.name }}
+                        description: "{{ intf.description }}"
+                        speed: {{ intf.speed | default(1000) }}
+          {% endfor %}
+          {% endfor %}
+
+          core:
+            # softflowd exports every flow (no sampling) and doesn't say so.
+            default-sampling-rate: 1
+            exporter-classifiers:
+              - ClassifyRole("host")
+            interface-classifiers:
+              - |
+                ClassifyConnectivityRegex(Interface.Description, "^(?i)(transit|vpn): ", "$1") &&
+                ClassifyProviderRegex(Interface.Description, "^\\S+?\\s(\\S+)", "$1") &&
+                ClassifyExternal()
+              - ClassifyInternal()
+      register: outlet_conf
+
+    - name: Local Compose overrides
+      ansible.builtin.copy:
+        dest: "{{ akvorado_dir }}/docker/docker-compose-local.yml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (akvorado_stack.yml) - changes are overwritten.
+          x-logging: &logging
+            driver: json-file
+            options: {max-size: 10m, max-file: "3"}
+
+          # IPv4 only: IPv6 is off on these hosts (kernel), and upstream's
+          # dual-stack network then fails to create.
+          networks:
+            default:
+              enable_ipv6: false
+              ipam:
+                config: !override
+                  - subnet: 247.16.14.0/24
+
+          services:
+            traefik:
+              logging: *logging
+              ports: !override
+                - 127.0.0.1:8080:8080/tcp
+                - {{ akvorado_http_port }}:8081/tcp
+              labels:
+                # Dashboard on the private entrypoint only.
+                - traefik.http.routers.traefik.entrypoints=private
+            kafka-ui:
+              logging: *logging
+              labels:
+                - traefik.http.routers.kafka-ui.entrypoints=private
+            akvorado-console:
+              logging: *logging
+              environment:
+                # The user shown (and saved filters' owner) - nobody logs in.
+                AKVORADO_CFG_CONSOLE_AUTH_DEFAULTUSER_LOGIN: {{ akvorado_user }}
+                AKVORADO_CFG_CONSOLE_AUTH_DEFAULTUSER_NAME: {{ akvorado_user }}
+              labels:
+                # Upstream's sample user (alfred) otherwise.
+                - traefik.http.middlewares.console-auth.headers.customrequestheaders.Remote-User={{ akvorado_user }}
+                - traefik.http.middlewares.console-auth.headers.customrequestheaders.Remote-Name={{ akvorado_user }}
+                - traefik.http.middlewares.console-auth.headers.customrequestheaders.Remote-Email={{ akvorado_user }}@localhost
+            kafka:
+              logging: *logging
+              environment:
+                KAFKA_HEAP_OPTS: -Xms{{ akvorado_kafka_heap }} -Xmx{{ akvorado_kafka_heap }}
+            clickhouse:
+              logging: *logging
+              volumes:
+                - ./clickhouse/zz-ansible-runner.xml:/etc/clickhouse-server/config.d/zz-ansible-runner.xml:ro
+            redis: {logging: *logging}
+            geoip: {logging: *logging}
+            akvorado-orchestrator: {logging: *logging}
+            akvorado-inlet: {logging: *logging}
+            akvorado-outlet: {logging: *logging}
+      register: local_compose
+
+    # Loaded last (zz-): caps memory and drops the system log tables upstream
+    # keeps for 30 days - they're what filled 192.168.3.8's disk under ntopng
+    # (~110 GB/day, 2026-10-09).
+    - name: ClickHouse settings
+      ansible.builtin.copy:
+        dest: "{{ akvorado_dir }}/docker/clickhouse/zz-ansible-runner.xml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          <!-- Managed by ansible-runner (akvorado_stack.yml) - changes are overwritten. -->
+          <clickhouse>
+              <max_server_memory_usage_to_ram_ratio>{{ clickhouse_ram_ratio }}</max_server_memory_usage_to_ram_ratio>
+              <mark_cache_size>268435456</mark_cache_size>
+          {% for log in ['query_log', 'query_thread_log', 'query_views_log', 'part_log', 'trace_log',
+                         'metric_log', 'asynchronous_metric_log', 'text_log', 'processors_profile_log',
+                         'opentelemetry_span_log', 'session_log', 'asynchronous_insert_log',
+                         'backup_log', 's3queue_log', 'blob_storage_log', 'latency_log', 'error_log',
+                         'query_metric_log'] %}
+              <{{ log }} remove="1"/>
+          {% endfor %}
+          </clickhouse>
+      register: clickhouse_conf
+
+    - name: Check the configuration
+      ansible.builtin.command: >-
+        docker compose run --rm --no-deps akvorado-orchestrator
+        orchestrator /etc/akvorado/akvorado.yaml --check
+      args:
+        chdir: "{{ akvorado_dir }}"
+      changed_when: false
+
+    # ------------------------------------------------------------- start
+    - name: Start the stack
+      ansible.builtin.command: docker compose up -d --wait --pull missing
+      args:
+        chdir: "{{ akvorado_dir }}"
+      register: stack_up
+      changed_when: "'Started' in stack_up.stderr or 'Created' in stack_up.stderr or 'Recreated' in stack_up.stderr"
+
+    # `up -d` only recreates on compose changes - mounted files need a restart.
+    - name: Restart what reads a changed file
+      ansible.builtin.command: "docker compose restart {{ item.service }}"
+      args:
+        chdir: "{{ akvorado_dir }}"
+      loop:
+        - {service: clickhouse, changed: "{{ clickhouse_conf is changed }}"}
+        - {service: akvorado-orchestrator akvorado-inlet akvorado-outlet akvorado-console,
+           changed: "{{ akvorado_conf is changed or outlet_conf is changed }}"}
+      loop_control:
+        label: "{{ item.service }}"
+      when:
+        - item.changed | bool
+        - stack_up is not changed
+
+    # ------------------------------------------------ host accounts (CIS 7.1.12)
+    # The containers' users (Kafka, ClickHouse, Valkey...) own the files in
+    # their volumes; any UID/GID with no host account gets one, so CIS doesn't
+    # chown the data to root.
+    - name: Find volume files with no host owner
+      ansible.builtin.shell: >-
+        find /var/lib/docker/volumes -mindepth 1 -maxdepth 1 -name 'akvorado_*'
+        -exec find {} -xdev \( -nouser -o -nogroup \) -printf '%U %G\n' \; | sort -u
+      register: unowned_ids
+      changed_when: false
+
+    - name: Add a group for each container GID without one
+      ansible.builtin.group:
+        name: "ctr-akvorado-{{ item }}"
+        gid: "{{ item }}"
+        system: true
+      loop: "{{ unowned_ids.stdout_lines | map('split') | map('last') | unique }}"
+
+    - name: Add a no-login account for each container UID without one
+      ansible.builtin.user:
+        name: "ctr-akvorado-{{ item.split()[0] }}"
+        uid: "{{ item.split()[0] }}"
+        group: "{{ item.split()[1] }}"
+        system: true
+        create_home: false
+        shell: /sbin/nologin
+      loop: "{{ unowned_ids.stdout_lines }}"
+
+    - name: Check no volume file is unowned now
+      ansible.builtin.shell: >-
+        find /var/lib/docker/volumes -mindepth 1 -maxdepth 1 -name 'akvorado_*'
+        -exec find {} -xdev \( -nouser -o -nogroup \) -print -quit \;
+      register: unowned
+      changed_when: false
+      failed_when: unowned.stdout | length > 0
+
+    # ------------------------------------------------------------- firewall
+    - name: Check firewalld
+      ansible.builtin.command: systemctl is-active firewalld
+      register: firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Open the console and the NetFlow port
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: ["{{ akvorado_http_port }}/tcp", 2055/udp]
+      when: firewalld_state.stdout == 'active'
+
+    # ------------------------------------------------------------ checks
+    - name: Wait for the console
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ akvorado_http_port }}/api/v0/version"
+      register: console_version
+      until: console_version is succeeded
+      retries: 30
+      delay: 5
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "Akvorado {{ console_version.json.version | default(akvorado_version) }}: http://{{ ansible_host | default(inventory_hostname) }}:{{ akvorado_http_port }} (no login - LAN only)"
+          - "NetFlow v9/IPFIX on UDP 2055 - exporters: {{ akvorado_exporters | join(', ') }}"
+          - "Raw flows kept {{ akvorado_resolutions[0].ttl }}"

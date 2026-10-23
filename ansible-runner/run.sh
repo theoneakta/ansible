@@ -33,7 +33,7 @@
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
 #   --docker                             Linux hosts: install Docker Engine + the Compose plugin
-#   --softflowd [--softflowd-collector <host:port>]  Linux hosts: softflowd NetFlow exporter (default collector 192.168.3.8:2055)
+#   --softflowd [--softflowd-collector <host:port>]  Linux hosts: softflowd NetFlow exporter (default collector 192.168.3.150:2055, Akvorado)
 #   --docker-user <name>                 Linux hosts: add this user to the docker + sudo groups (repeatable;
 #                                        default theoneakta)
 #

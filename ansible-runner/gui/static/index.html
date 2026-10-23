@@ -286,7 +286,7 @@
         <div class="row">
           <label for="newHost">Add host (name or IP)</label>
           <input type="text" id="newHost" placeholder="192.168.3.18">
-          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option><option value="ssh">SSH only - no installs (NAS, appliance)</option><option value="web">Web app login (e.g. ntopng) - HTTPS, no installs</option></select>
+          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option><option value="ssh">SSH only - no installs (NAS, appliance)</option><option value="web">Web app login (e.g. Emby) - HTTPS, no installs</option></select>
         </div>
         <p class="muted">Linux hosts are reached over SSH with the same account as the Windows hosts (Credentials tab, or a per-host override), using sudo. "SSH only" hosts are never touched by the install playbooks - connection tests only. "Web app login" entries keep a site's URL (https://name) and login for read-only checks through its API.</p>
         <div class="actionBar">
@@ -423,8 +423,8 @@
       <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="softflowdToggle"> Install softflowd - NetFlow exporter (Linux hosts)</label>
         <div class="params" id="softflowdParams">
-          <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.168.3.8:2055" placeholder="192.168.3.8:2055"></div>
-          <p class="muted">Ubuntu and Rocky Linux. Exports NetFlow v9 for the host's main network interface to the collector - by default netflow2ng on the Docker host, which feeds ntopng. Ubuntu installs the package; Rocky has no package, so it's built from the upstream source.</p>
+          <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.168.3.150:2055" placeholder="192.168.3.150:2055"></div>
+          <p class="muted">Ubuntu and Rocky Linux. Exports NetFlow v9 for the host's main network interface to the collector - by default Akvorado on 192.168.3.150. Ubuntu installs the package; Rocky has no package, so it's built from the upstream source.</p>
         </div>
       </div>
 
@@ -533,7 +533,7 @@
     <!-- ============ ACTIVITY ============ -->
     <!-- ============ NETWORK CAPTURE ============ -->
     <section class="tabPanel" id="tab-sniff">
-      <div class="panelHead"><h2>Network Capture</h2><p>Mirror a Proxmox node's traffic to a capture VM (ntopng).</p></div>
+      <div class="panelHead"><h2>Network Capture</h2><p>Mirror a Proxmox node's traffic to a capture VM.</p></div>
       <div class="card">
         <div class="row"><label for="sniffVmid">Capture VM id</label><input type="number" id="sniffVmid" value="102"></div>
         <div class="row"><label for="sniffVmHost">Its address (Linux host)</label><input type="text" id="sniffVmHost" value="192.168.3.8"></div>
@@ -544,7 +544,7 @@
             <option value="ports">All bridge ports - adds VM-to-VM traffic inside the node</option>
           </select></div>
         <div class="row"><label for="sniffExclude">Never capture (IPs)</label><input type="text" id="sniffExclude" value="192.168.3.188" placeholder="comma-separated"></div>
-        <p class="muted">Sets up, on the VM's Proxmox node: an isolated bridge <code>vmbrsniff</code> and a tc mirror of the chosen bridge's traffic to a new NIC on the capture VM, kept in place by a timer (survives reboots). On the capture VM: that NIC as <code>sniff0</code> (no address, promiscuous), added to ntopng. Needs the node on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login. The TrueNAS is excluded by default - its iSCSI storage traffic would swamp the capture.</p>
+        <p class="muted">Sets up, on the VM's Proxmox node: an isolated bridge <code>vmbrsniff</code> and a tc mirror of the chosen bridge's traffic to a new NIC on the capture VM, kept in place by a timer (survives reboots). On the capture VM: that NIC as <code>sniff0</code> (no address, promiscuous), ready for a capture tool (tcpdump, Wireshark, an IDS). Needs the node on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login. The TrueNAS is excluded by default - its iSCSI storage traffic would swamp the capture.</p>
         <div class="actionBar">
           <button class="primary" id="sniffApplyBtn">Set up capture</button>
           <button id="sniffRemoveBtn">Remove capture</button>
@@ -1415,7 +1415,7 @@ $('imgCaptureBtn').addEventListener('click', () => startImageRun('capture'));
 loadImageStatus();
 
 async function startSniffRun(state) {
-  if (state === 'absent' && !confirm('Remove the capture setup (mirror, timer, capture NIC, ntopng interface)?')) return;
+  if (state === 'absent' && !confirm('Remove the capture setup (mirror, timer, capture NIC)?')) return;
   const btns = [$('sniffApplyBtn'), $('sniffRemoveBtn')];
   btns.forEach(b => b.disabled = true);
   try {
