@@ -24,9 +24,10 @@
   vars:
     softflowd_state: present
     softflowd_collector: "192.168.3.150:2055"
-    # Left out of the capture: the TrueNAS - its iSCSI/NFS storage traffic
-    # would swamp the flows (same exclusion as proxmox_sniff.yml).
-    softflowd_exclude_hosts: [192.168.3.188]
+    # Hosts left out of the capture. The TrueNAS (192.168.3.188) was, for its
+    # iSCSI/NFS storage traffic - included since the collector's disk went
+    # from 27 to 147 GB (2026-10-24); add it back here if the flows swamp.
+    softflowd_exclude_hosts: []
     # Same export settings as the Linux hosts (linux_software.yml).
     softflowd_options: >-
       -n {{ softflowd_collector }} -v 9 -t maxlife=60

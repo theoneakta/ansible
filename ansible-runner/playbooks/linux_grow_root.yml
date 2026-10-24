@@ -1,0 +1,105 @@
+---
+# Grow a Linux VM's root filesystem after its disk was made bigger in
+# Proxmox (Hardware > Disk > Resize): partition -> LVM PV -> root LV -> XFS
+# or ext4, all online, no reboot. Swap and other LVs are left as they are.
+#
+# Only for the usual layout: root on LVM, its PV the last partition of the
+# disk (Rocky/RHEL installer default). Anything else stops before a change.
+#
+# Run:  ./run.sh linux_grow_root.yml -e target=192.168.3.150
+
+- name: Grow the root filesystem
+  hosts: "{{ target }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    # Same login handling as linux_software.yml.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+  tasks:
+    - name: Find the root LV, its PV, partition and disk
+      ansible.builtin.shell: |
+        set -e
+        root=$(findmnt -n -o SOURCE /)
+        lv=$(lvs --noheadings -o vg_name,lv_name "$root" | awk '{print $1"/"$2}')
+        vg=${lv%/*}
+        pvs=$(pvs --noheadings -o pv_name -S vg_name="$vg" | awk '{print $1}')
+        [ "$(echo "$pvs" | wc -l)" = 1 ] || { echo "VG $vg spans several PVs"; exit 1; }
+        part=$pvs
+        disk=/dev/$(lsblk -dno PKNAME "$part")
+        num=$(cat /sys/class/block/$(basename "$part")/partition)
+        last=$(lsblk -nro NAME,TYPE "$disk" | awk '$2=="part"' | tail -1 | cut -d' ' -f1)
+        [ "/dev/$last" = "$part" ] || { echo "$part isn't the last partition of $disk"; exit 1; }
+        fstype=$(findmnt -n -o FSTYPE /)
+        echo "{\"root\": \"$root\", \"lv\": \"$lv\", \"part\": \"$part\", \"disk\": \"$disk\", \"num\": \"$num\", \"fstype\": \"$fstype\", \"disk_bytes\": $(blockdev --getsize64 "$disk"), \"part_bytes\": $(blockdev --getsize64 "$part")}"
+      register: layout_raw
+      changed_when: false
+
+    - name: Layout
+      ansible.builtin.set_fact:
+        layout: "{{ layout_raw.stdout | from_json }}"
+
+    - name: Stop on a filesystem this doesn't grow
+      ansible.builtin.assert:
+        that: layout.fstype in ['xfs', 'ext4']
+        fail_msg: "Root is {{ layout.fstype }} - only xfs and ext4 are handled."
+        quiet: true
+
+    - name: Report what will change
+      ansible.builtin.debug:
+        msg: >-
+          {{ layout.disk }} is {{ (layout.disk_bytes / 1073741824) | round(1) }} GiB,
+          {{ layout.part }} (PV of {{ layout.lv }}) {{ (layout.part_bytes / 1073741824) | round(1) }} GiB
+
+    - name: Install growpart
+      ansible.builtin.package:
+        name: cloud-utils-growpart
+        state: present
+
+    # growpart exits 1 with NOCHANGE when the partition already fills the disk.
+    - name: Grow the partition to the end of the disk
+      ansible.builtin.command: growpart {{ layout.disk }} {{ layout.num }}
+      register: growpart
+      changed_when: growpart.rc == 0
+      failed_when: growpart.rc != 0 and 'NOCHANGE' not in growpart.stdout
+
+    - name: Grow the PV
+      ansible.builtin.command: pvresize {{ layout.part }}
+      register: pvresize
+      changed_when: "'1 physical volume(s) resized' in pvresize.stdout"
+
+    - name: Free space left in the VG
+      ansible.builtin.command: vgs --noheadings --units b --nosuffix -o vg_free {{ layout.lv.split('/')[0] }}
+      register: vg_free
+      changed_when: false
+
+    # -r grows the filesystem with it (xfs_growfs / resize2fs), online.
+    - name: Grow the root LV and its filesystem into it
+      ansible.builtin.command: lvextend -r -l +100%FREE {{ layout.root }}
+      when: vg_free.stdout | trim | int > 4194304
+      changed_when: true
+
+    - name: Root filesystem now
+      ansible.builtin.command: df -h /
+      register: df_root
+      changed_when: false
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "{{ df_root.stdout_lines }}"

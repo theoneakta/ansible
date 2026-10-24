@@ -7,9 +7,12 @@
 #   LAN device --> ix1 (LAN, captured both ways) --> OPNsense --> WAN / PIA
 #                     \--NetFlow v9--> samplicate --> 192.168.3.150:2055
 #
-# Captured on LAN only: everything routed passes there once, with the
-# devices' own (pre-NAT) addresses. LAN-to-LAN traffic doesn't cross the
-# firewall - see the Proxmox nodes' softflowd for that.
+# Captured on LAN: everything routed passes there once, with the devices'
+# own (pre-NAT) addresses. LAN-to-LAN traffic doesn't cross the firewall -
+# see the Proxmox nodes' softflowd for that. Also on Tailscale (opt1), for
+# the tailnet's traffic with the firewall itself, which never touches the
+# LAN; a LAN <-> tailnet flow is then reported by both interfaces, and
+# netview counts it once.
 # Akvorado names the firewall's interfaces from akvorado_stack.yml's
 # akvorado_static_exporters (by ifindex: ifconfig order, netstat -i "Link#").
 #
@@ -24,7 +27,7 @@
   gather_facts: false
   vars:
     # Interface keys as in config.xml (lan, wan, opt1...).
-    netflow_interfaces: [lan]
+    netflow_interfaces: [lan, opt1]  # opt1 = tailscale
     # Interfaces where only outgoing traffic is captured (WANs with NAT, if
     # captured too) - avoids counting a routed flow twice.
     netflow_egress_only: []

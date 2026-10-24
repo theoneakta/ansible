@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """OPNsense side of playbooks/netview_stack.yml: the firewall's DHCP leases
-and reservations, read through the OPNsense API as root - same web session as
-opnsense_pia_api.py. Read-only. Run on the controller; prints one JSON line:
+and reservations, and the tailnet's devices, read through the OPNsense API as
+root - same web session as opnsense_pia_api.py. Read-only. Run on the
+controller; prints one JSON line:
     {"names": {"192.168.3.17": {"name": "pc01", "mac": "..", "source": "kea"}},
      "sources": {"kea": 12, ...}}
 
@@ -45,11 +46,25 @@ def collect(s, specs, names, counts):
             counts[source] = counts.get(source, 0) + 1
 
 
+def tailnet(s, names, counts):
+    """The tailnet's devices (the firewall's Tailscale status): hostname by
+    100.x address, the firewall's own included."""
+    st = s.call("GET", "/api/tailscale/status/status")
+    nodes = [st.get("Self") or {}] + list((st.get("Peer") or {}).values())
+    for i, node in enumerate(nodes):
+        name = (node.get("HostName") or (node.get("DNSName") or "").split(".")[0]).strip()
+        for ip in node.get("TailscaleIPs") or []:
+            if name and ":" not in ip:
+                names[ip] = {"name": f"{name} (tailscale)" if i == 0 else name, "mac": "", "source": "tailscale"}
+                counts["tailscale"] = counts.get("tailscale", 0) + 1
+
+
 def main():
     s = Session()
     names, counts = {}, {}
     collect(s, LEASES, names, counts)
     collect(s, RESERVATIONS, names, counts)
+    tailnet(s, names, counts)  # no Tailscale plugin: an error payload, no nodes
     print(json.dumps({"names": names, "sources": counts}))
 
 

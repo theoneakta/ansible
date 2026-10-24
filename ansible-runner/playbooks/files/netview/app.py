@@ -610,22 +610,47 @@ LAN_IFS = [d for d, i in live.INTERFACES.items() if i.get("kind", "wan" if i.get
 PRIO = sorted(live.INTERFACES, key=lambda d: {"vpn": 0, "wan": 1, "lan": 2}.get(
     live.INTERFACES[d].get("kind", "wan" if live.INTERFACES[d].get("external") else "lan"), 1))
 
+# Interfaces the firewall's NetFlow captures: a flow between two of them (LAN
+# <-> tailnet) is reported by both, so those are counted once.
+CAPTURED = [d for d, i in live.INTERFACES.items() if i.get("netflow")]
+
 # Every recent flow touching the LAN, read from the LAN device's side, with
 # the interface it crossed (pif): the firewall's flows (internet, VPN,
 # Tailscale, the firewall itself) and the Proxmox nodes' LAN-to-LAN ones,
-# de-duplicated (lan1) and counted once, as sent by their source.
+# de-duplicated (lan1) and counted once, as sent by their source. A flow with
+# no LAN address at all - a tailnet device and the firewall itself - reads
+# from the firewall's side: in on a captured interface = towards it.
 LIVE = f"""{LAN_DEDUP},
+fw AS (
+    SELECT TimeReceived AS t, SrcAddr, DstAddr, SrcPort, DstPort, Proto, SrcAS, DstAS, SrcCountry, DstCountry,
+           SrcNetRole, DstNetRole, InIfName, OutIfName, Bytes * SamplingRate AS b
+    FROM flows
+    WHERE TimeReceived {BETWEEN} AND ExporterName = {{wan:String}}
+      AND (SrcNetRole = {{lan:String}} OR DstNetRole = {{lan:String}}
+           OR InIfName IN {{captured:Array(String)}} OR OutIfName IN {{captured:Array(String)}})
+),
+fw1 AS (
+    SELECT * FROM fw
+    WHERE NOT (InIfName IN {{captured:Array(String)}} AND OutIfName IN {{captured:Array(String)}} AND InIfName != OutIfName)
+    UNION ALL
+    SELECT min(t), SrcAddr, DstAddr, SrcPort, DstPort, Proto, any(SrcAS), any(DstAS), any(SrcCountry), any(DstCountry),
+           any(SrcNetRole), any(DstNetRole), InIfName, OutIfName, max(b)
+    FROM fw
+    WHERE InIfName IN {{captured:Array(String)}} AND OutIfName IN {{captured:Array(String)}} AND InIfName != OutIfName
+    GROUP BY toStartOfMinute(t), SrcAddr, DstAddr, SrcPort, DstPort, Proto, InIfName, OutIfName
+),
 livef AS (
-    SELECT TimeReceived AS t,
-           DstNetRole = {{lan:String}} AND SrcNetRole != {{lan:String}} AS dl,
+    SELECT t,
+           (DstNetRole = {{lan:String}} AND SrcNetRole != {{lan:String}})
+             OR (SrcNetRole != {{lan:String}} AND DstNetRole != {{lan:String}} AND InIfName IN {{captured:Array(String)}}) AS dl,
            if(dl, DstAddr, SrcAddr) AS local, if(dl, SrcAddr, DstAddr) AS remote,
            if(dl, SrcAS, DstAS) AS ras,
            replaceAll(toString(if(dl, SrcCountry, DstCountry)), '\\0', '') AS rcc,
-           if(dl, SrcPort, DstPort) AS rport, Proto, Bytes * SamplingRate AS b,
-           if(InIfName IN {{lanifs:Array(String)}}, OutIfName, InIfName) AS pif
-    FROM flows
-    WHERE TimeReceived {BETWEEN} AND ExporterName = {{wan:String}}
-      AND (SrcNetRole = {{lan:String}} OR DstNetRole = {{lan:String}})
+           if(dl, SrcPort, DstPort) AS rport, Proto, b,
+           multiIf(InIfName IN {{lanifs:Array(String)}}, OutIfName,
+                   InIfName IN ('', 'other'), if(OutIfName IN {{lanifs:Array(String)}}, 'other', OutIfName),  -- from the firewall itself
+                   InIfName) AS pif
+    FROM fw1
     UNION ALL
     SELECT t, false, SrcAddr, DstAddr, toUInt32(0), '', DstPort, Proto, b, {{lanif:String}} FROM lan1
 ),
@@ -652,7 +677,7 @@ def live_where(start, end, host, proto, port, country, site, asn, iface):
     """The live filters (the page's dropdowns and interface toggles): WHERE
     conditions, a HAVING on the conversation's interface, and the params."""
     conds, p = ["1"], base_params(start, end) | {
-        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO}
+        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO, "captured": CAPTURED}
     having = None
     if iface:
         p["f_ifaces"] = [i for i in iface if i in live.INTERFACES or i == "other"]
