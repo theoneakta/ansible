@@ -1,0 +1,64 @@
+---
+# Cloudflare Access (Zero Trust) in front of a self-hosted site - by default
+# Sentry Lens at netview.aktasolutions.com (routed by NPM on the VPS):
+#
+#   browser --> Cloudflare (Access login: emailed code, or the account's
+#               other login methods) --> NPM --> the app
+#
+# Creates or updates, through the Cloudflare API with the account's Global
+# API Key (host "cloudflare.com" in the vault: vault_win_user = the account
+# email, vault_api_token = the key): the One-time PIN login method, a
+# reusable Allow policy for cf_access_emails (the account's own email when
+# empty), and the application with that policy. Prints the team domain and
+# AUD tag - netview_stack.yml's netview_cf_team / netview_cf_aud, so the app
+# checks the tokens too and its LAN address can't skip the login.
+#
+# Run:  ./run.sh cloudflare_access.yml
+#       ./run.sh cloudflare_access.yml -e '{"cf_access_emails": ["a@example.com", "b@example.com"]}'
+
+- name: Cloudflare Access application
+  hosts: cloudflare.com
+  gather_facts: false
+  vars:
+    cf_access_zone: aktasolutions.com
+    cf_access_domain: netview.aktasolutions.com
+    cf_access_name: Sentry Lens
+    cf_access_logo: https://netview.aktasolutions.com/static/logo.svg
+    cf_access_session: 24h
+    cf_access_emails: []
+    # Zero Trust team name (<team>.cloudflareaccess.com) - used only when the
+    # account has no Zero Trust organization yet.
+    cf_access_team: aktasolutions
+
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - vault_win_user is defined and vault_api_token is defined
+          - cf_access_emails | select('match', '^[^@\s]+@[^@\s]+\.[^@\s]+$') | list | length == cf_access_emails | length
+        fail_msg: >-
+          No Cloudflare login in the vault (host cloudflare.com: vault_win_user = account email,
+          vault_api_token = Global API Key), or a malformed email in cf_access_emails.
+
+    - name: Access application (Cloudflare API)
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/cloudflare_access_api.py"]
+      environment:
+        CF_EMAIL: "{{ vault_win_user }}"
+        CF_KEY: "{{ vault_api_token }}"
+        ACCESS_PARAMS: "{{ {'zone': cf_access_zone, 'domain': cf_access_domain, 'name': cf_access_name,
+                            'logo_url': cf_access_logo, 'session': cf_access_session,
+                            'emails': cf_access_emails, 'team': cf_access_team} | to_json }}"
+      vars:
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      delegate_to: localhost
+      register: cf_access
+      changed_when: ((cf_access.stdout or "{}") | from_json).changed | default(false)
+      failed_when: false
+      no_log: true
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "{{ (cf_access.stdout or '{}') | from_json if cf_access.stdout else cf_access.stderr_lines[-5:] }}"
+      failed_when: cf_access.rc != 0

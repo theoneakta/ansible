@@ -63,8 +63,8 @@
     # Sign-in (see the top). Team = the Zero Trust team name (<team>.cloudflareaccess.com),
     # AUD = the Access application's "Application Audience (AUD) Tag".
     netview_public_url: https://netview.aktasolutions.com
-    netview_cf_team: ""
-    netview_cf_aud: ""
+    netview_cf_team: aktasolutions.cloudflareaccess.com   # cloudflare_access.yml (2026-10-24)
+    netview_cf_aud: 8375c22f885da275b33199b69162b781b7eaef18c61320c90c94383955584ed6
     netview_allowed_emails: []    # optional, on top of the Access policy
     netview_login_providers: [Email code, Google, GitHub, Microsoft]  # shown on the sign-in page
     # Exporter names as in akvorado_stack.yml: the firewall answers for the
