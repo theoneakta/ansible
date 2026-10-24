@@ -29,6 +29,10 @@
     # Zero Trust team name (<team>.cloudflareaccess.com) - used only when the
     # account has no Zero Trust organization yet.
     cf_access_team: aktasolutions
+    # The login page (team-wide): the app's name and logo on its colours.
+    cf_access_brand: {background: "#0b0f16", text: "#e6edf3", footer: "Sentry Lens - see what your network is doing."}
+    # Loadable without signing in: the logo on that page, the app's sign-in assets.
+    cf_access_public_paths: [static]
 
   tasks:
     - name: Check the parameters
@@ -48,7 +52,8 @@
         CF_KEY: "{{ vault_api_token }}"
         ACCESS_PARAMS: "{{ {'zone': cf_access_zone, 'domain': cf_access_domain, 'name': cf_access_name,
                             'logo_url': cf_access_logo, 'session': cf_access_session,
-                            'emails': cf_access_emails, 'team': cf_access_team} | to_json }}"
+                            'emails': cf_access_emails, 'team': cf_access_team, 'brand': cf_access_brand,
+                            'public_paths': cf_access_public_paths} | to_json }}"
       vars:
         ansible_connection: local
         ansible_python_interpreter: "{{ ansible_playbook_python }}"

@@ -48,6 +48,7 @@
   .who { display: flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--muted); }
   .who a { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem; }
   .who a:hover { color: var(--text); text-decoration: none; }
+  .badge { display: inline-block; min-width: 1.2rem; padding: 0 .35rem; border-radius: 999px; background: var(--fail); color: #fff; font-size: .7rem; font-weight: 600; text-align: center; margin-left: .2rem; }
   header h1 span { color: var(--accent2); }
   nav { display: flex; gap: .25rem; flex-wrap: wrap; }
   nav a { color: var(--muted); padding: .35rem .8rem; border-radius: 999px; border: 1px solid transparent; }
@@ -202,6 +203,7 @@
     <a href="#/hosts" data-page="hosts">Devices</a>
     <a href="#/sites" data-page="sites">Websites</a>
     <a href="#/new" data-page="new">New today</a>
+    <a href="#/admin" data-page="admin" id="navAdmin" hidden>Admin <span class="badge" id="pendingBadge" hidden></span></a>
   </nav>
   <div class="spacer"></div>
   <div class="timebar" id="timebar">
@@ -220,10 +222,18 @@
 
 <script>
 const $main = document.getElementById("main");
-// Who's signed in (Cloudflare Access), with a way out.
+// Who's signed in, with a way out; admins get the Admin page (and a count of accounts waiting).
+let ME = {};
 fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
   if (!me || !me.auth || !me.email) return;
-  document.getElementById("who").innerHTML = `<span>${me.email.replace(/[&<>"']/g, "")}</span>${me.logout ? `<a href="${me.logout}">Sign out</a>` : ""}`;
+  ME = me;
+  const clean = s => String(s || "").replace(/[&<>"']/g, "");
+  document.getElementById("who").innerHTML = `<span title="${clean(me.email)}">${clean(me.name || me.email)}</span>${me.logout ? `<a href="${me.logout}">Sign out</a>` : ""}`;
+  if (me.role === "admin") {
+    document.getElementById("navAdmin").hidden = false;
+    const b = document.getElementById("pendingBadge");
+    b.hidden = !me.pending; b.textContent = me.pending;
+  }
 }).catch(() => {});
 const PALETTE = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7"];
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -1059,11 +1069,138 @@ async function livePage() {
               setInterval(safe(recentTick), 15000));
 }
 
+// ---------------------------------------------------------------- admin
+// Users (approve / deny / roles / add) and Sign-in methods (Settings), admins only.
+async function adminPage() {
+  const tabsHtml = tabs("admin", [
+    {id: "users", label: "Users", html: () => `<div id="adm-users"><div class="empty">Loading…</div></div>`},
+    {id: "methods", label: "Sign-in methods", html: () => `<div id="adm-methods"><div class="empty">Loading…</div></div>`},
+  ]);
+  $main.innerHTML = `
+    <div class="hero"><div class="title"><h2>Admin</h2><div class="sub">Who can use Sentry Lens, and how they sign in</div></div></div>
+    <div class="card" id="admcard">${tabsHtml}</div>`;
+  const act = async (url, opts = {}) => {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, ...opts});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    return r.json();
+  };
+  const STATUS = {pending: "Waiting for approval", approved: "Approved", denied: "Denied"};
+
+  async function usersTab() {
+    const el = document.getElementById("adm-users"); if (!el) return;
+    const d = await api("/api/users");
+    el.innerHTML = table(d.users, [
+      {k: "email", label: "Account", fmt: r => `<span class="name">${esc(r.name || r.email)}</span>${r.name ? `<span class="ip">${esc(r.email)}</span>` : ""}`},
+      {k: "status", label: "Status", fmt: r => `<span class="tag${r.status === "pending" ? " risk" : ""}">${esc(STATUS[r.status] || r.status)}</span>`},
+      {k: "role", label: "Role", fmt: r => r.role === "admin" ? `<b>Admin</b>` : "User"},
+      {k: "via", label: "Signs in with", fmt: r => esc(r.via || "-")},
+      {k: "last_login", label: "Last sign-in", n: 1, fmt: r => r.last_login ? lastCell(r.last_login) : `<span class="muted">never</span>`},
+      {k: "actions", label: "", fmt: r => [
+        r.status !== "approved" ? `<button class="clear" data-u="${esc(r.email)}" data-a="approve">Approve</button>` : "",
+        r.status !== "denied" && r.email !== ME.email ? `<button class="clear" data-u="${esc(r.email)}" data-a="deny">Deny</button>` : "",
+        r.role !== "admin" ? `<button class="clear" data-u="${esc(r.email)}" data-a="admin">Make admin</button>`
+          : r.email !== ME.email ? `<button class="clear" data-u="${esc(r.email)}" data-a="user">Make user</button>` : "",
+        r.email !== ME.email ? `<button class="clear" data-u="${esc(r.email)}" data-a="delete">Remove</button>` : ""].join(" ")},
+    ], {sortable: true}) + `
+      <h3 style="margin:1.4rem 0 .6rem">Add an account</h3>
+      <form class="filterbar" id="addUser">
+        <label class="drop">Email<input class="filter" name="email" type="email" required></label>
+        <label class="drop">Name<input class="filter" name="name"></label>
+        <label class="drop">Password (optional)<input class="filter" name="password" type="password" minlength="10" placeholder="empty: signs in with a provider"></label>
+        <label class="drop">Role<select name="role"><option value="user">User</option><option value="admin">Admin</option></select></label>
+        <button class="clear">Add (approved)</button>
+      </form><p class="hint" id="userMsg"></p>`;
+    el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
+      if (b.dataset.a === "delete" && !confirm(`Remove ${b.dataset.u}?`)) return;
+      try { await act(`/api/users/${encodeURIComponent(b.dataset.u)}/${b.dataset.a}`); usersTab(); }
+      catch (e) { document.getElementById("userMsg").textContent = e.message; }
+    });
+    document.getElementById("addUser").onsubmit = async e => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      try { await act("/api/users", {body: JSON.stringify(f)}); usersTab(); }
+      catch (err) { document.getElementById("userMsg").textContent = err.message; }
+    };
+  }
+
+  async function methodsTab() {
+    const el = document.getElementById("adm-methods"); if (!el) return;
+    const d = await api("/api/settings/auth");
+    const field = (f, m) => {
+      const v = m ? m[f.key] : "";
+      const name = `name="${f.key}"`, req = f.required && !(f.secret && m) ? "required" : "";
+      const input = f.kind === "checkbox" ? `<input type="checkbox" ${name} ${v ? "checked" : ""}>`
+        : f.kind === "textarea" ? `<textarea class="filter" ${name} rows="4" ${req} placeholder="${f.secret && m && v ? "set - leave empty to keep" : ""}" style="width:100%;font-family:monospace"></textarea>`
+        : `<input class="filter" ${name} ${f.secret ? 'type="password" autocomplete="new-password"' : ""} ${req}
+            value="${f.secret ? "" : esc(v ?? "")}" placeholder="${f.secret && m && v ? "set - leave empty to keep" : esc(f.hint || "")}" style="width:100%">`;
+      return `<label class="drop" style="flex:1 1 260px">${esc(f.label)}${f.required ? " *" : ""}${input}${f.hint && f.kind !== "text" ? `<span class="hint" style="margin:0">${esc(f.hint)}</span>` : ""}</label>`;
+    };
+    const form = (type, m) => `
+      <form class="mform" data-type="${type}" data-id="${m ? esc(m.id) : ""}" style="display:flex;flex-wrap:wrap;gap:.7rem;margin:.6rem 0 1rem">
+        ${m ? "" : `<label class="drop" style="flex:1 1 200px">ID (in the callback URL) *<input class="filter" name="id" required pattern="[a-z0-9][a-z0-9-]{0,30}" placeholder="e.g. ${type}" value="${type}" style="width:100%"></label>`}
+        ${[...d.types[type].fields, ...d.common].map(f => field(f, m)).join("")}
+        <div style="flex-basis:100%;display:flex;gap:.6rem;align-items:center">
+          <button class="clear">${m ? "Save" : "Add"}</button>
+          ${type !== "ldap" ? `<span class="hint" style="margin:0">Redirect / callback URL to register with the provider: <code>${esc(d.callback_base)}<span class="cbid">${esc(m ? m.id : type)}</span></code></span>` : ""}
+        </div><p class="hint fmsg" style="flex-basis:100%"></p>
+      </form>`;
+    el.innerHTML = `
+      <p class="hint" style="margin-top:0">Accounts from any method still need an admin's approval unless the method auto-approves.
+        Methods from the deployment config are read-only here. Secrets are stored encrypted and never shown again.</p>
+      ${d.methods.length ? d.methods.map(m => `
+        <div class="card" style="margin:.8rem 0;padding:.9rem 1rem">
+          <div class="head" style="margin-bottom:.3rem"><h3>${esc(m.name || m.type_label)}</h3><span class="tag">${esc(m.type_label)}</span>
+            ${m.auto_approve ? `<span class="tag">auto-approve</span>` : ""}${m.allowed_domains ? `<span class="tag">${esc(m.allowed_domains)}</span>` : ""}
+            <span class="spacer"></span>
+            <button class="clear" data-test="${esc(m.id)}">Test</button>
+            ${m.source === "settings" ? `<button class="clear" data-edit="${esc(m.id)}">Edit</button><button class="clear" data-del="${esc(m.id)}">Remove</button>`
+              : `<span class="tag">from deployment config</span>`}</div>
+          <p class="hint" id="t-${esc(m.id)}" style="margin:0"></p>
+          <div id="e-${esc(m.id)}" hidden>${m.source === "settings" ? form(m.type, m) : ""}</div>
+        </div>`).join("") : `<div class="empty">No sign-in methods yet - accounts use email and password.</div>`}
+      <h3 style="margin:1.4rem 0 .6rem">Add a sign-in method</h3>
+      <label class="drop">Type<select id="newType"><option value="">Choose…</option>${Object.entries(d.types).map(([k, t]) =>
+        `<option value="${k}">${esc(t.label)}</option>`).join("")}</select></label>
+      <div id="newForm"></div>`;
+    el.querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
+      const out = document.getElementById("t-" + b.dataset.test); out.textContent = "Testing…";
+      try { const r = await act(`/api/settings/auth/${encodeURIComponent(b.dataset.test)}/test`); out.textContent = (r.ok ? "✓ " : "✗ ") + r.detail; }
+      catch (e) { out.textContent = "✗ " + e.message; }
+    });
+    el.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { const x = document.getElementById("e-" + b.dataset.edit); x.hidden = !x.hidden; });
+    el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+      if (!confirm(`Remove the sign-in method "${b.dataset.del}"?`)) return;
+      try { await act(`/api/settings/auth/${encodeURIComponent(b.dataset.del)}`, {method: "DELETE"}); methodsTab(); }
+      catch (e) { alert(e.message); }
+    });
+    document.getElementById("newType").onchange = e => {
+      document.getElementById("newForm").innerHTML = e.target.value ? form(e.target.value, null) : "";
+      bindForms();
+    };
+    const bindForms = () => el.querySelectorAll("form.mform").forEach(f => {
+      const idIn = f.querySelector('input[name="id"]');
+      if (idIn) idIn.oninput = () => f.querySelector(".cbid") && (f.querySelector(".cbid").textContent = idIn.value);
+      f.onsubmit = async ev => {
+        ev.preventDefault();
+        const body = {type: f.dataset.type};
+        f.querySelectorAll("input,textarea,select").forEach(i => body[i.name] = i.type === "checkbox" ? i.checked : i.value);
+        const id = f.dataset.id || body.id; delete body.id;
+        try { await act(`/api/settings/auth/${encodeURIComponent(id)}`, {method: "PUT", body: JSON.stringify(body)}); methodsTab(); }
+        catch (err) { f.querySelector(".fmsg").textContent = err.message; }
+      };
+    });
+    bindForms();
+  }
+
+  document.getElementById("admcard").addEventListener("tab", e => (e.detail === "methods" ? methodsTab : usersTab)().catch(err =>
+    (document.getElementById(e.detail === "methods" ? "adm-methods" : "adm-users") || {}).innerHTML = `<div class="err">${esc(err.message)}</div>`));
+}
+
 // ---------------------------------------------------------------- router
 async function route() {
   const {path, q} = parseHash();
   const page = path === "/live" ? "live" : path === "/hosts" ? "hosts" : path === "/sites" ? "sites"
-    : path === "/new" ? "new" : "explore";
+    : path === "/new" ? "new" : path === "/admin" ? "admin" : "explore";
   const navPage = page === "explore" && q.get("host") ? "hosts" : page === "explore" && q.get("site") ? "sites" : page;
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.dataset.page === navPage));
   const zoomed = q.get("from") && q.get("to");
@@ -1072,7 +1209,7 @@ async function route() {
   document.getElementById("zoom").innerHTML = zoomed ? `<span class="chip"><b>Zoom</b>${day(+q.get("from"))} ${hm(+q.get("from"))} - ${hm(+q.get("to"))}
     <button title="Back to the preset" id="unzoom">&times;</button></span>` : "";
   if (zoomed) document.getElementById("unzoom").onclick = () => location.hash = link(path, {from: null, to: null}, true);
-  document.getElementById("timebar").style.visibility = page === "live" || page === "new" ? "hidden" : "";
+  document.getElementById("timebar").style.visibility = page === "live" || page === "new" || page === "admin" ? "hidden" : "";
   document.querySelectorAll("#scopes button").forEach(b => b.classList.toggle("active", b.dataset.s === currentScope(q)));
   document.getElementById("scopes").style.display = page === "explore" ? "" : "none";
   timers.forEach(clearInterval); timers = [];
@@ -1083,6 +1220,7 @@ async function route() {
     else if (page === "hosts") await hosts();
     else if (page === "sites") await sites();
     else if (page === "new") await newToday();
+    else if (page === "admin") await adminPage();
     else await explore();
   } catch (e) {
     $main.innerHTML = `<div class="card err">Couldn't load: ${esc(e.message)}</div>`;

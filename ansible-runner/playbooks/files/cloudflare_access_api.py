@@ -14,7 +14,8 @@ it checks Access's tokens against.
 
 Settings come from the environment (the playbook passes them, no_log):
     CF_EMAIL, CF_KEY       account email + Global API Key
-    ACCESS_PARAMS          JSON: zone, domain, name, logo_url, emails, session, team
+    ACCESS_PARAMS          JSON: zone, domain, name, logo_url, emails, session, team,
+                           brand (login page colours + footer), public_paths
 """
 import json
 import os
@@ -75,6 +76,15 @@ def main():
         org = made
     team = org.get("auth_domain")
 
+    # The login page's look (team-wide): the app's name, logo and colours.
+    if p.get("brand"):
+        design = {"background_color": p["brand"]["background"], "text_color": p["brand"]["text"],
+                  "logo_path": p["logo_url"], "header_text": p["name"], "footer_text": p["brand"]["footer"]}
+        if any(org.get("login_design", {}).get(k) != v for k, v in design.items()):
+            cf("PUT", f"{base}/organizations", {"name": org.get("name") or p["team"], "auth_domain": team,
+                                                "login_design": design})
+            LOG.append(f"login page branded: {p['name']}")
+
     idps = cf("GET", f"{base}/identity_providers")
     if not any(i.get("type") == "onetimepin" for i in idps):
         cf("POST", f"{base}/identity_providers", {"name": "One-time PIN", "type": "onetimepin", "config": {}})
@@ -105,6 +115,28 @@ def main():
             [x.get("id") for x in app.get("policies", [])] != [pol["id"]]:
         app = cf("PUT", f"{base}/apps/{app['id']}", want_app)
         LOG.append(f"updated application: {p['name']} on {p['domain']}")
+
+    # Paths anyone may load (the logo the login page shows, the app's sign-in
+    # page assets): their own application with a Bypass policy - a more
+    # specific path wins over the domain's application.
+    for path in p.get("public_paths", []):
+        bp_name = f"{p['name']} - public {path} (ansible-runner)"
+        want_bp = {"name": bp_name, "decision": "bypass", "include": [{"everyone": {}}]}
+        bpol = next((x for x in cf("GET", f"{base}/policies") if x.get("name") == bp_name), None)
+        if not bpol:
+            bpol = cf("POST", f"{base}/policies", want_bp)
+            LOG.append(f"added policy: {bp_name}")
+        dom = f"{p['domain']}/{path.strip('/')}"
+        want_pa = {"name": f"{p['name']} ({path})", "domain": dom, "type": "self_hosted",
+                   "session_duration": p["session"], "app_launcher_visible": False,
+                   "policies": [{"id": bpol["id"], "precedence": 1}]}
+        papp = next((a for a in cf("GET", f"{base}/apps") if a.get("domain") == dom), None)
+        if not papp:
+            cf("POST", f"{base}/apps", want_pa)
+            LOG.append(f"added public path: {dom}")
+        elif [x.get("id") for x in papp.get("policies", [])] != [bpol["id"]]:
+            cf("PUT", f"{base}/apps/{papp['id']}", want_pa)
+            LOG.append(f"updated public path: {dom}")
 
     print(json.dumps({"changed": bool(LOG), "log": LOG, "team_domain": team, "aud": app.get("aud"),
                       "app_id": app.get("id"), "allowed": len(emails),

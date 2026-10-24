@@ -24,12 +24,17 @@
 # Run:  ./run.sh netview_stack.yml                  (192.168.3.150)
 #       ./run.sh netview_stack.yml --tags names     (names only)
 #
-# Sign-in: Cloudflare Access in front of netview_public_url (a Cloudflare
-# Tunnel route to this port), with whatever login methods its Zero Trust
-# account has (email code, Google, GitHub, Microsoft...). With
-# netview_cf_team and netview_cf_aud set, the app checks Access's signed token
-# on every request - the LAN address then shows a sign-in page instead of
-# the data. Left empty: no login, LAN only, like the Akvorado console.
+# Sign-in (files/netview/auth.py, files/netview/README.md): the app's own
+# login page - local accounts, Google, Microsoft Entra ID (Azure AD), Apple,
+# GitHub, AWS Cognito, any OpenID Connect server, LDAP / Active Directory -
+# with admin approval of new accounts (Admin page). Methods come from
+# netview_auth_providers (secrets from the vault) and from the app's own
+# Admin > Sign-in methods page. First run: the login page asks for the setup
+# token in /opt/netview/session.env (root only) to create the first admin;
+# netview_admin_emails are admins as soon as they sign in. A Cloudflare
+# Access token can count as signed in too (netview_auth_methods: [builtin,
+# cloudflare] with netview_cf_team / netview_cf_aud - cloudflare_access.yml).
+# netview_auth_methods: [off] = no login, LAN only.
 # CIS Level 1 safe: no volumes (names.json is a read-only bind mount of a
 # root-owned file), the container runs as an unprivileged UID.
 
@@ -63,10 +68,25 @@
     # Sign-in (see the top). Team = the Zero Trust team name (<team>.cloudflareaccess.com),
     # AUD = the Access application's "Application Audience (AUD) Tag".
     netview_public_url: https://netview.aktasolutions.com
+    # builtin = the app's login page; cloudflare = trust a Cloudflare Access
+    # token too; off = no login (LAN only).
+    netview_auth_methods: [builtin, cloudflare]
     netview_cf_team: aktasolutions.cloudflareaccess.com   # cloudflare_access.yml (2026-10-24)
     netview_cf_aud: 8375c22f885da275b33199b69162b781b7eaef18c61320c90c94383955584ed6
-    netview_allowed_emails: []    # optional, on top of the Access policy
-    netview_login_providers: [Email code, Google, GitHub, Microsoft]  # shown on the sign-in page
+    # Approved admins as soon as they sign in: here the Cloudflare account's
+    # email (the one the Access policy lets through) - [] for a fresh install.
+    netview_admin_emails: "{{ [hostvars['cloudflare.com'].vault_win_user] if hostvars['cloudflare.com'].vault_win_user is defined else [] }}"
+    # Sign-in methods from the deployment (more can be added in the app,
+    # Admin > Sign-in methods). Secrets from the vault, e.g.:
+    #   - {id: google, type: google, client_id: "...apps.googleusercontent.com",
+    #      client_secret: "{{ vault_lens_google_secret }}"}
+    #   - {id: entra, type: microsoft, tenant: "<tenant id>", client_id: "...",
+    #      client_secret: "{{ vault_lens_entra_secret }}", auto_approve: true}
+    #   - {id: corp, type: ldap, name: Corp AD, url: "ldaps://dc1.corp.example.com",
+    #      bind_dn: "...", bind_password: "{{ vault_lens_ldap_bind }}",
+    #      base_dn: "DC=corp,DC=example,DC=com", group_dn: "CN=Lens Users,..."}
+    netview_auth_providers: []
+    netview_session_days: 7
     # Exporter names as in akvorado_stack.yml: the firewall answers for the
     # internet, the Proxmox nodes' softflowd for LAN-to-LAN.
     netview_wan_exporter: opnsense
@@ -230,6 +250,37 @@
         mode: "0600"
       when: not netview_dns | bool
 
+    # ------------------------------------------------------------- sign-in
+    # Made once and kept: the session secret (signs sessions and keys the
+    # encryption of secrets stored from the Admin page - a new one logs
+    # everyone out and those secrets must be entered again) and the
+    # first-run setup token. Root only; delete the file to make new ones.
+    - name: Session secret and setup token (made once)
+      ansible.builtin.copy:
+        dest: "{{ netview_dir }}/session.env"
+        content: |
+          # Managed by ansible-runner (netview_stack.yml) - made once, kept.
+          SESSION_SECRET={{ lookup('ansible.builtin.password', '/dev/null', length=64, chars=['ascii_letters', 'digits']) }}
+          SETUP_TOKEN={{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+      register: session_file
+      no_log: true
+
+    - name: Sign-in methods from the deployment (secrets - root only)
+      ansible.builtin.copy:
+        dest: "{{ netview_dir }}/auth.env"
+        content: |
+          # Managed by ansible-runner (netview_stack.yml) - changes are overwritten.
+          AUTH_PROVIDERS={{ netview_auth_providers | to_json }}
+        owner: root
+        group: root
+        mode: "0600"
+      register: auth_file
+      no_log: true
+
     # ------------------------------------------------------------- app
     # Docker CE on Rocky runs with SELinux support off (see akvorado_stack.yml);
     # the rule keeps the bind mount readable if that's turned on.
@@ -273,7 +324,7 @@
               read_only: true
               ports:
                 - {{ netview_port }}:8000/tcp
-              env_file: .env
+              env_file: [.env, session.env, auth.env]
               environment:
                 CLICKHOUSE_URL: http://clickhouse:8123
                 WAN_EXPORTER: {{ netview_wan_exporter }}
@@ -285,10 +336,11 @@
                 LIVE_INTERFACES: '{{ netview_live_interfaces | to_json }}'
                 LIVE_TOP_IFACE: {{ netview_live_top_iface }}
                 PUBLIC_URL: "{{ netview_public_url }}"
+                AUTH_METHODS: "{{ netview_auth_methods | join(',') }}"
                 CF_ACCESS_TEAM: "{{ netview_cf_team }}"
                 CF_ACCESS_AUD: "{{ netview_cf_aud }}"
-                ALLOWED_EMAILS: "{{ netview_allowed_emails | join(',') }}"
-                LOGIN_PROVIDERS: "{{ netview_login_providers | join(',') }}"
+                ADMIN_EMAILS: "{{ netview_admin_emails | join(',') }}"
+                SESSION_DAYS: "{{ netview_session_days }}"
               volumes:
                 - ./names.json:/data/names.json:ro
               networks: [akvorado]
@@ -305,7 +357,7 @@
       ansible.builtin.command: docker compose up -d --build --wait
       args:
         chdir: "{{ netview_dir }}"
-      when: app_src is changed or compose_file is changed or key_file is changed
+      when: app_src is changed or compose_file is changed or key_file is changed or session_file is changed or auth_file is changed
       changed_when: true
 
     - name: Make sure it's running
@@ -339,11 +391,21 @@
       retries: 20
       delay: 3
 
+    - name: Sign-in state
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ netview_port }}/auth/state"
+      register: auth_state
+
     - name: Report
       ansible.builtin.debug:
         msg:
-          - "Sentry Lens: http://{{ ansible_host | default(inventory_hostname) }}:{{ netview_port }}{{
-              (' - sign-in through Cloudflare Access at ' ~ netview_public_url) if netview_cf_team and netview_cf_aud
-              else ' (no login - LAN only; set netview_cf_team / netview_cf_aud for sign-in)' }}"
+          - "Sentry Lens: http://{{ ansible_host | default(inventory_hostname) }}:{{ netview_port }}
+             {{- (' and ' ~ netview_public_url) if netview_public_url else '' }}"
+          - "Sign-in: {{ netview_auth_methods | join(' + ') }} - methods: {{
+              ((auth_state.json.providers | map(attribute='name') | list) + auth_state.json.directory) | join(', ')
+              or 'email + password only' }}"
+          - "{{ 'FIRST RUN: open the login page and create the admin with the setup token - sudo grep SETUP_TOKEN '
+                ~ netview_dir ~ '/session.env on ' ~ (ansible_host | default(inventory_hostname))
+                if auth_state.json.setup else 'Admin exists - new accounts wait for approval on the Admin page' }}"
           - "ClickHouse {{ health.json.clickhouse }}, {{ health.json.names }} device names"
           - "DNS collector: {{ 'on' if health.json.dns.enabled else 'off' }}"
