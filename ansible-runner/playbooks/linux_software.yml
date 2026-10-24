@@ -67,6 +67,11 @@
     # route advertised for the host's own LAN (192.168.3.0/24) takes over its
     # LAN traffic - replies to SSH (Ansible) would go into the tunnel.
     tailscale_accept_routes: false
+    # MagicDNS takes over the host's resolver. Off for hosts whose own
+    # lookups must go to the firewall's DNS - e.g. the Akvorado collector,
+    # where Sentry Lens re-resolves domains through Unbound's cache
+    # (-e tailscale_accept_dns=false).
+    tailscale_accept_dns: true
 
   pre_tasks:
     # The login (vault_win_user/vault_win_password) comes from the host's own
@@ -538,7 +543,8 @@
             - name: tailscale up
               ansible.builtin.command: >-
                 tailscale up --auth-key=file:/root/.tailscale-authkey
-                --accept-routes={{ tailscale_accept_routes | bool | lower }} --timeout=90s
+                --accept-routes={{ tailscale_accept_routes | bool | lower }}
+                --accept-dns={{ tailscale_accept_dns | bool | lower }} --timeout=90s
               register: tailscale_up
               changed_when: tailscale_up.rc == 0
               failed_when: false
