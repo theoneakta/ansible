@@ -106,6 +106,7 @@
   tbody tr:hover td { background: var(--surface2); }
   .bar { height: 3px; border-radius: 2px; background: var(--s1); margin-top: 3px; opacity: .7; }
   .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .3rem; margin-left: .3rem; }
+  .tag.risk { border-color: var(--fail); color: var(--text); }
   .name { font-weight: 500; }
   .ip { color: var(--muted); font-size: .8rem; margin-left: .4rem; }
   .more { background: none; border: 0; color: var(--link); cursor: pointer; font: inherit; font-size: .85rem; padding: .5rem 0 0; }
@@ -247,8 +248,8 @@ const lastCell = t => `<span title="${when(t)}">${ago(t)}</span>`;
 
 // ---------------------------------------------------------------- state & links
 // Hash: #/<page>?range=6h | from=..&to=.. & filters (host, site, asn, country, svc, remote) & by
-const FILTER_KEYS = ["host", "site", "asn", "country", "svc", "remote"];
-const FILTER_NAMES = {host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
+const FILTER_KEYS = ["host", "site", "group", "category", "asn", "country", "svc", "remote"];
+const FILTER_NAMES = {host: "Device", site: "Website", group: "Category", category: "Subcategory", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
 function parseHash() {
   const [path, qs] = (location.hash.replace(/^#/, "") || "/").split("?");
   return {path, q: new URLSearchParams(qs || "")};
@@ -285,6 +286,12 @@ function hostCell(ip, name, href) {
   return `<a href="${href || drill("host", ip)}">${name ? `<span class="name">${esc(name)}</span><span class="ip">${esc(ip)}</span>` : esc(ip)}</a>`;
 }
 const siteCell = s => s ? `<a href="${drill("site", s)}">${esc(s)}</a>` : `<span class="muted">(no DNS name)</span>`;
+// Website categories (categories.py): risky groups get a red-edged tag; each part drills in.
+const RISKY = ["Security threat", "Illicit", "Mature", "Gambling"];
+const groupTag = g => g ? `<a href="${drill("group", g)}" class="tag${RISKY.includes(g) ? " risk" : ""}">${esc(g)}</a>` : "";
+const catCell = (key, label, group) => !key ? `<span class="muted">(no DNS name)</span>`
+  : key === "uncategorized" ? `<span class="muted">Uncategorized</span>`
+  : `<a href="${drill("category", key)}">${esc(label)}</a>${groupTag(group)}`;
 const svcText = r => `${esc(r.proto)}/${r.port}${r.service ? ` <span class="tag">${esc(r.service)}</span>` : ""}`;
 const NO_DNS = `<p class="muted">The DNS collector isn't set up - run netview_stack.yml to give it its OPNsense API key.</p>`;
 
@@ -481,8 +488,8 @@ function top5(rows, totalValue, key, label, href, value = total) {
 }
 
 // ---------------------------------------------------------------- explore (overview + every drill-down)
-const SPLITS = {total: "Total", host: "Device", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
-const INTERNET_ONLY = ["site", "asn", "country"];  // meaningless between LAN devices
+const SPLITS = {total: "Total", host: "Device", group: "Category", category: "Subcategory", site: "Website", asn: "Network", country: "Country", svc: "Service", remote: "Remote"};
+const INTERNET_ONLY = ["site", "group", "category", "asn", "country"];  // meaningless between LAN devices
 // How each dimension shows in a donut / tab: its top list, key, label, drill link.
 const DIMS = {
   host: {top: "hosts", title: "Devices", key: r => r.host, label: r => r.host_name || r.host, href: r => drill("host", r.host)},
@@ -491,6 +498,10 @@ const DIMS = {
   svc: {top: "services", title: "Services", key: r => `${r.proto_num}/${r.port}`, label: r => `${r.proto}/${r.port}${r.service ? " " + r.service : ""}`, href: r => drill("svc", `${r.proto_num}/${r.port}`)},
   asn: {top: "asns", title: "Networks", key: r => `AS${r.asn} ${r.asn_name}`, label: r => r.asn_name || (r.asn ? "AS" + r.asn : "unknown"), href: r => r.asn ? drill("asn", r.asn) : null},
   remote: {top: "remotes", title: "Peers", key: r => r.rip, label: r => r.rip_name || r.rip, href: r => drill("remote", r.rip)},
+  group: {top: "groups", title: "Categories", key: r => r.group, label: r => r.group,
+          href: r => ["Uncategorized", "(no DNS name)"].includes(r.group) ? null : drill("group", r.group)},
+  category: {top: "categories", title: "Subcategories", key: r => r.cat || "(none)", label: r => r.cat_label,
+             href: r => r.cat && r.cat !== "uncategorized" ? drill("category", r.cat) : null},
 };
 
 async function explore() {
@@ -514,6 +525,7 @@ async function explore() {
     asn: () => { const r = tops.asns.find(r => String(r.asn) === v); return r && r.asn_name ? `${r.asn_name} (AS${v})` : `AS${v}`; },
     country: () => flag(v),
     svc: () => { const r = tops.services[0]; return r ? `${r.proto}/${r.port}${r.service ? " " + r.service : ""}` : v; },
+    category: () => { const r = tops.categories.find(r => r.cat === v); return r ? `${r.cat_label} (${r.cat_group})` : v; },
   }[k] || (() => v))();
   const title = !filtered ? {internet: "All internet traffic", lan: "All LAN traffic", all: "All traffic"}[scope]
     : only("host") ? (d.names.host ? `${esc(d.names.host)} <span class="ip">${esc(applied.host)}</span>` : esc(applied.host))
@@ -523,7 +535,7 @@ async function explore() {
     {internet: " · internet", lan: " · between LAN devices", all: " · internet and LAN"}[scope];
 
   // Three donuts: the first three dimensions not already filtered.
-  const donutDims = (lanOnly ? ["host", "remote", "svc"] : ["host", "site", "country", "svc", "asn"])
+  const donutDims = (lanOnly ? ["host", "remote", "svc"] : ["host", "group", "site", "country", "category", "svc", "asn"])
     .filter(k => !applied[k] && (k !== "site" || d.dns)).slice(0, 3);
   // One tabbed table: what only this page has, then every unfiltered dimension.
   const tabList = [];
@@ -547,7 +559,8 @@ async function explore() {
       {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
       {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {sortable: true, bar: r => r.visits, limit: 10, href: r => drill("host", r.ip)})});
     tabList.push({id: "names", label: "Names looked up", html: () => table(x.domains, [
-      {k: "domain", label: "Domain"}, {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
+      {k: "domain", label: "Domain"}, {k: "cat_label", label: "Category", fmt: r => catCell(r.cat, r.cat_label, r.cat_group)},
+      {k: "lookups", label: "Lookups", n: 1, fmt: r => num(r.lookups)},
       {k: "devices", label: "Devices", n: 1}, {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}], {bar: r => r.lookups, limit: 10})});
   }
   const dimTab = (k, cols, label) => !applied[k] && !(lanOnly && INTERNET_ONLY.includes(k)) && tabList.push({id: k, label: label || DIMS[k].title,
@@ -556,6 +569,12 @@ async function explore() {
   if (d.dns) dimTab("site", [{k: "site", label: "Website", fmt: r => siteCell(r.site)}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("asn", [{k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "AS" + r.asn)} <span class="tag">AS${r.asn}</span>` : `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("country", [{k: "country", label: "Country", fmt: r => flag(r.country) || `<span class="muted">unknown</span>`}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
+  if (d.dns) {
+    dimTab("group", [{k: "group", label: "Category", fmt: r => DIMS.group.href(r) ? `<a href="${DIMS.group.href(r)}">${esc(r.group)}</a>${RISKY.includes(r.group) ? ` <span class="tag risk">risky</span>` : ""}` : `<span class="muted">${esc(r.group)}</span>`},
+      DOWN, UP, {k: "categories", label: "Subcategories", n: 1}]);
+    dimTab("category", [{k: "cat_label", label: "Subcategory", fmt: r => catCell(r.cat, r.cat_label, r.cat_group)}, DOWN, UP,
+      {k: "hosts", label: "Devices", n: 1}, {k: "sites", label: "Websites", n: 1}]);
+  }
   dimTab("svc", [{k: "port", label: "Service", fmt: svcText}, DOWN, UP, {k: "hosts", label: "Devices", n: 1}]);
   dimTab("remote", [{k: "rip", label: lanOnly ? "Peer" : "Remote", fmt: r => r.rip_name ? hostCell(r.rip, r.rip_name, drill("remote", r.rip)) : esc(r.rip)},
     ...(lanOnly ? [] : [{k: "asn_name", label: "Network", fmt: r => r.asn ? `${esc(r.asn_name || "")} <span class="tag">AS${r.asn}</span>` : ""},
@@ -582,8 +601,13 @@ async function explore() {
           ${k === "site" && !d.dns ? "disabled" : ""}>${SPLITS[k]}</button>`).join("")}</div></div>
       <div class="chart" id="c1"></div><div id="l1"></div>
     </div>
-    ${donutDims.length ? `<div class="row three">${donutDims.map(k => `<div class="card"><div class="head"><h3>${DIMS[k].title}</h3></div>${
-      donut(k, top5(tops[DIMS[k].top], all, DIMS[k].key, DIMS[k].label, DIMS[k].href), {title: DIMS[k].title})}</div>`).join("")}</div>` : ""}
+    ${donutDims.length ? `<div class="row three">${donutDims.map(k => {
+      // Categories: only traffic with a categorized name - unnamed P2P would swamp the rest.
+      const named = r => k === "group" ? !["(no DNS name)", "Uncategorized"].includes(r.group) : k === "category" ? r.cat && r.cat !== "uncategorized" : true;
+      const rowsK = tops[DIMS[k].top].filter(named), totalK = k === "group" || k === "category" ? rowsK.reduce((a, r) => a + total(r), 0) : all;
+      return `<div class="card"><div class="head"><h3>${DIMS[k].title}</h3>${k === "group" || k === "category" ? `<span class="hint" style="margin:0">categorized traffic only</span>` : ""}</div>${
+        donut(k, top5(rowsK, totalK, DIMS[k].key, DIMS[k].label, DIMS[k].href), {title: DIMS[k].title})}</div>`;
+    }).join("")}</div>` : ""}
     <div class="card">${tabs(filtered ? "explore-f" : "explore", tabList)}</div>
     <p class="hint">Drag across the chart to zoom in. Click a slice, legend entry or row to drill down.${scope === "internet" ? "" :
       " LAN traffic comes from the Proxmox nodes (traffic crossing a VM bridge), de-duplicated; in the split charts a LAN byte counts once, under the device that sent it."}</p>`;
@@ -597,6 +621,8 @@ async function explore() {
     const sc = stackChart(document.getElementById("c1"), b.t, b.series, {group: by, step: b.window.step});
     document.getElementById("l1").innerHTML = stackLegend(b.series, sc.colors,
       by === "site" ? s => s.key ? drill("site", s.key) : null
+      : by === "group" ? s => ["Uncategorized", "(no DNS name)"].includes(s.key) ? null : drill("group", s.key)
+      : by === "category" ? s => s.key && s.key !== "uncategorized" ? drill("category", s.key) : null
       : by === "asn" ? s => drill("asn", s.key.split(" ")[0].slice(2))
       : s => drill(by, s.key));
   }
@@ -642,29 +668,44 @@ async function sites() {
   if (!d.dns) { $main.innerHTML = `<div class="card">${NO_DNS}</div>`; return; }
   const cols = [
     {k: "site", label: "Website", fmt: r => siteCell(r.site)},
+    {k: "cat_label", label: "Category", fmt: r => catCell(r.cat, r.cat_label, r.cat_group)},
     {k: "visits", label: "Visits", n: 1, fmt: r => num(r.visits)},
     {k: "devices", label: "Devices", n: 1}, DOWN, UP,
     {k: "last", label: "Last", n: 1, fmt: r => lastCell(r.last)}];
+  // Visits by category group, riskiest first in the dropdown.
+  const groupOf = r => r.cat_group || (r.cat === "uncategorized" ? "Uncategorized" : "(no DNS name)");
+  const byGroup = {};
+  d.sites.forEach(r => byGroup[groupOf(r)] = (byGroup[groupOf(r)] || 0) + r.visits);
+  const groupRows = Object.entries(byGroup).map(([group, visits]) => ({group, visits})).sort((a, b) => b.visits - a.visits);
   const render = () => {
-    const f = (document.getElementById("q")?.value || "").toLowerCase();
-    document.getElementById("st").innerHTML = table(d.sites.filter(r => !f || r.site.includes(f)), cols,
+    const f = (document.getElementById("q")?.value || "").toLowerCase(), g = document.getElementById("qg")?.value || "";
+    document.getElementById("st").innerHTML = table(d.sites.filter(r => (!f || r.site.includes(f)) && (!g || groupOf(r) === g)), cols,
       {sortable: true, bar: r => r.visits, limit: 25, href: r => drill("site", r.site)});
   };
   const visits = d.sites.reduce((a, r) => a + r.visits, 0);
+  const risky = d.sites.filter(r => RISKY.includes(r.cat_group));
   $main.innerHTML = `
-    <div class="hero"><div class="title"><h2>Websites</h2><div class="sub">${d.sites.length} sites &middot; ${num(visits)} visits</div></div></div>
-    <div class="row split">
-      <div class="card"><div class="head"><h3>Website traffic over time</h3></div><div class="chart" id="c1"></div><div id="l1"></div></div>
+    <div class="hero"><div class="title"><h2>Websites</h2><div class="sub">${d.sites.length} sites &middot; ${num(visits)} visits</div></div>
+      <div class="kpis"><div class="kpi"><div class="v">${num(risky.length)}</div><div class="l">sites in a risky category (${RISKY.join(", ").toLowerCase()})</div></div></div></div>
+    <div class="card"><div class="head"><h3>Website traffic over time</h3></div><div class="chart" id="c1"></div><div id="l1"></div></div>
+    <div class="row half">
       <div class="card"><div class="head"><h3>Most visited</h3></div>${donut("site",
         top5(d.sites, visits, r => r.site, r => r.site, r => drill("site", r.site), r => r.visits), {fmt: num, center: "visits"})}</div>
+      <div class="card"><div class="head"><h3>Visits by category</h3></div>${donut("group",
+        top5(groupRows, visits, r => r.group, r => r.group, r => ["Uncategorized", "(no DNS name)"].includes(r.group) ? null : drill("group", r.group), r => r.visits),
+        {fmt: num, center: "visits"})}</div>
     </div>
     <div class="card">
-      <div class="head"><h3>All websites</h3><div class="spacer"></div><input class="filter" id="q" placeholder="Filter websites"></div>
+      <div class="head"><h3>All websites</h3><div class="spacer"></div>
+        <label class="drop">Category<select id="qg"><option value="">All</option>${groupRows.map(r =>
+          `<option value="${esc(r.group)}">${esc(r.group)} (${num(r.visits)})</option>`).join("")}</select></label>
+        <label class="drop">Search<input class="filter" id="q" placeholder="Filter websites"></label></div>
       <div id="st"></div>
       <p class="hint">From the firewall's DNS log. A visit is one device using a site within 5 minutes. Traffic is
-        matched to the site the device looked up for that address.</p>
+        matched to the site the device looked up for that address. Categories: UT1 blacklists (Université Toulouse Capitole, CC BY-SA 4.0).</p>
     </div>`;
   document.getElementById("q").oninput = render;
+  document.getElementById("qg").onchange = render;
   render();
   const sc = stackChart(document.getElementById("c1"), b.t, b.series, {group: "site", step: b.window.step, height: 230});
   document.getElementById("l1").innerHTML = stackLegend(b.series, sc.colors, s => s.key ? drill("site", s.key) : null);
@@ -717,6 +758,7 @@ const LIVE_DROPS = [
   {k: "country", label: "Country", val: f => f.country, text: f => flag(f.country)},
   {k: "site", label: "Website", val: f => f.site, text: f => f.site},
   {k: "asn", label: "Network", val: f => f.asn ? String(f.asn) : "", text: f => f.asn_name || "AS" + f.asn},
+  {k: "category", label: "Category", val: f => f.cat && f.cat !== "uncategorized" ? f.cat : "", text: f => `${f.cat_label} (${f.cat_group})`},
 ];
 
 async function livePage() {

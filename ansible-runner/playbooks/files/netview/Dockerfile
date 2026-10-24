@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir \
         "requests==2.32.*"
 
 WORKDIR /app
-COPY app.py dns.py live.py /app/
+COPY app.py dns.py live.py categories.py /app/
 COPY static /app/static
 
 # Nothing written at runtime - an unprivileged user with no host account is

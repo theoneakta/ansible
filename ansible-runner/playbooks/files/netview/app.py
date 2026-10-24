@@ -37,6 +37,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+import categories
 import dns
 import live
 
@@ -58,6 +59,7 @@ STACK = 7  # series in a breakdown chart before the rest folds into "other"
 async def lifespan(_app):
     dns.start()
     live.start()
+    categories.start()
     yield
 
 
@@ -156,17 +158,17 @@ wan AS (
 # window). No match = site ''.
 MATCHED = f"""{WAN},
 dips AS (
-    SELECT client, ip, t AS dt, site FROM netview.dns_ips
+    SELECT client, ip, t AS dt, site, domain FROM netview.dns_ips
     WHERE t BETWEEN toDateTime({{start:UInt32}}) - INTERVAL 1 DAY AND toDateTime({{end:UInt32}})
 ),
 matched AS (
     SELECT w.t AS t, w.dl AS dl, w.local AS local, w.remote AS remote, w.ras AS ras, w.rcc AS rcc,
-           w.rport AS rport, w.Proto AS Proto, w.b AS b, d.site AS site
+           w.rport AS rport, w.Proto AS Proto, w.b AS b, d.site AS site, d.domain AS domain
     FROM wan AS w ASOF LEFT JOIN dips AS d
       ON w.local = d.client AND w.remote = d.ip AND w.t >= d.dt
 )"""
 UNMATCHED = f"""{WAN},
-matched AS (SELECT t, dl, local, remote, ras, rcc, rport, Proto, b, '' AS site FROM wan)"""
+matched AS (SELECT t, dl, local, remote, ras, rcc, rport, Proto, b, '' AS site, '' AS domain FROM wan)"""
 
 # LAN-to-LAN flows from the Proxmox nodes' softflowd.
 LAN = f"""
@@ -214,17 +216,17 @@ def scoped(scope):
         ctes.append(f"wanx AS ({FLOWSX_WAN})")
         if dns.status["enabled"]:  # only internet rows can have a website
             ctes.append(f"""dips AS (
-    SELECT client, ip, t AS dt, site FROM netview.dns_ips
+    SELECT client, ip, t AS dt, site, domain FROM netview.dns_ips
     WHERE t BETWEEN toDateTime({{start:UInt32}}) - INTERVAL 1 DAY AND toDateTime({{end:UInt32}})
 )""")
-            parts.append("""SELECT w.*, d.site AS site FROM wanx AS w ASOF LEFT JOIN dips AS d
+            parts.append("""SELECT w.*, d.site AS site, d.domain AS domain FROM wanx AS w ASOF LEFT JOIN dips AS d
       ON w.local = d.client AND w.remote = d.ip AND w.t >= d.dt""")
         else:
-            parts.append("SELECT *, '' AS site FROM wanx")
+            parts.append("SELECT *, '' AS site, '' AS domain FROM wanx")
     if scope != "internet":
         ctes.append(LAN_DEDUP)
         ctes.append(f"lanx AS ({FLOWSX_LAN})")
-        parts.append("SELECT *, '' AS site FROM lanx")
+        parts.append("SELECT *, '' AS site, '' AS domain FROM lanx")
     ctes.append("matched AS (\n    " + "\n    UNION ALL\n    ".join(parts) + "\n)")
     return ",\n".join(ctes)
 
@@ -234,6 +236,22 @@ def scoped(scope):
 VISITS = "uniq(client, toStartOfInterval(t, INTERVAL 5 MINUTE))"
 DNS_IN = f"t {BETWEEN}"
 
+# A flow's website category (categories.py), from the domain it was matched
+# to: '' = no DNS name, "uncategorized" = a name no list has (or not yet
+# classified). CAT_GROUP folds it into its group.
+CAT = (f"if(domain = '', '', dictGetOrDefault('{categories.DICT}', 'category', tuple(domain), "
+       f"'{categories.UNCATEGORIZED}'))")
+CAT_GROUP = (f"transform({CAT}, [{', '.join(repr(k) for k in categories.CATS)}], "
+             f"[{', '.join(repr(g) for _, g in categories.CATS.values())}], "
+             f"if({CAT} = '', '(no DNS name)', 'Uncategorized'))")
+
+
+def check_category(cat):
+    if cat not in categories.CATS and cat != categories.UNCATEGORIZED:
+        raise HTTPException(400, "not a category")
+    return cat
+
+
 # Drill-down filters: query parameter -> (condition on `matched`, check).
 FILTERS = {
     "host": ("local = toIPv6({f_host:String})", check_ip),
@@ -242,6 +260,8 @@ FILTERS = {
     "country": ("rcc = {f_country:String}", check_country),
     "svc": ("Proto = {f_proto:UInt32} AND rport = {f_port:UInt32}", check_svc),
     "site": ("site = {f_site:String}", check_site),
+    "group": (CAT + " IN {f_group:Array(String)}", categories.group_keys),
+    "category": (CAT + " = {f_category:String}", check_category),
 }
 
 # What a breakdown chart can be split by: dimension -> key on `matched`.
@@ -252,7 +272,16 @@ BY = {
     "country": "rcc",
     "svc": "concat(toString(Proto), '/', toString(rport))",
     "site": "site",
+    "group": CAT_GROUP,
+    "category": CAT,
 }
+
+
+def cat_rows(rows, col="cat"):
+    """Label and group next to each category key."""
+    for r in rows:
+        r[f"{col}_label"], r[f"{col}_group"] = categories.label(r[col]), categories.group(r[col])
+    return rows
 
 
 def matched(scope="internet"):
@@ -356,26 +385,26 @@ def explore(request: Request, range: str = "6h", scope: str = "internet",
     # One pass over the flows (the website match is the costly part) for the
     # chart, the totals and all six top lists, as grouping sets. grouping():
     # bit set = column NOT grouped, first argument = highest bit.
-    cols = ["local", "remote", "ras", "rcc", "Proto", "rport", "site", "ts"]
+    cols = ["local", "remote", "ras", "rcc", "Proto", "rport", "site", "cat", "ts"]
     full = (1 << len(cols)) - 1
     gid = {name: full ^ sum(1 << (len(cols) - 1 - cols.index(c)) for c in grouped)
            for name, grouped in {"hosts": ["local"], "remotes": ["remote"], "asns": ["ras"],
                                  "countries": ["rcc"], "services": ["Proto", "rport"],
-                                 "sites": ["site"], "chart": ["ts"], "totals": []}.items()}
+                                 "sites": ["site"], "categories": ["cat"], "chart": ["ts"], "totals": []}.items()}
     kind = "'wan'" if scope == "internet" else "kind"  # the plain internet CTE has no kind column
     rows = query(f"""WITH {matched(scope)}
         SELECT grouping({", ".join(cols)}) AS g,
                toUInt32(toStartOfInterval(t, toIntervalSecond({{step:UInt32}}))) AS ts,
                {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                ras AS asn, {ASN_NAME} AS asn_name, rcc AS country,
-               Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service, site,
+               Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service, site, {CAT} AS cat,
                sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows,
-               uniq(local) AS hosts, uniq(remote) AS remotes,
+               uniq(local) AS hosts, uniq(remote) AS remotes, uniq(site) AS sites,
                sumIf(b, site = '' AND {kind} = 'wan') AS unnamed, sumIf(b, {kind} = 'wan') AS internet,
                sumIf(b, {kind} = 'lan' AND NOT dl) AS lan, sumIf(b, {kind} = 'lan' AND dl) AS lan_rx,
                any(ras) AS any_asn, any(rcc) AS any_cc
         FROM matched WHERE {where}
-        GROUP BY GROUPING SETS ((local), (remote), (ras), (rcc), (Proto, rport), (site), (ts), ())
+        GROUP BY GROUPING SETS ((local), (remote), (ras), (rcc), (Proto, rport), (site), (cat), (ts), ())
         ORDER BY down + up DESC
         LIMIT {MAX_POINTS + 10} BY g""", **p)
     tops = {name: [] for name in gid}
@@ -390,7 +419,17 @@ def explore(request: Request, range: str = "6h", scope: str = "internet",
     chart = tops.pop("chart")
     totals = (tops.pop("totals") or [{"down": 0, "up": 0, "flows": 0, "hosts": 0, "remotes": 0, "unnamed": 0,
                                       "internet": 0, "lan": 0, "lan_rx": 0}])[0]
-    tops = {name: rows[:15] for name, rows in tops.items()}
+    # Category groups: the categories summed (devices / sites can't be - left out).
+    cat_rows(tops["categories"])
+    groups = {}
+    for r in tops["categories"]:
+        name = r["cat_group"] or ("Uncategorized" if r["cat"] else "(no DNS name)")
+        gr = groups.setdefault(name, {"group": name, "down": 0, "up": 0, "categories": 0})
+        gr["down"] += r["down"]
+        gr["up"] += r["up"]
+        gr["categories"] += 1
+    tops["groups"] = sorted(groups.values(), key=lambda gr: -(gr["down"] + gr["up"]))
+    tops = {name: rows[:15] if name != "categories" else rows[:60] for name, rows in tops.items()}
     asn_names = {r["asn"]: r["asn_name"] for r in tops["asns"]}
     missing = {r["asn"] for r in tops["remotes"] if r["asn"] not in asn_names}
     if missing:
@@ -449,6 +488,8 @@ def label(by, key):
         return "Everything else"
     if by in ("host", "remote"):
         return name_of(key) or key
+    if by == "category":
+        return categories.label(key)
     if by == "site":
         return key or "(no DNS name)"
     if by == "svc":
@@ -518,11 +559,13 @@ def site_rows(start, end, ip=None, limit=300):
     """Websites by visits, with their traffic - the whole LAN, or one device."""
     p = base_params(start, end) | {"ip": ip or ""}
     me = "AND client = toIPv6({ip:String})" if ip else ""
+    # A site's category: one of its domains' that a list has, the commonest.
     visits = query(f"""
         SELECT site, {VISITS} AS visits, uniq(client) AS devices, count() AS lookups,
-               toUInt32(max(t)) AS last
+               toUInt32(max(t)) AS last, argMax({CAT}, {CAT} != '{categories.UNCATEGORIZED}') AS cat
         FROM netview.dns WHERE {DNS_IN} {me}
         GROUP BY site ORDER BY visits DESC LIMIT {int(limit)}""", **p)
+    cat_rows(visits)
     traffic = query(f"""WITH {MATCHED}
         SELECT site, sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up FROM matched
         {"WHERE local = toIPv6({ip:String})" if ip else ""}
@@ -537,7 +580,8 @@ def sites(range: str = "24h", frm: Optional[int] = Query(None, alias="from"), to
     start, end, step = window(range, frm, to)
     if not dns.status["enabled"]:
         return {"window": win_out(start, end, step), "dns": False, "sites": []}
-    return {"window": win_out(start, end, step), "dns": True, "sites": site_rows(start, end)}
+    # All of them: the page counts the risky ones, which are rarely the most visited.
+    return {"window": win_out(start, end, step), "dns": True, "sites": site_rows(start, end, limit=5000)}
 
 
 @app.get("/api/site/{site}")
@@ -554,11 +598,11 @@ def site(site: str, range: str = "24h", frm: Optional[int] = Query(None, alias="
         FROM netview.dns WHERE {DNS_IN} AND site = {{site:String}}
         GROUP BY client ORDER BY visits DESC""", **p)
     domains = query(f"""
-        SELECT domain, count() AS lookups, uniq(client) AS devices, toUInt32(max(t)) AS last
+        SELECT domain, count() AS lookups, uniq(client) AS devices, toUInt32(max(t)) AS last, any({CAT}) AS cat
         FROM netview.dns WHERE {DNS_IN} AND site = {{site:String}}
         GROUP BY domain ORDER BY lookups DESC LIMIT 30""", **p)
     return {"window": win_out(start, end, step), "site": site,
-            "devices": name_rows(devices, "ip"), "domains": domains}
+            "devices": name_rows(devices, "ip"), "domains": cat_rows(domains)}
 
 
 @app.get("/api/new")
@@ -664,15 +708,15 @@ livef AS (
     FROM lan1
 ),
 dips AS (
-    SELECT client, ip, t AS dt, site FROM netview.dns_ips
+    SELECT client, ip, t AS dt, site, domain FROM netview.dns_ips
     WHERE t BETWEEN toDateTime({{start:UInt32}}) - INTERVAL 1 DAY AND toDateTime({{end:UInt32}})
 ),
 lmatched AS (
-    SELECT l.*, d.site AS site
+    SELECT l.*, d.site AS site, d.domain AS domain
     FROM livef AS l ASOF LEFT JOIN dips AS d
       ON l.local = d.client AND l.remote = d.ip AND l.t >= d.dt
 )"""
-LIVE_NODNS = LIVE.split("dips AS (")[0] + "lmatched AS (SELECT *, '' AS site FROM livef)"
+LIVE_NODNS = LIVE.split("dips AS (")[0] + "lmatched AS (SELECT *, '' AS site, '' AS domain FROM livef)"
 
 
 CONVERSATION = "local, remote, Proto, rport, ras"
@@ -682,7 +726,7 @@ VIA = """groupUniqArray(pif) AS ifs,
                   arrayFirst(x -> has(ifs, x), {prio:Array(String)}), 'other') AS via_dev"""
 
 
-def live_where(start, end, host, proto, port, country, site, asn, iface):
+def live_where(start, end, host, proto, port, country, site, asn, iface, category=None):
     """The live filters (the page's dropdowns and interface toggles): WHERE
     conditions, a HAVING on the conversation's interface, and the params."""
     conds, p = ["1"], base_params(start, end) | {
@@ -698,7 +742,8 @@ def live_where(start, end, host, proto, port, country, site, asn, iface):
             ("port", port, "rport = {f_port:UInt32}", int),
             ("country", country, "rcc = {f_country:String}", check_country),
             ("site", site, "lmatched.site = {f_site:String}", check_site),  # "site" alone is an output column
-            ("asn", asn, "ras = {f_asn:UInt32}", int)]:
+            ("asn", asn, "ras = {f_asn:UInt32}", int),
+            ("category", category, CAT + " = {f_category:String}", check_category)]:
         if value is not None and value != "":
             p[f"f_{name}"] = check(value)
             conds.append(cond)
@@ -712,7 +757,7 @@ def live_cte():
 @app.get("/api/live/flows")
 def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[int] = None,
                port: Optional[int] = None, country: Optional[str] = None, site: Optional[str] = None,
-               asn: Optional[int] = None, iface: Optional[list[str]] = Query(None)):
+               asn: Optional[int] = None, iface: Optional[list[str]] = Query(None), category: Optional[str] = None):
     """The latest conversations of the LAN's devices (device, remote, service,
     interface), newest first, from the flows - the firewall reports a long
     connection once a minute, so this trails real time by up to that. The
@@ -721,11 +766,12 @@ def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[i
     those interfaces."""
     seconds = max(60, min(seconds, 900))
     now = int(time.time())
-    where, having, p = live_where(now - seconds, now, host, proto, port, country, site, asn, iface)
+    where, having, p = live_where(now - seconds, now, host, proto, port, country, site, asn, iface, category)
     rows = query(f"""WITH {live_cte()}
         SELECT {IP.format(col='local')} AS host, {IP.format(col='remote')} AS rip,
                Proto AS proto_num, {PROTO} AS proto, rport AS port, {SERVICE} AS service,
                ras AS asn, {ASN_NAME} AS asn_name, any(rcc) AS country, anyIf(site, site != '') AS site,
+               argMax({CAT}, {CAT} NOT IN ('', '{categories.UNCATEGORIZED}')) AS cat,
                sumIf(b, dl) AS down, sumIf(b, NOT dl) AS up, count() AS flows, toUInt32(max(t)) AS last,
                {VIA}
         FROM lmatched WHERE {where} GROUP BY {CONVERSATION}
@@ -734,6 +780,7 @@ def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[i
     for r in rows:
         r["via"] = live.INTERFACES.get(r["via_dev"], {}).get("label", "Firewall / other")
         del r["ifs"]
+    cat_rows(rows)
     return {"seconds": seconds, "now": now, "capped": len(rows) > LIVE_LIMIT,
             "interfaces": [{"device": d, "label": i.get("label", d)} for d, i in live.INTERFACES.items()],
             "flows": name_rows(rows[:LIVE_LIMIT], "host", "rip")}
@@ -745,7 +792,7 @@ RECENT_MINUTES = (5, 10, 15, 20, 30, 60, 120)
 @app.get("/api/live/series")
 def live_series(minutes: int = 15, host: Optional[str] = None, proto: Optional[int] = None,
                 port: Optional[int] = None, country: Optional[str] = None, site: Optional[str] = None,
-                asn: Optional[int] = None, iface: Optional[list[str]] = Query(None)):
+                asn: Optional[int] = None, iface: Optional[list[str]] = Query(None), category: Optional[str] = None):
     """Recent traffic over the last few minutes under the live filters: the
     download/upload chart and the same split by device (top STACK + other)."""
     if minutes not in RECENT_MINUTES:
@@ -753,7 +800,7 @@ def live_series(minutes: int = 15, host: Optional[str] = None, proto: Optional[i
     now = int(time.time())
     start = now - minutes * 60
     step = 30 if minutes <= 15 else 60 if minutes <= 30 else 120
-    where, having, p = live_where(start, now, host, proto, port, country, site, asn, iface)
+    where, having, p = live_where(start, now, host, proto, port, country, site, asn, iface, category)
     p["step"] = step
     # The interface toggles pick whole conversations (see VIA).
     if having:
@@ -785,8 +832,16 @@ def live_series(minutes: int = 15, host: Optional[str] = None, proto: Optional[i
             "total_down": sum(r["down"] for r in rows), "total_up": sum(r["up"] for r in rows), "by": by}
 
 
+@app.get("/api/categories")
+def category_list():
+    """The categories and their groups (riskiest first), and the lists' state."""
+    return {"groups": categories.GROUPS,
+            "categories": [{"key": k, "label": lbl, "group": g} for k, (lbl, g) in categories.CATS.items()],
+            "status": categories.status}
+
+
 @app.get("/api/health")
 def health():
     return {"clickhouse": query("SELECT version() AS v")[0]["v"], "names": len(names()),
             "wan_exporter": WAN_EXPORTER, "lan_exporters": LAN_EXPORTERS, "dns": dns.status,
-            "live": live.status}
+            "live": live.status, "categories": categories.status}
