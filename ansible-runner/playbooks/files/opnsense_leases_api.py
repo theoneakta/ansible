@@ -48,15 +48,28 @@ def collect(s, specs, names, counts):
 
 def tailnet(s, names, counts):
     """The tailnet's devices (the firewall's Tailscale status): hostname by
-    100.x address, the firewall's own included."""
+    100.x address, the firewall's own included - and by the real addresses
+    their tunnels come from (CurAddr / Addrs), so a VPS's public IP or a LAN
+    device without a DHCP lease gets its tailnet name. Those never replace a
+    DHCP name."""
     st = s.call("GET", "/api/tailscale/status/status")
     nodes = [st.get("Self") or {}] + list((st.get("Peer") or {}).values())
     for i, node in enumerate(nodes):
         name = (node.get("HostName") or (node.get("DNSName") or "").split(".")[0]).strip()
+        if not name:
+            continue
         for ip in node.get("TailscaleIPs") or []:
-            if name and ":" not in ip:
+            if ":" not in ip:
                 names[ip] = {"name": f"{name} (tailscale)" if i == 0 else name, "mac": "", "source": "tailscale"}
                 counts["tailscale"] = counts.get("tailscale", 0) + 1
+        if i == 0:
+            continue  # the firewall's own endpoints are its WAN/LAN addresses
+        endpoints = [node.get("CurAddr") or ""] + list(node.get("Addrs") or [])
+        for ep in endpoints:
+            ip = ep.rsplit(":", 1)[0] if ep.count(":") == 1 else ""  # IPv4 "ip:port" only
+            if ip and ip not in names:
+                names[ip] = {"name": name, "mac": "", "source": "tailscale endpoint"}
+                counts["tailscale endpoint"] = counts.get("tailscale endpoint", 0) + 1
 
 
 def main():

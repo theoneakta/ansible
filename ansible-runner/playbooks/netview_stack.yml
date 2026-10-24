@@ -45,11 +45,14 @@
     # that touched a vpn interface counts as that, then wan, then lan.
     # netflow = captured by the firewall's NetFlow (opnsense_netflow.yml): a
     # flow between two of those is reported twice, and counted once.
+    # tunnel_port = a VPN whose devices also tunnel past the firewall: their
+    # UDP conversations on that port (Tailscale's direct WireGuard, to a VPS
+    # or between LAN devices) count under this interface too.
     netview_live_interfaces:
       ix0: {label: Internet, external: true, kind: wan}
       wg0: {label: VPN (PIA), external: true, kind: vpn}
       ix1: {label: LAN, external: false, kind: lan, netflow: true}
-      tailscale0: {label: Tailscale, external: true, kind: vpn, netflow: true}
+      tailscale0: {label: Tailscale, external: true, kind: vpn, netflow: true, tunnel_port: 41641}
     netview_live_top_iface: lan  # OPNsense interface key whose hosts get live rates
     # Exporter names as in akvorado_stack.yml: the firewall answers for the
     # internet, the Proxmox nodes' softflowd for LAN-to-LAN.

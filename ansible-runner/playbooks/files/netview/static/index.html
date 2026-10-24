@@ -874,7 +874,7 @@ async function livePage() {
     }
   }
   const flowMatches = (f, match) => ifacePicked(f.via_dev) && LIVE_DROPS.every(d => !picks[d.k] || d.val(f) === picks[d.k]) &&
-    match({host: f.host_name, ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
+    match({host: f.host_name + " " + (f.rip_name || ""), ip: f.host + " " + f.rip, port: f.port, proto: f.proto + " " + f.service,
            site: f.site, cc: f.country, as: f.asn_name + " as" + f.asn});
 
   // Recent traffic: the filtered traffic over the last few minutes, as a chart.
@@ -941,7 +941,9 @@ async function livePage() {
         rows.slice(0, 30).map(h => `<tr data-href="${esc(drill("host", h.ip))}"><td>${hostCell(h.ip, h.name)}<div class="bar" style="width:${(100 * total(h) / max).toFixed(1)}%"></div></td>
           <td class="n">${bps(h.down)}</td><td class="n">${bps(h.up)}</td>
           <td class="small">${h.peers.slice(0, 3).map(p => `${p.name ? esc(p.name) : `<a href="${drill("remote", p.ip)}">${esc(p.ip)}</a>`} <span class="muted">${bps(p.rate)}</span>`).join(", ")}${h.peers.length > 3 ? ` <span class="muted">+${h.peers.length - 3}</span>` : ""}</td></tr>`).join("")
-        || `<tr><td colspan="4" class="muted">${top.hosts.length ? "Nothing matches the filter." : "Nobody is talking."}</td></tr>`}</tbody></table></div>
+        || `<tr><td colspan="4" class="muted">${picks.host && !top.hosts.some(h => h.ip === picks.host)
+             ? "The firewall lists only its busiest devices right now, and this one isn't among them - its traffic is in the Flows and Recent traffic tabs."
+             : top.hosts.length ? "Nothing matches the filter." : "Nobody is talking."}</td></tr>`}</tbody></table></div>
         <p class="hint">${rows.length} of ${top.hosts.length} devices &middot; updated ${new Date(top.t * 1000).toLocaleTimeString()}</p>`;
       tEl.querySelectorAll("tr[data-href]").forEach(tr => tr.onclick = e => { if (!e.target.closest("a")) location.hash = tr.dataset.href; });
     }
@@ -950,7 +952,7 @@ async function livePage() {
       const rows = flows.flows.filter(f => flowMatches(f, match));
       fEl.innerHTML = table(rows, [
         {k: "host", label: "Device", fmt: r => hostCell(r.host, r.host_name)},
-        {k: "rip", label: "Remote", fmt: r => `<a href="${drill("remote", r.rip)}">${esc(r.rip)}</a>${r.site ? ` <span class="tag">${esc(r.site)}</span>` : ""}`},
+        {k: "rip", label: "Remote", fmt: r => `<a href="${drill("remote", r.rip)}">${r.rip_name ? `<span class="name">${esc(r.rip_name)}</span><span class="ip">${esc(r.rip)}</span>` : esc(r.rip)}</a>${r.site ? ` <span class="tag">${esc(r.site)}</span>` : ""}`},
         {k: "asn_name", label: "Network", fmt: r => `<span class="small">${esc(r.asn_name || "")}</span> ${flag(r.country)}`},
         {k: "port", label: "Service", fmt: svcText},
         {k: "via", label: "Via", fmt: r => `<span class="small">${esc(r.via)}</span>`},

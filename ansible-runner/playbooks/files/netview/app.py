@@ -124,8 +124,12 @@ def check_svc(svc):
 
 
 IP = "replaceRegexpOne(IPv6NumToString({col}), '^::ffff:', '')"
+# UDP tunnel ports of the live interfaces (tunnel_port, e.g. Tailscale's 41641)
+# named after them - the IANA list has nothing for those.
+TUNNELS = {int(i["tunnel_port"]): (d, i.get("label", d)) for d, i in live.INTERFACES.items() if i.get("tunnel_port")}
 SERVICE = ("multiIf(Proto = 6, dictGetOrDefault('tcp', 'name', toUInt64(rport), ''), "
-           "Proto = 17, dictGetOrDefault('udp', 'name', toUInt64(rport), ''), '')")
+           + "".join(f"Proto = 17 AND rport = {p}, '{lbl.lower().replace(chr(39), '')}', " for p, (_, lbl) in TUNNELS.items())
+           + "Proto = 17, dictGetOrDefault('udp', 'name', toUInt64(rport), ''), '')")
 PROTO = "dictGetOrDefault('protocols', 'name', toUInt64(Proto), toString(Proto))"
 ASN_NAME = "dictGetOrDefault('asns', 'name', toUInt32(ras), '')"
 BETWEEN = "BETWEEN toDateTime({start:UInt32}) AND toDateTime({end:UInt32})"
@@ -647,12 +651,17 @@ livef AS (
            if(dl, SrcAS, DstAS) AS ras,
            replaceAll(toString(if(dl, SrcCountry, DstCountry)), '\\0', '') AS rcc,
            if(dl, SrcPort, DstPort) AS rport, Proto, b,
-           multiIf(InIfName IN {{lanifs:Array(String)}}, OutIfName,
+           multiIf(Proto = 17 AND has({{tports:Array(UInt32)}}, toUInt32(rport)),  -- a tunnel past the firewall
+                       transform(toUInt32(rport), {{tports:Array(UInt32)}}, {{tdevs:Array(String)}}, ''),
+                   InIfName IN {{lanifs:Array(String)}}, OutIfName,
                    InIfName IN ('', 'other'), if(OutIfName IN {{lanifs:Array(String)}}, 'other', OutIfName),  -- from the firewall itself
                    InIfName) AS pif
     FROM fw1
     UNION ALL
-    SELECT t, false, SrcAddr, DstAddr, toUInt32(0), '', DstPort, Proto, b, {{lanif:String}} FROM lan1
+    SELECT t, false, SrcAddr, DstAddr, toUInt32(0), '', DstPort, Proto, b,
+           if(Proto = 17 AND has({{tports:Array(UInt32)}}, toUInt32(DstPort)),
+              transform(toUInt32(DstPort), {{tports:Array(UInt32)}}, {{tdevs:Array(String)}}, ''), {{lanif:String}})
+    FROM lan1
 ),
 dips AS (
     SELECT client, ip, t AS dt, site FROM netview.dns_ips
@@ -677,7 +686,8 @@ def live_where(start, end, host, proto, port, country, site, asn, iface):
     """The live filters (the page's dropdowns and interface toggles): WHERE
     conditions, a HAVING on the conversation's interface, and the params."""
     conds, p = ["1"], base_params(start, end) | {
-        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO, "captured": CAPTURED}
+        "lanifs": LAN_IFS, "lanif": LAN_IFS[0] if LAN_IFS else "", "prio": PRIO, "captured": CAPTURED,
+        "tports": list(TUNNELS), "tdevs": [d for d, _ in TUNNELS.values()]}
     having = None
     if iface:
         p["f_ifaces"] = [i for i in iface if i in live.INTERFACES or i == "other"]
@@ -726,7 +736,7 @@ def live_flows(seconds: int = 120, host: Optional[str] = None, proto: Optional[i
         del r["ifs"]
     return {"seconds": seconds, "now": now, "capped": len(rows) > LIVE_LIMIT,
             "interfaces": [{"device": d, "label": i.get("label", d)} for d, i in live.INTERFACES.items()],
-            "flows": name_rows(rows[:LIVE_LIMIT], "host")}
+            "flows": name_rows(rows[:LIVE_LIMIT], "host", "rip")}
 
 
 RECENT_MINUTES = (5, 10, 15, 20, 30, 60, 120)
