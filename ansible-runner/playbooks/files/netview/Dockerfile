@@ -3,7 +3,8 @@ FROM python:3.12-slim
 RUN pip install --no-cache-dir \
         "fastapi==0.115.*" \
         "uvicorn==0.32.*" \
-        "requests==2.32.*"
+        "requests==2.32.*" \
+        "pyjwt[crypto]==2.9.*"
 
 WORKDIR /app
 COPY app.py dns.py live.py categories.py /app/

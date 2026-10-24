@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>netview</title>
+<title>Sentry Lens</title>
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <style>
@@ -40,7 +41,13 @@
     border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
   }
-  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; }
+  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; display: flex; align-items: center; gap: .55rem; }
+  header h1 img { width: 30px; height: 30px; filter: drop-shadow(0 2px 8px #ff5c4d55); }
+  header h1 a { color: inherit; display: flex; align-items: center; gap: .55rem; }
+  header h1 a:hover { text-decoration: none; }
+  .who { display: flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--muted); }
+  .who a { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem; }
+  .who a:hover { color: var(--text); text-decoration: none; }
   header h1 span { color: var(--accent2); }
   nav { display: flex; gap: .25rem; flex-wrap: wrap; }
   nav a { color: var(--muted); padding: .35rem .8rem; border-radius: 999px; border: 1px solid transparent; }
@@ -188,7 +195,7 @@
 </head>
 <body>
 <header>
-  <h1>net<span>view</span></h1>
+  <h1><a href="#/" title="Sentry Lens"><img src="/static/logo.svg" alt="">Sentry <span>Lens</span></a></h1>
   <nav>
     <a href="#/" data-page="explore">Overview</a>
     <a href="#/live" data-page="live"><span class="dot"></span>Live</a>
@@ -207,11 +214,17 @@
       <button data-r="24h">24h</button><button data-r="7d">7d</button>
     </div>
   </div>
+  <div class="who" id="who"></div>
 </header>
 <main id="main"></main>
 
 <script>
 const $main = document.getElementById("main");
+// Who's signed in (Cloudflare Access), with a way out.
+fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
+  if (!me || !me.auth || !me.email) return;
+  document.getElementById("who").innerHTML = `<span>${me.email.replace(/[&<>"']/g, "")}</span>${me.logout ? `<a href="${me.logout}">Sign out</a>` : ""}`;
+}).catch(() => {});
 const PALETTE = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7"];
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let charts = [], timers = [];

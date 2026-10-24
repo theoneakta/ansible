@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentry Lens</title>
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f16; --surface: #131a24; --border: #262f3d;
+    --text: #e6edf3; --muted: #8b96a5; --accent: #ff5c4d; --accent2: #ffb454; --fail: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 1.5rem 1rem;
+    font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif; color: var(--text);
+    background:
+      radial-gradient(60rem 30rem at 50% -10%, #ff5c4d1f, transparent 70%),
+      radial-gradient(40rem 24rem at 90% 110%, #ffb4541a, transparent 70%),
+      var(--bg);
+  }
+  .card {
+    width: 100%; max-width: 400px; text-align: center; padding: 2.4rem 2rem 2rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+    box-shadow: 0 20px 60px #0009;
+  }
+  .logo { width: 84px; height: 84px; filter: drop-shadow(0 6px 22px #ff5c4d55); }
+  h1 { margin: .9rem 0 .2rem; font-size: 1.7rem; letter-spacing: .01em; }
+  h1 span { color: var(--accent2); }
+  .tag { color: var(--muted); margin: 0 0 1.8rem; font-size: .95rem; }
+  .btn {
+    display: block; width: 100%; padding: .85rem 1rem; border-radius: 10px; border: 0; cursor: pointer;
+    font: inherit; font-weight: 600; font-size: 1rem; color: #1a0d0d; text-decoration: none;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:focus-visible { outline: 3px solid var(--accent2); outline-offset: 3px; }
+  .providers { display: flex; justify-content: center; gap: .6rem; margin: 1.2rem 0 0; flex-wrap: wrap; }
+  .providers span {
+    font-size: .78rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem;
+  }
+  .note { color: var(--muted); font-size: .78rem; margin: 1.4rem 0 0; line-height: 1.45; }
+  .err { color: var(--fail); font-size: .9rem; margin: 0 0 1.2rem; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <img class="logo" src="/static/logo.svg" alt="">
+    <h1>Sentry <span>Lens</span></h1>
+    <p class="tag">See what your network is doing.</p>
+    <!--message-->
+    <a class="btn" href="{{SIGNIN_URL}}">Sign in</a>
+    <div class="providers">{{PROVIDERS}}</div>
+    <p class="note">Sign-in is handled by Cloudflare Access for {{PUBLIC_HOST}}. Only approved accounts get in.</p>
+  </main>
+</body>
+</html>

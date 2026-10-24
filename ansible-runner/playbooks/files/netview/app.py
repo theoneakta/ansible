@@ -1,4 +1,4 @@
-"""netview - our own traffic views over Akvorado's ClickHouse.
+"""Sentry Lens (netview) - our own traffic views over Akvorado's ClickHouse.
 
 Akvorado collects and stores the flows (OPNsense + softflowd -> ClickHouse);
 this only reads them, with views Akvorado's console doesn't have: device names
@@ -23,6 +23,7 @@ Every view takes a time window - a preset (range=1h|6h|24h|7d) or from/to
 the FILTERS. The views' queries run with readonly=2. Device names come from
 names.json, written by the playbook from the firewall's DHCP leases.
 """
+import html
 import ipaddress
 import json
 import os
@@ -34,7 +35,7 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import categories
@@ -63,8 +64,84 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="netview", lifespan=lifespan)
+app = FastAPI(title="Sentry Lens", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+# ------------------------------------------------------------------ sign-in
+# Cloudflare Access (Zero Trust) does the sign-in - email code, Google, GitHub,
+# Microsoft, whatever its identity providers are - in front of PUBLIC_URL and
+# passes a signed token (Cf-Access-Jwt-Assertion / the CF_Authorization
+# cookie). Every request needs a valid one for CF_ACCESS_AUD, so the LAN
+# address can't get round the sign-in: without one, pages get the landing page
+# and /api a 401. Optional ALLOWED_EMAILS narrows it further than the Access
+# policy. With CF_ACCESS_TEAM / CF_ACCESS_AUD unset, nothing is checked.
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
+CF_TEAM = os.environ.get("CF_ACCESS_TEAM", "")
+CF_AUD = os.environ.get("CF_ACCESS_AUD", "")
+ALLOWED_EMAILS = {e.strip().lower() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()}
+PROVIDERS = [p.strip() for p in os.environ.get("LOGIN_PROVIDERS", "Email code,Google,GitHub,Microsoft").split(",") if p.strip()]
+AUTH = bool(CF_TEAM and CF_AUD)
+OPEN_PATHS = ("/static/", "/login", "/api/health")  # the landing page and its assets; the playbook's health check
+if AUTH:
+    import jwt  # PyJWT
+
+    CF_ISSUER = f"https://{CF_TEAM}" if "." in CF_TEAM else f"https://{CF_TEAM}.cloudflareaccess.com"
+    _jwks = jwt.PyJWKClient(f"{CF_ISSUER}/cdn-cgi/access/certs", cache_keys=True, lifespan=3600)
+
+
+def signed_in(request):
+    """The signed-in email (Cloudflare Access token checked), "" if none, None if not allowed."""
+    token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get("CF_Authorization")
+    if not token:
+        return ""
+    try:
+        key = _jwks.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(token, key, algorithms=["RS256"], audience=CF_AUD, issuer=CF_ISSUER)
+    except Exception:  # expired, forged, another app's - same as none
+        return ""
+    email = str(claims.get("email") or "").lower()
+    if not email or (ALLOWED_EMAILS and email not in ALLOWED_EMAILS):
+        return None
+    return email
+
+
+def landing(message="", status=200):
+    host = PUBLIC_URL.split("://", 1)[-1] or "this site"
+    page = ((STATIC / "login.html").read_text()
+            .replace("{{SIGNIN_URL}}", html.escape((PUBLIC_URL or "") + "/"))
+            .replace("{{PUBLIC_HOST}}", html.escape(host))
+            .replace("{{PROVIDERS}}", "".join(f"<span>{html.escape(p)}</span>" for p in PROVIDERS))
+            .replace("<!--message-->", f'<p class="err">{html.escape(message)}</p>' if message else ""))
+    return HTMLResponse(page, status_code=status)
+
+
+@app.middleware("http")
+async def require_sign_in(request: Request, call_next):
+    if not AUTH or request.url.path.startswith(OPEN_PATHS):
+        return await call_next(request)
+    email = signed_in(request)
+    if email:
+        request.state.email = email
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "sign in first" if email == "" else "this account isn't allowed"},
+                            status_code=401 if email == "" else 403)
+    if email is None:
+        return landing("This account isn't allowed to use Sentry Lens. Sign in with another one, or ask for access.", 403)
+    return landing()
+
+
+@app.get("/login")
+def login_page():
+    """The sign-in page on its own (what everyone without a session sees)."""
+    return landing()
+
+
+@app.get("/api/me")
+def me(request: Request):
+    return {"auth": AUTH, "email": getattr(request.state, "email", ""),
+            "logout": f"{PUBLIC_URL}/cdn-cgi/access/logout" if AUTH and PUBLIC_URL else ""}
 
 
 # ------------------------------------------------------------------ ClickHouse
