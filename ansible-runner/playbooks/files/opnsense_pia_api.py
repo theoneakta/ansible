@@ -258,19 +258,21 @@ def configure(s):
     # 5. Filter rules. OPNsense 26 keeps the interface rules in the same model,
     #    ordered by sequence: ours must come before "Default allow LAN", or the
     #    hosts go out the WAN untouched (confirmed live) - move the defaults back.
+    #    10/11 leave 1-9 to rules that must see PIA_Hosts first (geo-blocking,
+    #    opnsense_geoblock.yml).
     upsert(s, "/api/firewall/filter", "rule", "description", D_ROUTE, {
-        "enabled": "1", "sequence": "1", "action": "pass", "quick": "1", "interface": "lan", "direction": "in",
+        "enabled": "1", "sequence": "10", "action": "pass", "quick": "1", "interface": "lan", "direction": "in",
         "ipprotocol": "inet", "protocol": "any", "source_net": "PIA_Hosts", "destination_net": "PIA_Bypass",
         "destination_not": "1", "gateway": gw_name, "tag": TAG, "description": D_ROUTE})
     if p.get("killswitch", True):
         upsert(s, "/api/firewall/filter", "rule", "description", D_KILL, {
-            "enabled": "1", "sequence": "2", "action": "block", "quick": "1", "interface": "wan",
+            "enabled": "1", "sequence": "11", "action": "block", "quick": "1", "interface": "wan",
             "direction": "out", "ipprotocol": "inet", "protocol": "any", "source_net": "any",
             "destination_net": "any", "tagged": TAG, "log": "1", "description": D_KILL})
     else:
         delete(s, "/api/firewall/filter", "description", D_KILL)
     for r in s.search("/api/firewall/filter/search_rule"):
-        if r.get("description", "").startswith("Default allow LAN") and int(r.get("sequence") or 0) <= 2:
+        if r.get("description", "").startswith("Default allow LAN") and int(r.get("sequence") or 0) <= 11:
             new = "20" if "IPv6" not in r["description"] else "21"
             saved(s.call("POST", f"/api/firewall/filter/set_rule/{r['uuid']}", {"rule": {"sequence": new}}),
                   "renumber default LAN rule")
