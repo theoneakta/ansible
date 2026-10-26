@@ -4,8 +4,10 @@
 #   LAN device --> GeoBlock country       rejected (fails fast instead of hanging)
 #   GeoBlock country --> WAN / PIA tunnel  blocked
 #
-# A GeoIP alias "GeoBlock" of geoblock_countries (ISO codes, IPv4 + IPv6) and
-# logged rules ahead of everything else on those interfaces - including the
+# A GeoIP alias "GeoBlock" of geoblock_countries (ISO codes, IPv4 + IPv6),
+# with the registries' lists of the same countries and geoblock_asns nested
+# alongside it in "GeoBlock_All", and logged rules on that ahead of
+# everything else on those interfaces - including the
 # PIA route rule, which this moves to sequence 10/11 if it's lower (see
 # playbooks/files/opnsense_geoblock_api.py). The blocks show up in Firewall >
 # Log Files > Live View under "GeoBlock:".
@@ -28,6 +30,15 @@
     # Russia, China, North Korea, Iran, Belarus (2026-10-24).
     geoblock_countries: [RU, CN, KP, IR, BY]
     geoblock_outbound: true
+    # MaxMind (the GeoIP alias) places some of these countries' networks
+    # elsewhere - those in occupied Ukraine under UA. Also block the
+    # registries' allocations for the countries (ipdeny.com, daily)...
+    geoblock_rir: true
+    # ...and networks by AS number that neither list has: Russian-registered
+    # ISPs in occupied Donbas / Crimea on Ukrainian-allocated addresses, seen
+    # getting through on 2026-10-25 (Sentry Lens): Don Apex, Timer, IP
+    # Service, Apex Group.
+    geoblock_asns: [47235, 47626, 59478, 201069]
     # LAN hosts the outbound rule leaves alone (e.g. the torrent box).
     geoblock_exempt: []
     # Interface keys (config.xml) blocked inbound: the WAN and the PIA tunnel.
@@ -41,6 +52,7 @@
           - geoblock_state == 'absent' or geoblock_countries | length > 0
           - geoblock_countries | select('match', '^[A-Z]{2}$') | list | length == geoblock_countries | length
           - geoblock_exempt | select('match', '^\d{1,3}(\.\d{1,3}){3}$') | list | length == geoblock_exempt | length
+          - geoblock_asns | map('string') | select('match', '^\d{1,10}$') | list | length == geoblock_asns | length
           - vault_win_user is defined
         fail_msg: >-
           Bad parameters (countries are two-letter ISO codes, exempt hosts IPv4 addresses), or no
@@ -55,7 +67,8 @@
         OPN_PASS: "{{ vault_win_password }}"
         GEOBLOCK_PARAMS: "{{ {'state': geoblock_state, 'countries': geoblock_countries,
                               'outbound': geoblock_outbound | bool, 'exempt': geoblock_exempt,
-                              'inbound_interfaces': geoblock_inbound_interfaces} | to_json }}"
+                              'inbound_interfaces': geoblock_inbound_interfaces,
+                              'rir': geoblock_rir | bool, 'asns': geoblock_asns} | to_json }}"
       vars:
         ansible_connection: local
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
