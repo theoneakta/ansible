@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentry Lens - Alerts</title>
+<link rel="icon" href="/static/logo.svg">
+<style>
+  /* The main page's surfaces (index.html); severities: the series palette's
+     red / orange / amber / blue, "info" neutral - always with their name. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f16; --surface: #131a24; --surface2: #1a2330; --border: #262f3d;
+    --text: #e6edf3; --muted: #8b96a5; --accent2: #ffb454; --link: #79b8ff;
+    --critical: #f85149; --high: #d95926; --medium: #c98500; --low: #3987e5; --info: #5c6675;
+    --ok: #199e70; --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif; font-size: 14px; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: .7rem 1.4rem;
+    background: linear-gradient(120deg, #1a0d0d, #1c1108 70%); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; }
+  header h1 a { color: inherit; display: flex; align-items: center; gap: .55rem; }
+  header h1 a:hover { text-decoration: none; }
+  header h1 img { width: 30px; height: 30px; filter: drop-shadow(0 2px 8px #ff5c4d55); }
+  header h1 span { color: var(--accent2); }
+  nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+  nav a { color: var(--muted); padding: .35rem .8rem; border-radius: 999px; border: 1px solid transparent; }
+  nav a.active { color: var(--text); border-color: var(--border); background: var(--surface); }
+  nav a:hover { text-decoration: none; color: var(--text); }
+  /* The three sections (Applications / Network / Infrastructure), on every page. */
+  nav.sections { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; flex-wrap: nowrap; }
+  nav.sections a { color: var(--muted); padding: .35rem .9rem; font-size: .88rem; border: 0; border-radius: 0; }
+  nav.sections a.active { color: var(--text); background: var(--surface2); box-shadow: inset 0 -2px 0 var(--accent2); }
+  .spacer { flex: 1; }
+  .who { display: flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--muted); }
+  .who a { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; flex-wrap: wrap; }
+  .seg button { background: var(--surface); color: var(--muted); border: 0; padding: .3rem .7rem; cursor: pointer; font: inherit; font-size: .85rem; }
+  .seg button.active { background: var(--surface2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent2); }
+
+  main { padding: 1.4rem; max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
+  h2 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; font-weight: 600; }
+  .muted { color: var(--muted); } .small { font-size: .8rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; min-width: 0; }
+  .head { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; margin-bottom: .9rem; }
+  .hero { display: flex; align-items: flex-end; gap: 2rem; flex-wrap: wrap; }
+  .hero .title { flex: 1 1 260px; }
+  .hero .sub { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
+  .kpis { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .kpi .v { font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: .75rem; color: var(--muted); }
+  .tabs { display: flex; gap: .2rem; border-bottom: 1px solid var(--border); margin: -.2rem 0 .8rem; overflow-x: auto; }
+  .tabs button { background: none; border: 0; color: var(--muted); font: inherit; padding: .5rem .8rem; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent2); }
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n, th.n { text-align: right; }
+  td.nw { white-space: nowrap; }
+  tr.click { cursor: pointer; }
+  tbody tr:hover td { background: var(--surface2); }
+  .name { font-weight: 500; }
+  .ip { color: var(--muted); font-size: .8rem; margin-left: .4rem; }
+  .sev { display: inline-flex; align-items: center; gap: .35rem; font-size: .75rem; font-weight: 600; border-radius: 999px; padding: .08rem .55rem; border: 1px solid; white-space: nowrap; }
+  .sev i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .sev.critical { color: #ff7b72; border-color: var(--critical); background: #f8514922; }
+  .sev.high { color: #f0884f; border-color: var(--high); background: #d9592622; }
+  .sev.medium { color: #e3a52a; border-color: var(--medium); background: #c9850022; }
+  .sev.low { color: #79b8ff; border-color: var(--low); background: #3987e522; }
+  .sev.info { color: var(--muted); border-color: var(--info); background: transparent; }
+  .chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: .4rem; background: var(--surface2); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .35rem .2rem .7rem; font-size: .85rem; }
+  .chip b { font-weight: 500; color: var(--muted); }
+  .chip button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 .25rem; }
+  .filterbar { display: flex; gap: .8rem; flex-wrap: wrap; align-items: center; margin-bottom: .9rem; }
+  select, input[type=text], input[type=number] {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: .35rem .6rem; font: inherit; font-size: .85rem;
+  }
+  input[type=number] { width: 4.8rem; }
+  input.list { width: 100%; min-width: 14rem; }
+  select:focus, input:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
+  input:disabled, select:disabled { opacity: .7; }
+  .btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: .35rem .8rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  .btn.primary { border-color: var(--accent2); color: var(--accent2); }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .linkbtn { background: none; border: 0; color: var(--link); cursor: pointer; font: inherit; font-size: .8rem; padding: 0; }
+  .err { color: #ff7b72; font-size: .85rem; }
+  .ok { color: var(--ok); font-size: .85rem; }
+  .empty { color: var(--muted); padding: 1.2rem 0; text-align: center; }
+  .desc { color: var(--muted); font-size: .8rem; margin-top: .2rem; max-width: 46rem; }
+  .from { color: var(--muted); font-size: .72rem; margin-top: .15rem; }
+  .params { display: grid; grid-template-columns: max-content minmax(10rem, 1fr); gap: .3rem .6rem; align-items: center; font-size: .8rem; }
+  .params label { color: var(--muted); }
+  .scorebox { display: flex; align-items: center; gap: .5rem; }
+  tr.off td:not(:first-child) { opacity: .55; }
+  tr.ign td { opacity: .6; }
+  tr.ign:hover td { opacity: 1; }
+  .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .3rem; margin-left: .3rem; white-space: nowrap; }
+  .acts { display: flex; gap: .7rem; flex-wrap: wrap; }
+  .listcard { flex: 1 1 380px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: .8rem .9rem; }
+  .entries { display: flex; flex-direction: column; gap: .3rem; margin: .6rem 0; max-height: 16rem; overflow-y: auto; }
+  .entry { display: flex; align-items: baseline; gap: .6rem; font-size: .85rem; }
+  .entry code { font-family: ui-monospace, Consolas, monospace; }
+  .entry .note { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .addrow { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .addrow input { flex: 1 1 8rem; }
+  tr.dirty td { background: #ffb45410; }
+  /* on/off switch */
+  .sw { position: relative; display: inline-block; width: 36px; height: 20px; flex: none; }
+  .sw input { opacity: 0; width: 0; height: 0; }
+  .sw span { position: absolute; inset: 0; background: var(--border); border-radius: 999px; transition: .15s; cursor: pointer; }
+  .sw span::before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--muted); border-radius: 50%; transition: .15s; }
+  .sw input:checked + span { background: var(--ok); }
+  .sw input:checked + span::before { transform: translateX(16px); background: #fff; }
+  .sw input:focus-visible + span { outline: 2px solid var(--accent2); }
+  .sw input:disabled + span { cursor: default; }
+  @media (max-width: 700px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .params { grid-template-columns: 1fr; }
+    .kpis { gap: 1.2rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/#/" title="Sentry Lens"><img src="/static/logo.svg" alt="">Sentry <span>Lens</span></a></h1>
+  <nav class="sections" aria-label="Sections"><a href="/apps">Applications</a><a href="/#/" class="active">Network</a><a href="/infra">Infrastructure</a></nav>
+  <nav>
+    <a href="/#/">Overview</a>
+    <a href="/#/live">Live</a>
+    <a href="/#/hosts">Devices</a>
+    <a href="/#/sites">Websites</a>
+    <a href="/#/new">New today</a>
+    <a href="/alerts" class="active">Alerts</a>
+    <a href="/#/admin" id="navAdmin" hidden>Admin</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="seg" id="ranges">
+    <button data-r="1h">1h</button><button data-r="6h">6h</button><button data-r="24h">24h</button><button data-r="7d">7d</button><button data-r="30d">30d</button>
+  </div>
+  <div class="who" id="who"></div>
+</header>
+<main>
+  <div class="hero">
+    <div class="title">
+      <h2>Security alerts</h2>
+      <div class="sub" id="sub">Loading...</div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </div>
+  <div class="card">
+    <div class="tabs" id="tabs">
+      <button data-t="alerts">Alerts</button><button data-t="devices">Devices</button><button data-t="countries">Countries</button><button data-t="checks">Checks</button>
+    </div>
+    <div id="body"></div>
+  </div>
+</main>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const SEV = ["critical", "high", "medium", "low", "info"];
+const sevOf = score => score >= 80 ? "critical" : score >= 60 ? "high" : score >= 40 ? "medium" : score >= 20 ? "low" : "info";
+const pill = (sev, score) => `<span class="sev ${sev}"><i></i>${sev}${score != null ? ` · ${score}` : ""}</span>`;
+const when = t => new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+const ago = t => { if (!t) return "never"; const s = Date.now() / 1000 - t; return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+const device = (ip, name) => `<a href="/#/?host=${encodeURIComponent(ip)}&range=24h" title="Open the device">${name ? `<span class="name">${esc(name)}</span><span class="ip">${esc(ip)}</span>` : `<span class="name">${esc(ip)}</span>`}</a>`;
+const localGet = k => { try { return localStorage.getItem("alerts." + k); } catch (e) { return null; } };
+const localSet = (k, v) => { try { localStorage.setItem("alerts." + k, v); } catch (e) {} };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login"; throw new Error("signed out"); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || `${r.status} ${r.statusText}`);
+  return body;
+}
+const post = (path, body) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+
+// State: range, tab, filters (check, host, min severity).
+const S = {range: localGet("range") || "24h", tab: localGet("tab") || "alerts", check: "", host: "", min: +(localGet("min") || 0),
+           showIgn: localGet("showIgn") !== "0", me: {}, checks: null, alerts: null};
+const LIST_NAMES = {ignore: "Ignored devices", blacklist: "Your blacklist"};
+// An address's own entry (ip/32 or /128) on a list - a range covering it isn't one to take off from a row.
+const exact = ip => ip.includes(":") ? `${ip}/128` : `${ip}/32`;
+const onList = (kind, ip) => (S.checks?.lists[kind] || []).some(e => e.net === exact(ip));
+const isIp = s => /^[0-9.]+$|:/.test(s || "");
+async function listChange(kind, action, net, note = "") {
+  await post(`/api/lists/${kind}/${action}`, {net, note});
+  await load();
+}
+const MINS = [[0, "All"], [20, "Low+"], [40, "Medium+"], [60, "High+"], [80, "Critical"]];
+
+fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
+  if (!me) return;
+  S.me = me;
+  if (me.auth && me.email) document.getElementById("who").innerHTML = `<span>${esc(me.name || me.email)}</span>${me.logout ? `<a href="${esc(me.logout)}">Sign out</a>` : ""}`;
+  document.getElementById("navAdmin").hidden = me.role !== "admin";
+  if (S.checks) render();
+}).catch(() => {});
+// Admin controls once /api/me says so (or sign-in is off); the server checks anyway.
+const isAdmin = () => S.me.auth === false || S.me.role === "admin";
+
+async function load() {
+  const p = new URLSearchParams({range: S.range, min_score: S.min, ignored: S.showIgn});
+  if (S.check) p.set("check_id", S.check);
+  if (S.host) p.set("host", S.host);
+  try {
+    [S.alerts, S.checks] = await Promise.all([api("/api/alerts?" + p), api("/api/checks")]);
+    render();
+  } catch (e) {
+    document.getElementById("body").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+function render() {
+  const c = S.checks, a = S.alerts;
+  document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", b.dataset.r === S.range));
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === S.tab));
+  const on = c.checks.filter(x => x.enabled).length, st = c.status;
+  const listed = c.feeds.filter(f => f.id !== "asndrop").reduce((n, f) => n + f.count, 0);
+  document.getElementById("sub").innerHTML = `${on} of ${c.checks.length} checks on · every ${Math.round(st.every / 60)} min over the last ${Math.round(st.window / 60)} · last run ${ago(st.last_run)}`
+    + ` · threat lists: ${listed.toLocaleString()} addresses${st.feeds_loaded ? `, ${ago(st.feeds_loaded)}` : ""}`
+    + (st.last_error ? ` · <span class="err">${esc(st.last_error)}</span>` : "") + (st.feeds_error ? ` · <span class="err" title="${esc(st.feeds_error)}">a threat list failed</span>` : "");
+  const t = a.totals, top = a.hosts.find(h => !h.ignored && h.risk > 0);
+  document.getElementById("kpis").innerHTML = [
+    [t.alerts, "alerts"], [t.serious, "high or critical"], [t.hosts, "devices"],
+    [top ? top.risk : 0, top ? `top risk: ${esc(top.name || top.host)}` : "top risk"],
+    [t.warnings, "warnings from ignored devices"]]
+    .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  ({alerts: alertsTab, devices: devicesTab, countries: countriesTab, checks: checksTab})[S.tab]();
+}
+
+function filterBar() {
+  const titles = Object.fromEntries(S.checks.checks.map(x => [x.id, x.title]));
+  const chips = [];
+  if (S.check) chips.push(`<span class="chip"><b>Check</b>${esc(titles[S.check] || S.check)}<button data-rm="check" title="Remove">&times;</button></span>`);
+  if (S.host) chips.push(`<span class="chip"><b>Device</b>${esc(S.host)}<button data-rm="host" title="Remove">&times;</button></span>`);
+  return `<div class="filterbar">
+    <div class="seg" id="mins">${MINS.map(([v, l]) => `<button data-m="${v}" class="${S.min === v ? "active" : ""}">${l}</button>`).join("")}</div>
+    <div class="seg" id="showIgn" title="Alerts of the devices on the ignore list - recorded, but counted nowhere">
+      <button data-i="1" class="${S.showIgn ? "active" : ""}">Show ignored</button><button data-i="0" class="${S.showIgn ? "" : "active"}">Hide ignored</button></div>
+    <select id="checkSel" aria-label="Check"><option value="">Every check</option>${S.checks.groups.map(g =>
+      `<optgroup label="${esc(g)}">${S.checks.checks.filter(x => x.group === g).map(x => `<option value="${x.id}" ${x.id === S.check ? "selected" : ""}>${esc(x.title)}</option>`).join("")}</optgroup>`).join("")}</select>
+    <div class="chips">${chips.join("")}</div></div>`;
+}
+function wireFilters() {
+  document.querySelectorAll("#mins button").forEach(b => b.onclick = () => { S.min = +b.dataset.m; localSet("min", S.min); load(); });
+  document.querySelectorAll("#showIgn button").forEach(b => b.onclick = () => { S.showIgn = b.dataset.i === "1"; localSet("showIgn", b.dataset.i); load(); });
+  // Row actions: put a device on the ignore list (or take it off), a remote on the blacklist.
+  document.querySelectorAll("[data-list]").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    b.disabled = true;
+    try {
+      const [kind, action, ip] = b.dataset.list.split("|");
+      const note = action === "add" ? (prompt(`Note for ${ip} on ${LIST_NAMES[kind].toLowerCase()} (optional):`, "") ?? null) : "";
+      if (note === null) { b.disabled = false; return; }
+      await listChange(kind, action, ip, note);
+    } catch (err) { alert(err.message); b.disabled = false; }
+  });
+  document.getElementById("checkSel").onchange = e => { S.check = e.target.value; load(); };
+  document.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { S[b.dataset.rm] = ""; load(); });
+}
+
+// Ignore / blacklist buttons for a row (admins only).
+function ignoreBtn(ip, ignored) {
+  if (!isAdmin()) return "";
+  if (onList("ignore", ip)) return `<button class="linkbtn" data-list="ignore|remove|${esc(ip)}" title="Count this device's alerts again">Stop ignoring</button>`;
+  if (ignored) return `<span class="muted small" title="A range on the ignore list covers it - change it on the Checks tab">ignored by a range</span>`;
+  return `<button class="linkbtn" data-list="ignore|add|${esc(ip)}" title="Keep recording its alerts, as warnings that count nowhere">Ignore device</button>`;
+}
+function blacklistBtn(ip) {
+  if (!isAdmin() || !isIp(ip)) return "";
+  return onList("blacklist", ip) ? `<button class="linkbtn" data-list="blacklist|remove|${esc(ip)}">Un-blacklist ${esc(ip)}</button>`
+    : `<button class="linkbtn" data-list="blacklist|add|${esc(ip)}" title="Always alert on traffic with it">Blacklist ${esc(ip)}</button>`;
+}
+
+function alertsTab() {
+  const rows = S.alerts.alerts;
+  document.getElementById("body").innerHTML = filterBar() + (rows.length ? `<div class="tbl"><table>
+    <thead><tr><th>When</th><th>Severity</th><th>Check</th><th>Device</th><th>What</th>${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
+    ${rows.map(r => `<tr class="${r.ignored ? "ign" : ""}"><td class="nw" title="${when(r.t)}">${ago(r.t)}</td>
+      <td class="nw">${pill(r.severity, r.score)}${r.ignored ? `<span class="tag" title="The device is on the ignore list: a warning, counted nowhere">ignored</span>` : ""}</td>
+      <td class="nw"><button class="linkbtn" data-check="${esc(r.check_id)}">${esc(r.title)}</button></td>
+      <td class="nw">${device(r.host, r.name)} <button class="linkbtn" data-host="${esc(r.host)}" title="Only this device's alerts">filter</button></td>
+      <td>${esc(r.detail)}</td>
+      ${isAdmin() ? `<td><div class="acts">${ignoreBtn(r.host, r.ignored)}${blacklistBtn(r.remote)}</div></td>` : ""}</tr>`).join("")}
+    </tbody></table></div>${S.alerts.capped ? `<div class="muted small">The newest 1000 - narrow the filters for the rest.</div>` : ""}`
+    : `<div class="empty">No alerts${S.check || S.host || S.min ? " for these filters" : ""} in this window.</div>`);
+  wireFilters();
+  document.querySelectorAll("[data-check]").forEach(b => b.onclick = () => { S.check = b.dataset.check; load(); });
+  document.querySelectorAll("[data-host]").forEach(b => b.onclick = () => { S.host = b.dataset.host; load(); });
+}
+
+function devicesTab() {
+  const titles = Object.fromEntries(S.checks.checks.map(x => [x.id, x.title]));
+  const rows = S.alerts.hosts;
+  document.getElementById("body").innerHTML = filterBar()
+    + `<p class="muted small" style="margin-top:0">Risk = the scores of a device's alerts added up. Ignored devices come last: their alerts are warnings, with no risk. Click a row for its alerts.</p>`
+    + (rows.length ? `<div class="tbl"><table><thead><tr><th>Device</th><th class="n">Risk</th><th class="n">Alerts</th><th class="n">Warnings</th><th>Worst</th><th>Checks</th><th>Last</th>${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
+    ${rows.map(r => `<tr class="click ${r.ignored ? "ign" : ""}" data-host="${esc(r.host)}"><td class="nw">${device(r.host, r.name)}${r.ignored ? `<span class="tag">ignored</span>` : ""}</td>
+      <td class="n"><b>${r.risk}</b></td><td class="n">${r.alerts}</td><td class="n">${r.warnings || ""}</td>
+      <td>${pill(r.severity, r.top)}</td><td class="small">${r.checks.map(id => esc(titles[id] || id)).join(", ")}</td><td class="nw">${ago(r.last)}</td>
+      ${isAdmin() ? `<td class="nw">${ignoreBtn(r.host, r.ignored)}</td>` : ""}</tr>`).join("")}
+    </tbody></table></div>` : `<div class="empty">No device has alerts in this window.</div>`);
+  wireFilters();
+  document.querySelectorAll("tr[data-host]").forEach(tr => tr.onclick = e => { if (e.target.closest("a, button")) return; S.host = tr.dataset.host; S.tab = "alerts"; load(); });
+}
+
+// ---------------------------------------------------------------- countries
+// Per country: what got through (anything came back) vs what got nothing back -
+// blocked by the firewall for a country on the block list, unanswered otherwise.
+let regionNames = null;
+try { regionNames = new Intl.DisplayNames(["en"], {type: "region"}); } catch (e) {}
+const ccName = cc => { try { return regionNames?.of(cc) || cc; } catch (e) { return cc; } };
+const bytes = b => { const u = ["B", "kB", "MB", "GB", "TB"]; let i = 0; while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; } return (i ? b.toFixed(1) : b.toFixed(0)) + " " + u[i]; };
+const num = n => (+n || 0).toLocaleString();
+const countryStatus = r => r.blocklisted
+  ? (r.through_flows ? `<span class="sev critical"><i></i>got through</span>` : `<span class="sev low"><i></i>blocked</span>`)
+  : `<span class="sev info"><i></i>allowed</span>`;
+S.ccScope = localGet("ccScope") || "blocklist";
+S.cc = "";
+
+async function countriesTab() {
+  const body = document.getElementById("body");
+  body.innerHTML = `<div class="muted">Loading...</div>`;
+  try {
+    if (S.cc) return countryDetail(await api(`/api/countries/${S.cc}?range=${S.range}`));
+    const d = await api(`/api/countries?range=${S.range}`);
+    const rows = d.countries.filter(r => S.ccScope === "all" || r.blocklisted)
+      .sort((a, b) => (b.blocklisted - a.blocklisted) || (b.through_bytes - a.through_bytes) || (b.attempts - a.attempts));
+    const leaks = d.countries.filter(r => r.blocklisted && r.through_flows);
+    body.innerHTML = `<div class="filterbar">
+        <div class="seg" id="ccScope"><button data-s="blocklist" class="${S.ccScope === "blocklist" ? "active" : ""}">Block list (${d.blocklist.join(", ")})</button><button data-s="all" class="${S.ccScope === "all" ? "active" : ""}">All countries</button></div>
+        <span class="${leaks.length ? "err" : "ok"}">${leaks.length ? `Got through from ${leaks.map(r => esc(ccName(r.cc))).join(", ")}` : "Nothing got through from the block list"} in this window</span>
+      </div>
+      <p class="muted small" style="margin-top:0">Got through = a conversation where anything came back from the country's side. Blocked / no answer = the device tried and nothing came back: the firewall rejected it (countries on the block list) or the other side didn't answer.
+      ${d.capped ? " Flows are kept 7 days: this shows the last 7." : ""} Click a country for its devices and addresses.</p>
+      ${rows.length ? `<div class="tbl"><table>
+      <thead><tr><th>Country</th><th>Status</th><th class="n">Got through</th><th class="n">Flows</th><th class="n">Addresses</th><th class="n">Devices</th>
+        <th class="n">Blocked / no answer</th><th class="n">Addresses</th><th class="n">Devices</th><th>Last</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr class="click" data-cc="${esc(r.cc)}">
+        <td class="nw"><span class="name">${esc(ccName(r.cc))}</span><span class="ip">${esc(r.cc)}</span>${r.blocklisted ? `<span class="tag">block list</span>` : ""}</td>
+        <td>${countryStatus(r)}</td>
+        <td class="n"><b>${r.through_flows ? bytes(r.through_bytes) : "-"}</b></td><td class="n">${num(r.through_flows) || "-"}</td>
+        <td class="n">${num(r.through_ips)}</td><td class="n">${num(r.through_devices)}</td>
+        <td class="n"><b>${num(r.attempts)}</b></td><td class="n">${num(r.attempt_ips)}</td><td class="n">${num(r.attempt_devices)}</td>
+        <td class="nw">${ago(r.last)}</td>
+        <td class="nw"><a href="/#/?country=${encodeURIComponent(r.cc)}&range=${S.range === "30d" ? "7d" : S.range}" title="Its traffic on the Overview">Traffic</a></td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">No traffic with ${S.ccScope === "all" ? "any country" : "the block list's countries"} in this window.</div>`}`;
+    document.querySelectorAll("#ccScope button").forEach(b => b.onclick = () => { S.ccScope = b.dataset.s; localSet("ccScope", S.ccScope); countriesTab(); });
+    document.querySelectorAll("tr[data-cc]").forEach(tr => tr.onclick = e => { if (e.target.closest("a")) return; S.cc = tr.dataset.cc; countriesTab(); });
+  } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+function countryDetail(d) {
+  const thru = d.remotes.filter(r => r.through);
+  document.getElementById("body").innerHTML = `<div class="filterbar">
+      <button class="btn" id="ccBack">&larr; All countries</button>
+      <h3 style="margin:0">${esc(ccName(d.cc))} (${esc(d.cc)})</h3>${d.blocklisted ? `<span class="tag">block list</span>` : ""}
+      ${d.blocklisted ? `<span class="${thru.length ? "err" : "ok"}">${thru.length ? `${thru.length} address${thru.length > 1 ? "es" : ""} got through` : "Everything blocked"}</span>` : ""}
+    </div>
+    <h3 style="margin:.4rem 0">Devices</h3>
+    <div class="tbl"><table><thead><tr><th>Device</th><th class="n">Got through</th><th class="n">Flows</th><th class="n">Addresses</th><th class="n">Blocked / no answer</th><th class="n">Addresses</th><th>Last</th></tr></thead><tbody>
+    ${d.devices.map(r => `<tr><td class="nw">${device(r.host, r.name)}</td><td class="n"><b>${r.through_flows ? bytes(r.through_bytes) : "-"}</b></td><td class="n">${num(r.through_flows) || "-"}</td>
+      <td class="n">${num(r.through_ips)}</td><td class="n">${num(r.attempts)}</td><td class="n">${num(r.attempt_ips)}</td><td class="nw">${ago(r.last)}</td></tr>`).join("")}
+    </tbody></table></div>
+    <h3 style="margin:1.2rem 0 .4rem">Addresses${d.remotes.length >= 200 ? " (the first 200: those that got through, then the busiest)" : ""}</h3>
+    <div class="tbl"><table><thead><tr><th>Address</th><th>Network</th><th>Result</th><th class="n">Data</th><th class="n">Flows</th><th class="n">Devices</th><th>Last</th>${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
+    ${d.remotes.map(r => `<tr><td class="nw"><code>${esc(r.ip)}</code></td><td class="small">${r.asn ? `AS${r.asn} ${esc(r.asn_name)}` : ""}</td>
+      <td>${r.through ? `<span class="sev ${d.blocklisted ? "critical" : "info"}"><i></i>got through</span>` : `<span class="sev low"><i></i>${d.blocklisted ? "blocked" : "no answer"}</span>`}</td>
+      <td class="n">${bytes(r.bytes)}</td><td class="n">${num(r.flows)}</td><td class="n">${r.devices}</td><td class="nw">${ago(r.last)}</td>
+      ${isAdmin() ? `<td class="nw">${blacklistBtn(r.ip)}</td>` : ""}</tr>`).join("")}
+    </tbody></table></div>`;
+  document.getElementById("ccBack").onclick = () => { S.cc = ""; countriesTab(); };
+  document.querySelectorAll("[data-list]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { const [kind, action, ip] = b.dataset.list.split("|"); await listChange(kind, action, ip); S.tab = "countries"; }
+    catch (err) { alert(err.message); b.disabled = false; }
+  });
+}
+
+// ---------------------------------------------------------------- checks
+const asText = v => Array.isArray(v) ? v.join(", ") : v;
+const HINT = {ips: "Addresses or ranges, comma-separated (192.168.3.4, 10.0.0.0/8)", ports: "Ports, comma-separated",
+              countries: "Two-letter country codes, comma-separated", categories: "Category keys, comma-separated", feeds: "List ids, comma-separated"};
+function paramInput(c, p, dis) {
+  const id = `p-${c.id}-${p.key}`;
+  let input;
+  if (p.type === "bool") input = `<input type="checkbox" id="${id}" data-param="${p.key}" ${p.value ? "checked" : ""} ${dis}>`;
+  else if (p.type === "int") input = `<input type="number" min="0" id="${id}" data-param="${p.key}" value="${esc(p.value)}" ${dis}>`;
+  else {
+    const extra = p.type === "categories" ? "Valid: " + S.checks.categories.map(x => x.key).join(", ")
+      : p.type === "feeds" ? "Valid: " + S.checks.feeds.filter(f => f.id !== "asndrop").map(f => `${f.id} (${f.label})`).join(", ") : "";
+    input = `<input type="text" class="list" id="${id}" data-param="${p.key}" value="${esc(asText(p.value))}" placeholder="none" title="${esc(HINT[p.type] + (extra ? ". " + extra : ""))}" ${dis}>`;
+  }
+  return `<label for="${id}">${esc(p.label)}</label>${input}`;
+}
+
+function checksTab() {
+  const dis = isAdmin() ? "" : "disabled";
+  const c = S.checks;
+  const ABOUT = {ignore: "Their alerts are still recorded and shown, as warnings - but count in no total, risk score or Dangerous device.",
+                 blacklist: "Any traffic with these addresses (internet or LAN) raises “Blacklisted IP (your list)”."};
+  const listCard = kind => `<div class="listcard"><h3>${LIST_NAMES[kind]}</h3><div class="desc">${ABOUT[kind]}</div>
+      <div class="entries">${c.lists[kind].length ? c.lists[kind].map(e => `<div class="entry"><code>${esc(e.net)}</code>
+        <span class="note" title="${esc(e.note)}${e.by ? ` - added by ${esc(e.by)}` : ""}">${esc(e.note) || "&nbsp;"}</span>
+        <span class="muted small">${e.added ? ago(e.added) : ""}</span>
+        ${isAdmin() ? `<button class="linkbtn" data-rmlist="${kind}|${esc(e.net)}" title="Take it off">Remove</button>` : ""}</div>`).join("")
+        : `<div class="muted small">Empty.</div>`}</div>
+      ${isAdmin() ? `<form class="addrow" data-addlist="${kind}"><input type="text" name="net" placeholder="192.168.3.4 or 10.0.0.0/8" aria-label="Address or range" required>
+        <input type="text" name="note" placeholder="Note (optional)" aria-label="Note"><button class="btn">Add</button></form><div class="small" data-listmsg="${kind}"></div>` : ""}</div>`;
+  const intro = `<div class="filterbar" style="align-items:stretch">${listCard("ignore")}${listCard("blacklist")}</div>
+    <div class="filterbar">${isAdmin() ? `<button class="btn primary" id="runNow" title="Run every enabled check now, not in the next 5 minutes">Run checks now</button><span id="runMsg" class="small"></span>`
+      : `<span class="muted small">Only admins change checks and lists.</span>`}</div>`;
+  const groups = c.groups.map(g => {
+    const list = c.checks.filter(x => x.group === g);
+    return list.length ? `<h3 style="margin:1.2rem 0 .4rem">${esc(g)}</h3><div class="tbl"><table>
+      <thead><tr><th style="width:3rem">On</th><th>Check</th><th>Severity score</th><th>Settings</th><th class="n">24 h</th><th></th></tr></thead><tbody>
+      ${list.map(x => `<tr data-id="${x.id}" class="${x.enabled ? "" : "off"}">
+        <td><label class="sw" title="Turn on or off"><input type="checkbox" data-f="enabled" ${x.enabled ? "checked" : ""} ${dis} aria-label="${esc(x.title)} on"><span></span></label></td>
+        <td><div class="name">${esc(x.title)}</div><div class="desc">${esc(x.description)}</div>
+          ${x.ntopng ? `<div class="from">ntopng: ${esc(x.ntopng)}</div>` : ""}
+          ${x.unavailable ? `<div class="err">Not running: ${esc(x.unavailable)}</div>` : ""}${x.error ? `<div class="err">Last run failed: ${esc(x.error)}</div>` : ""}</td>
+        <td><div class="scorebox"><input type="number" min="0" max="100" data-f="score" value="${x.score}" ${dis} aria-label="Score">
+          <span data-pill>${pill(sevOf(x.score))}</span></div>
+          ${x.score !== x.default_score || x.enabled !== x.default_enabled ? `<div class="from">default ${x.default_score}${x.default_enabled ? "" : ", off"}</div>` : ""}</td>
+        <td><div class="params">${x.params.map(p => paramInput(x, p, dis)).join("")}</div></td>
+        <td class="n">${x.alerts_24h ? `<button class="linkbtn" data-show="${x.id}">${x.alerts_24h}</button>` : `<span class="muted">0</span>`}</td>
+        <td class="nw">${isAdmin() ? `<button class="btn primary" data-save disabled>Save</button><br><button class="linkbtn" data-reset title="Back to the defaults">Reset</button>` : ""}
+          <div class="small" data-msg></div>${x.by ? `<div class="from" title="${esc(x.by)}">changed ${ago(x.changed)}</div>` : ""}</td>
+      </tr>`).join("")}
+      </tbody></table></div>` : "";
+  }).join("");
+  const legend = `<p class="muted small">Severity from the score: ${[[80, "critical"], [60, "high"], [40, "medium"], [20, "low"], [0, "info"]].map(([m, s]) => `${pill(s)} ${m}+`).join(" &nbsp; ")}</p>`;
+  document.getElementById("body").innerHTML = intro + legend + groups;
+
+  document.querySelectorAll("[data-show]").forEach(b => b.onclick = () => { S.check = b.dataset.show; S.tab = "alerts"; S.range = "24h"; load(); });
+  if (!isAdmin()) return;
+  document.querySelectorAll("[data-addlist]").forEach(f => f.onsubmit = async e => {
+    e.preventDefault();
+    const kind = f.dataset.addlist, msg = document.querySelector(`[data-listmsg="${kind}"]`);
+    try { await listChange(kind, "add", f.net.value.trim(), f.note.value.trim()); }
+    catch (err) { msg.className = "small err"; msg.textContent = err.message; }
+  });
+  document.querySelectorAll("[data-rmlist]").forEach(b => b.onclick = async () => {
+    const [kind, net] = b.dataset.rmlist.split("|");
+    b.disabled = true;
+    try { await listChange(kind, "remove", net); } catch (err) { alert(err.message); b.disabled = false; }
+  });
+  document.getElementById("runNow").onclick = async () => {
+    const msg = document.getElementById("runMsg");
+    try { await post("/api/checks/run", {}); msg.className = "small ok"; msg.textContent = "Running - refreshing in 20 s."; setTimeout(load, 20000); }
+    catch (e) { msg.className = "small err"; msg.textContent = e.message; }
+  };
+  document.querySelectorAll("tr[data-id]").forEach(tr => {
+    const save = tr.querySelector("[data-save]"), msg = tr.querySelector("[data-msg]");
+    const dirty = () => { save.disabled = false; tr.classList.add("dirty"); msg.textContent = ""; };
+    tr.querySelectorAll("input").forEach(i => i.addEventListener("input", dirty));
+    tr.querySelector("[data-f=enabled]").addEventListener("change", e => tr.classList.toggle("off", !e.target.checked));
+    tr.querySelector("[data-f=score]").addEventListener("input", e => tr.querySelector("[data-pill]").innerHTML = pill(sevOf(+e.target.value || 0)));
+    const done = (x, text) => {
+      Object.assign(S.checks.checks.find(c => c.id === x.id), x, {alerts_24h: S.checks.checks.find(c => c.id === x.id).alerts_24h});
+      checksTab();
+      const m = document.querySelector(`tr[data-id="${x.id}"] [data-msg]`);
+      m.className = "small ok"; m.textContent = text;
+    };
+    save.onclick = async () => {
+      const params = {};
+      tr.querySelectorAll("[data-param]").forEach(i => params[i.dataset.param] = i.type === "checkbox" ? i.checked : i.type === "number" ? +i.value : i.value);
+      const score = Math.round(+tr.querySelector("[data-f=score]").value);
+      try { done(await post(`/api/checks/${tr.dataset.id}`, {enabled: tr.querySelector("[data-f=enabled]").checked, score, params}), "Saved"); }
+      catch (e) { msg.className = "small err"; msg.textContent = e.message; }
+    };
+    tr.querySelector("[data-reset]").onclick = async () => {
+      try { done(await post(`/api/checks/${tr.dataset.id}`, {reset: true}), "Back to defaults"); }
+      catch (e) { msg.className = "small err"; msg.textContent = e.message; }
+    };
+  });
+}
+
+document.querySelectorAll("#ranges button").forEach(b => b.onclick = () => { S.range = b.dataset.r; localSet("range", S.range); load(); });
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => { S.tab = b.dataset.t; localSet("tab", S.tab); render(); });
+const q = new URLSearchParams(location.search);
+if (q.get("host")) { S.host = q.get("host"); S.tab = "alerts"; }
+if (q.get("check")) { S.check = q.get("check"); S.tab = "alerts"; }
+load();
+setInterval(() => { if (S.tab === "alerts" || S.tab === "devices") load(); }, 60000);
+</script>
+</body>
+</html>
