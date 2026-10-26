@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentry Lens - Infrastructure</title>
+<link rel="icon" href="/static/logo.svg">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+<style>
+  /* The main page's surfaces and series palette (index.html: --s1, --s2 in
+     that order). Meters turn amber at 85% and red at 95%, always with the
+     word ("high", "critical") next to the number. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f16; --surface: #131a24; --surface2: #1a2330; --border: #262f3d;
+    --text: #e6edf3; --muted: #8b96a5; --accent2: #ffb454; --link: #79b8ff;
+    --s1: #3987e5; --s2: #d95926;
+    --up: #2ea043; --down: #f85149; --warn: #d29922; --crit: #f85149;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif; font-size: 14px; }
+  a { color: var(--link); text-decoration: none; }
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: .7rem 1.4rem;
+    background: linear-gradient(120deg, #1a0d0d, #1c1108 70%); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; }
+  header h1 a { color: inherit; display: flex; align-items: center; gap: .55rem; }
+  header h1 a:hover { text-decoration: none; }
+  header h1 img { width: 30px; height: 30px; filter: drop-shadow(0 2px 8px #ff5c4d55); }
+  header h1 span { color: var(--accent2); }
+  .sections { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .sections a { color: var(--muted); padding: .35rem .9rem; font-size: .88rem; }
+  .sections a.active { color: var(--text); background: var(--surface2); box-shadow: inset 0 -2px 0 var(--accent2); }
+  .sections a:hover { text-decoration: none; color: var(--text); }
+  .spacer { flex: 1; }
+  .who { display: flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--muted); }
+  .who a { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .seg button { background: var(--surface); color: var(--muted); border: 0; padding: .3rem .7rem; cursor: pointer; font: inherit; font-size: .85rem; }
+  .seg button.active { background: var(--surface2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent2); }
+
+  main { padding: 1.4rem; max-width: 1500px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
+  h2 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; font-weight: 600; }
+  .muted { color: var(--muted); } .small { font-size: .8rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; min-width: 0; }
+  .head { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; margin-bottom: .9rem; }
+  .hero { display: flex; align-items: flex-end; gap: 2rem; flex-wrap: wrap; }
+  .hero .title { flex: 1 1 260px; }
+  .hero .sub { color: var(--muted); font-size: .85rem; margin-top: .25rem; }
+  .kpis { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .kpi .v { font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: .45rem; }
+  .kpi .l { font-size: .75rem; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.up { background: var(--up); } .dot.down { background: var(--down); box-shadow: 0 0 0 3px #f8514933; }
+  .st { display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem; font-weight: 600; border-radius: 999px; padding: .05rem .5rem; border: 1px solid; white-space: nowrap; }
+  .st i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .st.up { color: #56d364; border-color: var(--up); background: #2ea04322; }
+  .st.down { color: #ff7b72; border-color: var(--down); background: #f8514922; }
+  .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .35rem; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+  .host { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.05rem; cursor: pointer; display: flex; flex-direction: column; gap: .7rem; }
+  .host:hover { border-color: #3a4556; }
+  .host.sel { border-color: var(--accent2); }
+  .host.down { opacity: .75; }
+  .host .top { display: flex; align-items: center; gap: .5rem; }
+  .host .nm { font-weight: 600; font-size: 1rem; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .host .os { color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meter { display: grid; grid-template-columns: 4.2rem 1fr auto; gap: .5rem; align-items: center; font-size: .8rem; }
+  .meter .l { color: var(--muted); }
+  .meter .bar { height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; }
+  .meter .bar i { display: block; height: 100%; border-radius: 3px; background: var(--s1); }
+  .meter.warn .bar i { background: var(--warn); } .meter.crit .bar i { background: var(--crit); }
+  .meter .v { font-variant-numeric: tabular-nums; min-width: 5.5rem; text-align: right; }
+  .meter .flag { font-size: .7rem; font-weight: 600; margin-left: .3rem; }
+  .meter.warn .flag { color: #e3b341; } .meter.crit .flag { color: #ff7b72; }
+  .host .foot { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .host .foot b { color: var(--text); font-weight: 500; }
+  .err { color: #ff7b72; font-size: .85rem; } .ok { color: #56d364; font-size: .85rem; }
+  .empty { color: var(--muted); padding: 1.5rem 0; text-align: center; }
+
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1.25rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: .3rem 1rem; margin-top: .5rem; font-size: .8rem; }
+  .legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+  .tip { position: absolute; pointer-events: none; z-index: 5; background: #0b0f16f2; border: 1px solid var(--border); border-radius: 8px;
+         padding: .45rem .6rem; font-size: .78rem; white-space: nowrap; display: none; font-variant-numeric: tabular-nums; box-shadow: 0 4px 16px #0008; }
+  .tip .t { color: var(--muted); margin-bottom: .25rem; }
+  .tip .r { display: flex; justify-content: space-between; gap: 1rem; }
+  .uplot { font-family: inherit; }
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .42rem .5rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n, th.n { text-align: right; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem 1.4rem; margin-top: 1rem; }
+  .facts .v { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .facts .l { font-size: .72rem; color: var(--muted); }
+  .tabs { display: flex; gap: .2rem; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .tabs button { background: none; border: 0; color: var(--muted); font: inherit; padding: .5rem .9rem; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent2); }
+  .toolbar { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-bottom: .8rem; }
+  input[type=text], select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: .38rem .6rem; font: inherit; font-size: .85rem; }
+  input:focus, select:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
+  #cq { flex: 1; min-width: 12rem; }
+  th.sort { cursor: pointer; white-space: nowrap; } th.sort:hover { color: var(--text); }
+  tr.click { cursor: pointer; } tbody tr.click:hover td { background: var(--surface2); }
+  tr.sel td { background: var(--surface2); }
+  .bar2 { height: 3px; border-radius: 2px; background: var(--s1); margin-top: 3px; opacity: .8; }
+  td .sub2 { color: var(--muted); font-size: .75rem; }
+  [hidden] { display: none !important; }
+  .btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: .35rem .8rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  @media (max-width: 700px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .charts { grid-template-columns: 1fr; }
+    .kpis { gap: 1.2rem; }
+  }
+</style>
+<style>
+  /* Docker. Series: the main page's categorical palette in its fixed order,
+     a container keeps its color while the page lives; "everything else" is
+     neutral. State and health: status colors, always with their word. */
+  :root { --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --other: #5c6675; }
+  .st.warn { color: #e3b341; border-color: var(--warn); background: #d2992222; }
+  .st.off { color: var(--muted); border-color: var(--border); background: transparent; }
+  .chip { display: inline-flex; align-items: center; gap: .25rem; font-size: .7rem; border: 1px solid var(--border); background: var(--surface2);
+          border-radius: 999px; padding: 0 .45rem; margin: .15rem .2rem 0 0; color: var(--text); white-space: nowrap; }
+  .chip button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0; font-size: .85rem; line-height: 1; }
+  .chip.on { border-color: var(--accent2); color: var(--accent2); }
+  button.chip { cursor: pointer; font: inherit; font-size: .72rem; }
+  .subnav { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: .25rem .9rem; margin-top: .55rem; font-size: .78rem; }
+  .legend span { display: inline-flex; align-items: center; gap: .35rem; min-width: 0; }
+  .legend .v { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hbar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 2px; background: var(--surface2); }
+  .hbar i { display: block; height: 100%; }
+  .dk-row { display: grid; grid-template-columns: 9rem 1fr 6rem; gap: .7rem; align-items: center; font-size: .8rem; margin: .45rem 0; }
+  .dk-row .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; font-size: .82rem; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
+  .tagedit { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-top: .5rem; }
+  .tagedit input { width: 10rem; }
+  td.wrap { white-space: normal; }
+  /* the panel under a container's row */
+  tr.exp > td { padding: 0 0 .9rem; background: transparent !important; border-bottom: 1px solid var(--border); }
+  .expbox { margin: 0 .3rem; background: var(--bg); border: 1px solid var(--accent2); border-top: 3px solid var(--accent2); border-radius: 0 0 10px 10px; padding: .9rem 1rem; white-space: normal; cursor: default; }
+  .exphead { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .8rem; }
+  .exphead b { font-size: 1.05rem; }
+  .expgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem 1.6rem; }
+  .expgrid section { min-width: 0; }
+  .expbox h4 { margin: 0 0 .45rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  .expbox h4 .muted, .legend-i { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .legend-i .sw { margin-left: .4rem; }
+  .mrow2 { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .05rem .6rem; font-size: .8rem; padding: .25rem 0; border-bottom: 1px dashed var(--border); }
+  .mrow2 > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mrow2 .bar2, .mrow2 .sub2 { grid-column: 1 / -1; }
+  .mrow2 .n { text-align: right; font-variant-numeric: tabular-nums; }
+  .expcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .spark { vertical-align: middle; }
+  .vbar { display: grid; grid-template-columns: minmax(8rem, 16rem) 1fr 5.5rem; gap: .6rem; align-items: center; font-size: .8rem; margin: .3rem 0; }
+  .vbar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vbar .track { height: 12px; background: var(--surface2); border-radius: 0 4px 4px 0; }
+  .vbar .track i { display: block; height: 100%; border-radius: 0 4px 4px 0; }
+  .vbar .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .netmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: .9rem; }
+  .ncard { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .75rem .85rem; min-width: 0; }
+  .ncard .nh { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+  .ncard .nh b { font-size: .92rem; }
+  .ncard .meta { color: var(--muted); font-size: .74rem; margin: .2rem 0 .5rem; font-variant-numeric: tabular-nums; }
+  .ncard .ct { display: flex; justify-content: space-between; gap: .5rem; font-size: .78rem; padding: .12rem 0; }
+  .ncard .ct a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ncard .multi { color: var(--accent2); font-size: .7rem; margin-left: .25rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/" title="Sentry Lens"><img src="/static/logo.svg" alt="">Sentry <span>Lens</span></a></h1>
+  <nav class="sections" aria-label="Sections"><a href="/apps">Applications</a><a href="/#/">Network</a><a href="/infra" class="active">Infrastructure</a></nav>
+  <div class="spacer"></div>
+  <div class="who" id="who"></div>
+</header>
+<main>
+  <div class="hero">
+    <div class="title">
+      <h2>Infrastructure</h2>
+      <div class="sub" id="sub">Loading from Prometheus...</div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </div>
+  <div class="tabs" id="tabs"><button data-t="hosts">Hosts</button><button data-t="containers">Docker</button></div>
+  <div id="hostsView">
+    <div class="grid" id="grid"></div>
+    <div id="detail"></div>
+  </div>
+  <div id="ctView" hidden>
+    <div class="subnav">
+      <div class="seg" id="dkSub"><button data-v="containers">Containers</button><button data-v="volumes">Volumes</button><button data-v="networks">Networks</button><button data-v="images">Images</button></div>
+      <select id="chost" aria-label="Host"><option value="">Every Docker host</option></select>
+      <div class="seg" id="dkPer"></div>
+      <span class="small muted" id="dkInfo"></span>
+    </div>
+    <div id="dkBody"></div>
+    <div id="cdetail"></div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const pct = v => v == null ? "-" : `${v.toFixed(v < 10 ? 1 : 0)}%`;
+const bytes = b => { if (b == null) return "-"; const u = ["B", "kB", "MB", "GB", "TB"]; let i = 0; while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; } return (i ? b.toFixed(1) : b.toFixed(0)) + " " + u[i]; };
+const bps = b => { if (b == null) return "-"; const u = ["b/s", "kb/s", "Mb/s", "Gb/s"]; let i = 0; while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; } return (i ? b.toFixed(1) : b.toFixed(0)) + " " + u[i]; };
+const dur = s => { if (s == null) return "-"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600); return d ? `${d} d ${h} h` : `${h} h ${Math.floor(s % 3600 / 60)} min`; };
+const when = t => new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+const localGet = k => { try { return localStorage.getItem("infra." + k); } catch (e) { return null; } };
+const localSet = (k, v) => { try { localStorage.setItem("infra." + k, v); } catch (e) {} };
+
+async function api(path) {
+  const r = await fetch(path);
+  if (r.status === 401) { location.href = "/login"; throw new Error("signed out"); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || `${r.status} ${r.statusText}`);
+  return body;
+}
+fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
+  if (me && me.auth && me.email) document.getElementById("who").innerHTML = `<span>${esc(me.name || me.email)}</span>${me.logout ? `<a href="${esc(me.logout)}">Sign out</a>` : ""}`;
+}).catch(() => {});
+
+const S = {data: null, sel: new URLSearchParams(location.search).get("h") || "", hours: +(localGet("hours") || 6), charts: []};
+
+// A meter: the number and, past a threshold, the word - not color alone.
+function meter(label, v, text) {
+  const cls = v >= 95 ? "crit" : v >= 85 ? "warn" : "";
+  return `<div class="meter ${cls}"><span class="l">${label}</span><span class="bar"><i style="width:${Math.min(100, Math.max(0, v || 0)).toFixed(1)}%"></i></span>
+    <span class="v">${text ?? pct(v)}${cls ? `<span class="flag">${cls === "crit" ? "critical" : "high"}</span>` : ""}</span></div>`;
+}
+
+async function load() {
+  try {
+    S.data = await api("/api/infra");
+    render();
+    if (S.tab === "hosts" && S.sel && !S.charts.length) detail();
+  } catch (e) { document.getElementById("sub").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+function render() {
+  const {hosts, summary: s} = S.data;
+  document.getElementById("sub").innerHTML = `${s.total} hosts monitored by Prometheus (node_exporter)${s.up < s.total ? ` · <span class="err">${s.total - s.up} not answering</span>` : ""}`;
+  document.getElementById("kpis").innerHTML = [
+    [`<span class="dot ${s.up < s.total ? "down" : "up"}"></span>${s.up}/${s.total}`, "hosts up"], [pct(s.cpu), "average CPU"], [pct(s.mem), "average memory"],
+    [s.disk_warn, "disks 85% full or more"], [s.failed, "failed services"], [s.containers, "containers running"]]
+    .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  document.getElementById("grid").innerHTML = hosts.map(h => `<div class="host ${h.up ? "" : "down"} ${h.host === S.sel ? "sel" : ""}" data-h="${esc(h.host)}">
+      <div class="top"><span class="nm" title="${esc(h.instance)}">${esc(h.host)}</span>${h.role !== "server" ? `<span class="tag">${esc(h.role)}</span>` : ""}
+        <span class="st ${h.up ? "up" : "down"}"><i></i>${h.up ? "up" : "down"}</span></div>
+      <div class="os">${h.up ? `${esc(h.os)}${h.hostname && h.hostname !== h.host ? ` · ${esc(h.hostname)}` : ""}` : `${esc(h.instance)} - not answering`}</div>
+      ${h.up ? `${meter("CPU", h.cpu, `${pct(h.cpu)} of ${h.cores}`)}${meter("Memory", h.mem, `${pct(h.mem)} of ${bytes(h.mem_total)}`)}
+        ${meter("Disk /", h.root)}${h.disk_max != null && h.disk_max - (h.root || 0) > 1 ? meter("Fullest", h.disk_max) : ""}
+        <div class="foot"><span>in <b>${bps(h.rx)}</b></span><span>out <b>${bps(h.tx)}</b></span><span>load <b>${h.load1?.toFixed(2) ?? "-"}</b></span>
+          <span>up <b>${dur(h.uptime)}</b></span>${h.containers ? `<span><b>${h.containers}</b> containers</span>` : ""}${h.failed ? `<span class="err">${h.failed} failed service${h.failed > 1 ? "s" : ""}</span>` : ""}</div>` : ""}
+    </div>`).join("");
+  document.querySelectorAll(".host").forEach(c => c.onclick = () => select(c.dataset.h));
+}
+
+function select(name) {
+  S.sel = S.sel === name ? "" : name;
+  history.replaceState(null, "", S.sel ? `/infra?h=${encodeURIComponent(S.sel)}` : "/infra");
+  render(); detail();
+}
+
+const PERIODS = [[1, "1h"], [6, "6h"], [24, "24h"], [168, "7d"]];
+async function detail() {
+  S.charts.forEach(u => u.destroy()); S.charts = [];
+  const el = document.getElementById("detail");
+  if (!S.sel) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="card muted">Loading ${esc(S.sel)}...</div>`;
+  let d;
+  try { d = await api(`/api/infra/host/${encodeURIComponent(S.sel)}?hours=${S.hours}`); }
+  catch (e) { el.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const h = S.data.hosts.find(x => x.host === d.host) || {};
+  el.innerHTML = `<div class="card">
+      <div class="head"><h2>${esc(d.host)}</h2><span class="st ${d.up ? "up" : "down"}"><i></i>${d.up ? "up" : "down"}</span>
+        <span class="muted small">${esc(d.instance)} · ${esc(h.os || "")} · kernel ${esc(h.kernel || "?")}</span><span class="spacer"></span>
+        <div class="seg" id="per">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
+        <button class="btn" id="close" title="Close">&times;</button></div>
+      <div class="facts">${[[`${h.cores ?? "-"} cores`, "CPU"], [bytes(h.mem_total), "memory"], [dur(h.uptime), "up for"],
+        [d.services, "services running"], [d.failed_units.length, "failed services"]].map(([v, l]) => `<div><div class="v">${v}</div><div class="l">${l}</div></div>`).join("")}</div>
+    </div>
+    <div class="charts">
+      <div class="card"><div class="head"><h3>CPU used</h3></div><div class="ch" id="c-cpu"></div></div>
+      <div class="card"><div class="head"><h3>Memory used</h3></div><div class="ch" id="c-mem"></div></div>
+      <div class="card"><div class="head"><h3>Network</h3></div><div class="ch" id="c-net"></div>
+        <div class="legend"><span><i class="sw" style="background:${css("--s1")}"></i>In</span><span><i class="sw" style="background:${css("--s2")}"></i>Out</span></div></div>
+      <div class="card"><div class="head"><h3>Load (1 min)</h3><span class="small muted">${h.cores ?? "?"} cores</span></div><div class="ch" id="c-load"></div></div>
+    </div>
+    <div class="charts">
+      <div class="card"><div class="head"><h3>Filesystems</h3></div>
+        <div class="tbl"><table><thead><tr><th>Mount</th><th>Device</th><th class="n">Size</th><th class="n">Free</th><th style="width:40%">Used</th></tr></thead><tbody>
+        ${d.filesystems.map(f => { const used = f.size ? 100 * (1 - (f.avail || 0) / f.size) : 0;
+          return `<tr><td>${esc(f.mount)}</td><td class="small muted">${esc(f.device)} (${esc(f.fstype)})</td><td class="n">${bytes(f.size)}</td><td class="n">${bytes(f.avail)}</td><td>${meter("", used)}</td></tr>`; }).join("")}
+        </tbody></table></div></div>
+      <div class="card"><div class="head"><h3>Failed services</h3></div>
+        ${d.failed_units.length ? `<ul class="err" style="margin:0;padding-left:1.1rem">${d.failed_units.map(u => `<li>${esc(u)}</li>`).join("")}</ul>` : `<div class="ok">None - every service systemd started is running.</div>`}</div>
+    </div>
+    ${h.containers ? `<div class="card"><div class="head"><h3>Containers</h3><span class="small muted">${h.containers} running · click one for its history</span></div><div class="tbl" id="hct">Loading...</div></div>` : ""}`;
+  if (h.containers) api(`/api/infra/containers?host=${encodeURIComponent(d.host)}`)
+    .then(c => { const t = document.getElementById("hct"); if (t) { t.innerHTML = ctTable(c.containers, false); wireCt(t); } })
+    .catch(e => { const t = document.getElementById("hct"); if (t) t.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
+  document.getElementById("close").onclick = () => select(d.host);
+  document.querySelectorAll("#per button").forEach(b => b.onclick = () => { S.hours = +b.dataset.h; localSet("hours", S.hours); detail(); });
+  const c1 = css("--s1"), c2 = css("--s2");
+  chart("c-cpu", d.cpu, [{label: "CPU", color: c1, fmt: pct}], {max: 100});
+  chart("c-mem", d.mem, [{label: "Memory", color: c1, fmt: pct}], {max: 100});
+  chart("c-net", d.rx, [{label: "In", color: c1, fmt: bps}, {label: "Out", color: c2, fmt: bps, data: d.tx}], {axis: bps});
+  chart("c-load", d.load, [{label: "Load", color: c1, fmt: v => v.toFixed(2)}], {});
+  el.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+// A time chart: one or two series on one y-scale, 2px lines, crosshair tooltip.
+function chart(id, first, series, opts) {
+  const el = document.getElementById(id);
+  if (!first.length) { el.innerHTML = `<div class="empty">No data in this window.</div>`; return; }
+  const t = first.map(p => p[0]), cols = series.map((s, i) => (i === 0 ? first : s.data || []).map(p => p[1]));
+  const tip = document.createElement("div"); tip.className = "tip";
+  const a = {stroke: css("--muted"), grid: {stroke: css("--border"), width: 1}, ticks: {show: false}, font: "11px system-ui"};
+  const fmtAxis = opts.axis || (opts.max === 100 ? v => `${v}%` : v => v);
+  const u = new uPlot({
+    width: el.clientWidth, height: opts.height || 200, legend: {show: false},
+    cursor: {drag: {x: false, y: false}, points: {size: 8, stroke: css("--surface"), width: 2}},
+    scales: {x: {time: true}, y: {range: (u, min, max) => [0, opts.max ? Math.max(opts.max === 100 ? Math.min(100, max * 1.15 + 5) : max, 1) : Math.max(max * 1.15, 1)]}},
+    series: [{}, ...series.map((s, i) => ({stroke: s.color, fill: series.length === 1 ? s.color + "30" : undefined, width: 2, points: {show: false}}))],
+    axes: [a, {...a, size: 64, values: (u, vals) => vals.map(fmtAxis)}],
+    hooks: {
+      init: [u => u.over.appendChild(tip)],
+      setCursor: [u => {
+        const i = u.cursor.idx;
+        if (i == null || u.cursor.left < 0) { tip.style.display = "none"; return; }
+        tip.innerHTML = `<div class="t">${when(t[i])}</div>` + series.map((s, j) =>
+          `<div class="r"><span><i class="sw" style="background:${s.color}"></i> ${esc(s.label)}</span><span>${cols[j][i] == null ? "-" : s.fmt(cols[j][i])}</span></div>`).join("");
+        tip.style.display = "block";
+        const w = tip.offsetWidth, x = u.cursor.left;
+        tip.style.left = (x + 14 + w > u.over.clientWidth ? x - w - 14 : x + 14) + "px";
+        tip.style.top = Math.max(0, u.cursor.top - 20) + "px";
+      }],
+    },
+  }, [t, ...cols], el);
+  (opts.into || S.charts).push(u);
+}
+window.addEventListener("resize", () => S.charts.forEach(u => u.setSize({width: u.root.parentElement.clientWidth, height: u.height})));
+
+// ---------------------------------------------------------------- Docker
+// Containers (with graphs), volumes, networks, images - from cAdvisor (what
+// runs uses) and docker-meta (what Docker knows). Tags: admins set them on
+// containers and volumes, everyone filters by them.
+S.tab = localGet("tab") || "hosts"; S.dk = localGet("dk") || "containers"; S.csort = ["mem", -1]; S.cq = ""; S.chost = "";
+S.cstate = ""; S.ctag = ""; S.ct = null; S.cdata = null; S.me = {}; S.colors = new Map();
+fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => { if (me) S.me = me; }).catch(() => {});
+const isAdmin = () => S.me.auth === false || S.me.role === "admin";
+const post = async (path, body) => {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(b.detail || r.statusText);
+  return b;
+};
+const Bps = b => b == null ? "-" : bytes(b) + "/s";
+// A container keeps its color while the page lives (palette order, never cycled past 7: then "other").
+const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7"];
+function colorOf(key) {
+  if (!S.colors.has(key)) {
+    const used = new Set(S.colors.values()), free = SERIES.find(c => !used.has(c));
+    S.colors.set(key, free || null);
+  }
+  return S.colors.get(key) ? css(S.colors.get(key)) : css("--other");
+}
+// State and health: the word, in a status color.
+function stateTag(r) {
+  const s = r.state || "unknown";
+  const cls = s === "running" ? "up" : s === "restarting" ? "warn" : s === "paused" || s === "created" ? "off" : "down";
+  let h = `<span class="st ${cls}"><i></i>${esc(s)}</span>`;
+  if (r.health === "unhealthy") h += ` <span class="st down"><i></i>unhealthy</span>`;
+  else if (r.health === "starting") h += ` <span class="st warn"><i></i>starting</span>`;
+  else if (r.health === "healthy") h += ` <span class="st up" title="Docker health check"><i></i>healthy</span>`;
+  return h;
+}
+const chips = (tags, active) => (tags || []).map(t => `<span class="chip ${t === active ? "on" : ""}">${esc(t)}</span>`).join("");
+
+function hostSelect(hosts) {
+  const sel = document.getElementById("chost");
+  sel.innerHTML = `<option value="">Every Docker host</option>` + hosts.map(h => `<option value="${esc(h)}" ${h === S.chost ? "selected" : ""}>${esc(h)}</option>`).join("");
+}
+
+async function loadCt() {
+  document.querySelectorAll("#dkSub button").forEach(b => b.classList.toggle("active", b.dataset.v === S.dk));
+  document.getElementById("dkPer").innerHTML = S.dk !== "images" ? PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("") : "";
+  document.getElementById("dkPer").hidden = S.dk === "images";
+  document.querySelectorAll("#dkPer button").forEach(b => b.onclick = () => { S.hours = +b.dataset.h; localSet("hours", S.hours); loadCt(); });
+  const body = document.getElementById("dkBody");
+  try {
+    if (S.dk === "containers") {
+      const [c, o] = await Promise.all([api("/api/infra/containers"), api(`/api/infra/docker?hours=${S.hours}${S.chost ? `&host=${encodeURIComponent(S.chost)}` : ""}`)]);
+      S.cdata = c; S.over = o;
+      hostSelect([...new Set(c.containers.map(x => x.host))].sort());
+      renderCt();
+      if (S.ct) ctDetail();
+    } else {
+      const d = await api(`/api/infra/${S.dk}${S.dk !== "images" ? `?hours=${S.hours}` : ""}`);
+      hostSelect([...new Set(d[S.dk].map(x => x.host))].sort());
+      S.list = d; renderList();
+    }
+  } catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+// ---------------- containers: summary, graphs, table
+function renderCt() {
+  S.charts.forEach(u => u.destroy()); S.charts = [];
+  const d = S.cdata, o = S.over, q = S.cq.toLowerCase();
+  const all = d.containers.filter(c => !S.chost || c.host === S.chost);
+  const rows = all.filter(c => (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
+    && (!S.ctag || c.tags.includes(S.ctag) || c.project === S.ctag)
+    && (!q || `${c.name} ${c.image} ${c.project} ${c.tags.join(" ")}`.toLowerCase().includes(q)));
+  const running = all.filter(c => c.state === "running").length, unhealthy = all.filter(c => c.health === "unhealthy").length;
+  const memUsed = all.reduce((s, c) => s + (c.mem || 0), 0);
+  const tags = [...new Set(all.flatMap(c => c.tags))].sort(), projects = [...new Set(all.map(c => c.project).filter(Boolean))].sort();
+  document.getElementById("dkInfo").textContent = `${all.length} containers on ${new Set(all.map(c => c.host)).size} hosts`;
+  const disk = Object.entries(o.disk).sort();
+  const KINDS = [["images", "Images", "--s1"], ["volumes", "Volumes", "--s2"], ["containers", "Containers' layers", "--s3"], ["build_cache", "Build cache", "--s4"]];
+  const dmax = Math.max(1, ...disk.map(([, k]) => KINDS.reduce((s, [x]) => s + (k[x] || 0), 0)));
+  document.getElementById("dkBody").innerHTML = `
+    <div class="kpis" style="margin-bottom:1.1rem">${[
+      [running, "running"], [all.length - running, "stopped"], [unhealthy, "unhealthy"], [all.reduce((s, c) => s + c.restarts, 0), "restarts"], [bytes(memUsed), "memory used"]]
+      .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("")}</div>
+    <div class="charts">
+      <div class="card"><div class="head"><h3>Memory by container</h3><span class="small muted">the 7 biggest, stacked</span></div><div id="g-mem"></div><div class="legend" id="l-mem"></div></div>
+      <div class="card"><div class="head"><h3>CPU by container</h3><span class="small muted">% of one core, stacked</span></div><div id="g-cpu"></div><div class="legend" id="l-cpu"></div></div>
+    </div>
+    <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Docker's disk use</h3><span class="small muted">per host, measured every 15 minutes</span></div>
+      ${disk.map(([h, k]) => { const tot = KINDS.reduce((s, [x]) => s + (k[x] || 0), 0);
+        return `<div class="dk-row"><span>${esc(h)}</span><div class="hbar" style="width:${(100 * tot / dmax).toFixed(1)}%">${KINDS.map(([x, l, c]) => k[x] ? `<i title="${l}: ${bytes(k[x])}" style="width:${(100 * k[x] / tot).toFixed(2)}%;background:${css(c)}"></i>` : "").join("")}</div><span class="v">${bytes(tot)}</span></div>`; }).join("")}
+      <div class="legend">${KINDS.map(([x, l, c]) => `<span><i class="sw" style="background:${css(c)}"></i>${l}<span class="v">${bytes(disk.reduce((s, [, k]) => s + (k[x] || 0), 0))}</span></span>`).join("")}</div>
+    </div>
+    <div class="card" style="margin-top:1.25rem">
+      <div class="toolbar">
+        <input type="text" id="cq" placeholder="Search name, image, project or tag" value="${esc(S.cq)}" aria-label="Search containers">
+        <div class="seg" id="cstate">${[["", "All"], ["running", "Running"], ["stopped", "Stopped"], ["unhealthy", "Unhealthy"]].map(([v, l]) => `<button data-s="${v}" class="${v === S.cstate ? "active" : ""}">${l}</button>`).join("")}</div>
+      </div>
+      ${tags.length || projects.length ? `<div style="margin:-.3rem 0 .7rem">${tags.map(t => `<button class="chip ${t === S.ctag ? "on" : ""}" data-tag="${esc(t)}" title="Tag">#${esc(t)}</button>`).join("")}
+        ${projects.map(p => `<button class="chip ${p === S.ctag ? "on" : ""}" data-tag="${esc(p)}" title="Compose project">${esc(p)}</button>`).join("")}</div>` : ""}
+      <div class="tbl" id="ctable">${ctTable(rows, !S.chost)}</div>
+    </div>`;
+  stackChart("g-mem", "l-mem", o.memory, bytes);
+  stackChart("g-cpu", "l-cpu", o.cpu, pct);
+  const cq = document.getElementById("cq");
+  cq.oninput = e => { S.cq = e.target.value; const t = document.getElementById("ctable"); t.innerHTML = ctTable(currentRows(), !S.chost); wireCt(t); };
+  document.querySelectorAll("#cstate button").forEach(b => b.onclick = () => { S.cstate = b.dataset.s; renderCt(); });
+  document.querySelectorAll("[data-tag]").forEach(b => b.onclick = () => { S.ctag = S.ctag === b.dataset.tag ? "" : b.dataset.tag; renderCt(); });
+  wireCt(document.getElementById("ctable"));
+}
+
+const COLS = [["name", "Container"], ["host", "Host"], ["state", "State"], ["cpu", "CPU"], ["mem", "Memory"], ["rx", "Network in / out"],
+              ["read", "Disk read / write"], ["volumes", "Volumes"], ["ports", "Ports"], ["restarts", "Restarts"], ["uptime", "Up for"]];
+const NUMERIC = ["cpu", "mem", "rx", "read", "volumes", "restarts", "uptime"];
+function ctTable(rows, withHost) {
+  const [k, dir] = S.csort;
+  const val = r => k === "ports" ? r.ports.length : r[k];
+  rows = [...rows].sort((a, b) => { const x = val(a) ?? -1, y = val(b) ?? -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir; });
+  if (!rows.length) return `<div class="empty">No container matches.</div>`;
+  const maxMem = Math.max(1, ...rows.map(r => r.mem || 0)), maxCpu = Math.max(1, ...rows.map(r => r.cpu || 0));
+  const cols = COLS.filter(([c]) => withHost || c !== "host");
+  return `<table><thead><tr>${cols.map(([c, l]) => `<th class="sort ${NUMERIC.includes(c) ? "n" : ""}" data-sort="${c}">${l}${k === c ? (dir < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead><tbody>
+    ${rows.map(r => `<tr class="click ${S.ct && S.ct.host === r.host && S.ct.name === r.name ? "sel" : ""}" data-ct="${esc(r.host)}|${esc(r.name)}">
+      <td class="wrap"><b>${esc(r.name)}</b><div class="sub2">${r.project ? esc(r.project) : esc(r.image)}</div>${chips(r.tags.map(t => "#" + t))}</td>
+      ${withHost ? `<td>${esc(r.host)}</td>` : ""}
+      <td class="wrap">${stateTag(r)}</td>
+      <td class="n">${r.state === "running" ? pct(r.cpu) : "-"}<div class="bar2" style="width:${(100 * (r.cpu || 0) / maxCpu).toFixed(0)}%"></div></td>
+      <td class="n">${r.state === "running" ? bytes(r.mem) : "-"}${r.limit ? `<div class="sub2">of ${bytes(r.limit)} (${pct(100 * (r.mem || 0) / r.limit)})</div>` : ""}<div class="bar2" style="width:${(100 * (r.mem || 0) / maxMem).toFixed(0)}%"></div></td>
+      <td class="n">${r.network_mode === "host" ? `<span class="muted small" title="Host networking: its traffic is the host's">host network</span>` : `${bps(r.rx)}<div class="sub2">${bps(r.tx)}</div>`}</td>
+      <td class="n">${Bps(r.read)}<div class="sub2">${Bps(r.write)}</div></td>
+      <td class="n">${r.volumes}${r.binds ? `<div class="sub2">+${r.binds} folders</div>` : ""}</td>
+      <td class="small">${r.ports.filter(p => p.public_port).map(p => `${esc(p.public_port)}/${esc(p.proto)}`).filter((v, i, a) => a.indexOf(v) === i).join(" ") || `<span class="muted">-</span>`}</td>
+      <td class="n">${r.restarts ? `<span class="${r.restarts > 3 ? "err" : ""}">${r.restarts}</span>` : "0"}</td>
+      <td class="n">${r.state === "running" ? dur(r.uptime) : r.stopped_since ? `<span class="muted">stopped ${dur(Date.now() / 1000 - r.stopped_since)} ago</span>` : "-"}</td></tr>`).join("")}
+  </tbody></table>`;
+}
+function wireCt(root) {
+  root.querySelectorAll("th[data-sort]").forEach(th => th.onclick = () => {
+    const c = th.dataset.sort; S.csort = [c, S.csort[0] === c ? -S.csort[1] : (["name", "host", "state"].includes(c) ? 1 : -1)];
+    if (root.id === "hct") detail(); else { root.innerHTML = ctTable(currentRows(), !S.chost); wireCt(root); if (S.ct) ctDetail(); }
+  });
+  // A row opens its panel right under it (in the Docker list or on a host's page); again closes it.
+  root.querySelectorAll("tr[data-ct]").forEach(tr => tr.onclick = e => {
+    if (e.target.closest("a, button, input")) return;
+    const [host, name] = tr.dataset.ct.split("|");
+    if (S.ct && S.ct.host === host && S.ct.name === name && tr.classList.contains("sel")) { S.ct = null; closeDetail(); return; }
+    S.ct = {host, name}; ctDetail();
+  });
+}
+function currentRows() {
+  const q = S.cq.toLowerCase();
+  return S.cdata.containers.filter(c => (!S.chost || c.host === S.chost)
+    && (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
+    && (!S.ctag || c.tags.includes(S.ctag) || c.project === S.ctag)
+    && (!q || `${c.name} ${c.image} ${c.project} ${c.tags.join(" ")}`.toLowerCase().includes(q)));
+}
+
+// Stacked areas: the top containers, and "everything else" = the total minus them.
+function stackChart(id, legendId, d, fmt) {
+  const el = document.getElementById(id), lg = document.getElementById(legendId);
+  if (!d.total.length) { el.innerHTML = `<div class="empty">No data in this window.</div>`; lg.innerHTML = ""; return; }
+  const t = d.total.map(p => p[0]);
+  const at = (vals) => { const m = new Map(vals.map(p => [p[0], p[1]])); return t.map(x => m.get(x) ?? 0); };
+  const list = d.top.map(s => ({label: `${s.name}${S.chost ? "" : ` (${s.host})`}`, key: s.key, color: colorOf(s.key), values: at(s.values)}));
+  const rest = d.total.map((p, i) => Math.max(0, p[1] - list.reduce((s, l) => s + l.values[i], 0)));
+  if (rest.some(v => v > 0)) list.push({label: "Everything else", key: "other", color: css("--other"), values: rest});
+  const acc = t.map(() => 0), stacked = list.map(s => s.values.map((v, i) => (acc[i] += v)));
+  const bands = stacked.map((_, i) => i > 0 ? {series: [i + 1, i], fill: list[i].color + "c0"} : null).filter(Boolean);
+  const tip = document.createElement("div"); tip.className = "tip";
+  const a = {stroke: css("--muted"), grid: {stroke: css("--border"), width: 1}, ticks: {show: false}, font: "11px system-ui"};
+  const u = new uPlot({
+    width: el.clientWidth, height: 230, legend: {show: false},
+    cursor: {drag: {x: false, y: false}, points: {show: false}},
+    scales: {x: {time: true}, y: {range: (u, min, max) => [0, Math.max(max * 1.08, 1)]}},
+    series: [{}, ...list.map((s, i) => ({stroke: css("--surface"), width: 1.5, fill: i === 0 ? s.color + "c0" : undefined, points: {show: false}}))],
+    bands, axes: [a, {...a, size: 70, values: (u, vals) => vals.map(fmt)}],
+    hooks: {
+      init: [u => u.over.appendChild(tip)],
+      setCursor: [u => {
+        const i = u.cursor.idx;
+        if (i == null || u.cursor.left < 0) { tip.style.display = "none"; return; }
+        tip.innerHTML = `<div class="t">${when(t[i])}</div>` + list.map((s, j) => [j, s]).reverse().filter(([j]) => list[j].values[i] > 0)
+          .map(([j, s]) => `<div class="r"><span><i class="sw" style="background:${s.color}"></i> ${esc(s.label)}</span><span>${fmt(s.values[i])}</span></div>`).join("");
+        tip.style.display = "block";
+        const w = tip.offsetWidth, x = u.cursor.left;
+        tip.style.left = (x + 14 + w > u.over.clientWidth ? x - w - 14 : x + 14) + "px";
+        tip.style.top = Math.max(0, u.cursor.top - 20) + "px";
+      }],
+    },
+  }, [t, ...stacked], el);
+  S.charts.push(u);
+  const last = s => s.values[s.values.length - 1];
+  lg.innerHTML = list.map(s => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.label)}<span class="v">${fmt(last(s))}</span></span>`).join("");
+}
+
+// ---------------- one container: a panel right under its row
+// Clicking a row opens it (and closes any other); clicking it again closes it.
+// Everything in one place: what it is, its volumes and folders (with sizes),
+// networks and addresses, ports, tags, and its last hours in four graphs.
+function rowOf(ct) {
+  return [...document.querySelectorAll("tr[data-ct]")].find(tr => tr.dataset.ct === `${ct.host}|${ct.name}` && tr.offsetParent);
+}
+function closeDetail() {
+  document.querySelectorAll("tr.exp").forEach(x => x.remove());
+  document.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel"));
+  S.dcharts.forEach(u => u.destroy()); S.dcharts = [];
+}
+S.dcharts = [];
+
+async function ctDetail() {
+  closeDetail();
+  if (!S.ct) return;
+  const row = rowOf(S.ct);
+  let box;
+  if (row) {
+    row.classList.add("sel");
+    const exp = document.createElement("tr");
+    exp.className = "exp";
+    exp.innerHTML = `<td colspan="${row.cells.length}"><div class="expbox">Loading ${esc(S.ct.name)}...</div></td>`;
+    row.after(exp);
+    box = exp.querySelector(".expbox");
+  } else {  // filtered out of the list: the panel under it
+    box = document.getElementById("cdetail");
+    box.innerHTML = `<div class="expbox">Loading ${esc(S.ct.name)}...</div>`;
+    box = box.firstChild;
+  }
+  let d;
+  try { d = await api(`/api/infra/container/${encodeURIComponent(S.ct.host)}/${encodeURIComponent(S.ct.name)}?hours=${S.hours}`); }
+  catch (e) { box.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  const ports = d.ports.filter(p => p.public_port);
+  const vols = d.mounts.filter(m => m.type === "volume"), folders = d.mounts.filter(m => m.type !== "volume");
+  const vmax = Math.max(1, ...vols.map(m => m.size || 0));
+  box.innerHTML = `
+    <div class="exphead"><b>${esc(d.name)}</b>${stateTag(d)}<span class="tag">${esc(d.host)}</span>
+      <span class="mono muted small" title="Image">${esc(d.image)}</span><span class="spacer"></span>
+      <div class="seg" id="cper">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
+      <button class="btn" id="cclose" title="Close">&times;</button></div>
+    <div class="expgrid">
+      <section><h4>Container</h4><dl class="kv">
+        ${d.project ? `<dt>Compose</dt><dd>${esc(d.project)} / ${esc(d.service)}</dd>` : ""}
+        <dt>${d.state === "running" ? "Up for" : "Stopped"}</dt><dd>${d.state === "running" ? dur(d.uptime) : d.stopped_since ? `${dur(Date.now() / 1000 - d.stopped_since)} ago, exit ${d.exit_code}${d.oom ? " (out of memory)" : ""}` : "-"}</dd>
+        <dt>Restarts</dt><dd class="${d.restarts > 3 ? "err" : ""}">${d.restarts} <span class="muted small">(policy: ${esc(d.restart_policy || "no")})</span></dd>
+        <dt>CPU now</dt><dd>${d.state === "running" ? pct(d.cpu) : "-"}${d.cpu_limit ? ` of ${d.cpu_limit} cores` : ""}</dd>
+        <dt>Memory now</dt><dd>${d.state === "running" ? bytes(d.mem) : "-"}${d.limit ? ` of ${bytes(d.limit)}` : " (no limit)"}</dd>
+        <dt>Writable layer</dt><dd>${d.rw != null ? bytes(d.rw) : "-"}</dd>
+        <dt>ID</dt><dd class="mono">${esc(d.id)}</dd>
+      </dl>
+      <h4 style="margin-top:.8rem">Tags</h4><div id="ctTags"></div>
+      ${isAdmin() ? `<form class="tagedit" id="tagForm"><input type="text" id="tagIn" placeholder="add a tag" maxlength="24" aria-label="New tag"><button class="btn">Add</button></form><div class="small" id="tagMsg"></div>` : ""}
+      </section>
+      <section><h4>Volumes ${vols.length ? `<span class="muted">${bytes(vols.reduce((s, m) => s + (m.size || 0), 0))}</span>` : ""}</h4>
+        ${vols.length ? vols.map(m => `<div class="mrow2"><span class="mono" title="${esc(m.source)}">${esc(m.source)}</span><span class="n">${m.size != null ? bytes(m.size) : "-"}</span>
+          <div class="bar2" style="width:${(100 * (m.size || 0) / vmax).toFixed(0)}%"></div><span class="sub2 mono">→ ${esc(m.destination)}${m.mode === "ro" ? " (ro)" : ""}</span></div>`).join("") : `<div class="muted small">none</div>`}
+        <h4 style="margin-top:.8rem">Host folders</h4>
+        ${folders.length ? folders.map(m => `<div class="mrow2"><span class="mono" title="${esc(m.source)}">${esc(m.source)}</span><span class="sub2">${esc(m.type)}${m.mode === "ro" ? ", ro" : ""}</span><span class="sub2 mono">→ ${esc(m.destination)}</span></div>`).join("") : `<div class="muted small">none</div>`}
+      </section>
+      <section><h4>Networks</h4>
+        ${d.networks.length ? d.networks.map(n => `<div class="mrow2"><span>${esc(n.network)}</span><span class="mono n">${esc(n.ip || (n.network === "host" ? "host's" : "-"))}</span></div>`).join("") : `<div class="muted small">none</div>`}
+        <h4 style="margin-top:.8rem">Published ports</h4>
+        ${ports.length ? ports.map(p => `<div class="mrow2"><span class="mono">${esc(p.host_ip || "0.0.0.0")}:${esc(p.public_port)}</span><span class="mono n">→ ${esc(p.private_port)}/${esc(p.proto)}</span></div>`).join("")
+          : `<div class="muted small">${d.network_mode === "host" ? "host networking: the host's own ports" : "none"}</div>`}
+        <h4 style="margin-top:.8rem">Image</h4><div class="mono small" style="word-break:break-all">${esc(d.image)}</div>
+      </section>
+    </div>
+    <div class="expcharts">
+      <div><h4>CPU <span class="muted">% of a core</span></h4><div id="cc-cpu"></div></div>
+      <div><h4>Memory${d.limit ? ` <span class="muted">limit ${bytes(d.limit)}</span>` : ""}</h4><div id="cc-mem"></div></div>
+      <div><h4>Network <span class="legend-i"><i class="sw" style="background:${css("--s1")}"></i>in <i class="sw" style="background:${css("--s2")}"></i>out</span></h4><div id="cc-net"></div></div>
+      <div><h4>Disk I/O <span class="legend-i"><i class="sw" style="background:${css("--s1")}"></i>read <i class="sw" style="background:${css("--s2")}"></i>write</span></h4><div id="cc-io"></div></div>
+    </div>`;
+  box.querySelector("#cclose").onclick = e => { e.stopPropagation(); S.ct = null; closeDetail(); document.getElementById("cdetail").innerHTML = ""; };
+  box.querySelectorAll("#cper button").forEach(b => b.onclick = e => { e.stopPropagation(); S.hours = +b.dataset.h; localSet("hours", S.hours); ctDetail(); });
+  const c1 = css("--s1"), c2 = css("--s2"), small = {height: 130, into: S.dcharts};
+  chart("cc-cpu", d.cpu_series, [{label: "CPU", color: c1, fmt: pct}], small);
+  chart("cc-mem", d.mem_series, [{label: "Memory", color: c1, fmt: bytes}], {...small, axis: bytes});
+  chart("cc-net", d.rx_series, [{label: "In", color: c1, fmt: bps}, {label: "Out", color: c2, fmt: bps, data: d.tx_series}], {...small, axis: bps});
+  chart("cc-io", d.read_series, [{label: "Read", color: c1, fmt: Bps}, {label: "Write", color: c2, fmt: Bps, data: d.write_series}], {...small, axis: Bps});
+  const drawTags = () => {
+    const el = box.querySelector("#ctTags");
+    el.innerHTML = d.tags.length ? d.tags.map(t => `<span class="chip">#${esc(t)}${isAdmin() ? `<button type="button" data-rm="${esc(t)}" title="Remove">&times;</button>` : ""}</span>`).join("") : `<span class="muted small">none</span>`;
+    el.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => save(d.tags.filter(t => t !== b.dataset.rm)));
+  };
+  const save = async tags => {
+    try { const r = await post("/api/infra/tags/container", {key: `${d.host}/${d.name}`, tags}); d.tags = r.tags; drawTags(); loadCtQuiet(); }
+    catch (e) { box.querySelector("#tagMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  };
+  drawTags();
+  const form = box.querySelector("#tagForm");
+  if (form) form.onsubmit = e => { e.preventDefault(); const i = box.querySelector("#tagIn"), v = i.value.trim(); if (v) save([...d.tags, v]); i.value = ""; };
+  box.addEventListener("click", e => e.stopPropagation());
+  (row || box).scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+async function loadCtQuiet() { try { S.cdata = await api("/api/infra/containers"); } catch (e) {} }
+
+// ---------------- volumes, networks, images
+// A small line of a volume's size over the last day (no axis: the number is next to it).
+function spark(vals) {
+  if (!vals || vals.length < 2) return `<span class="muted small">-</span>`;
+  const w = 90, h = 22, lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+  const pts = vals.map((v, i) => `${(i * w / (vals.length - 1)).toFixed(1)},${(h - 2 - (v - lo) * (h - 4) / span).toFixed(1)}`).join(" ");
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${css("--s1")}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+// Horizontal bars, biggest first: [{label, value, color, title}] - labelled, with their values.
+function bars(list, fmt, max) {
+  max = max || Math.max(1, ...list.map(x => x.value));
+  return list.map(x => `<div class="vbar" title="${esc(x.title || x.label)}"><span class="lbl">${x.label}</span>
+    <span class="track"><i style="width:${Math.max(.5, 100 * x.value / max).toFixed(1)}%;background:${x.color || css("--s1")}"></i></span><span class="v">${fmt(x.value)}</span></div>`).join("");
+}
+const goto = (host, name) => `<a href="#" data-goto="${esc(host)}|${esc(name)}">${esc(name)}</a>`;
+
+function renderList() {
+  S.charts.forEach(u => u.destroy()); S.charts = [];
+  const d = S.list, h = S.chost;
+  const body = document.getElementById("dkBody");
+  const hosts = [...new Set((d.volumes || d.networks || d.images).map(x => x.host))].sort();
+  const hostColor = x => colorOf("host:" + x);
+  const hostLegend = h ? "" : `<div class="legend">${hosts.map(x => `<span><i class="sw" style="background:${hostColor(x)}"></i>${esc(x)}</span>`).join("")}</div>`;
+  if (S.dk === "volumes") {
+    const vols = d.volumes.filter(v => !h || v.host === h), binds = d.binds.filter(b => !h || b.host === h);
+    const total = vols.reduce((s, v) => s + (v.size || 0), 0), unused = vols.filter(v => !v.containers.length);
+    const grew = vols.reduce((s, v) => s + Math.max(0, v.growth_24h || 0), 0);
+    const projects = {};
+    vols.forEach(v => { const p = v.project || "(no Compose project)"; projects[p] = (projects[p] || 0) + (v.size || 0); });
+    document.getElementById("dkInfo").textContent = `${vols.length} volumes, ${bytes(total)} · ${binds.length} host folders mounted`;
+    body.innerHTML = `
+      <div class="kpis" style="margin-bottom:1.1rem">${[[vols.length, "volumes"], [bytes(total), "space used"], [bytes(grew), "grown in 24 h"],
+        [unused.length, `not used by any container (${bytes(unused.reduce((s, v) => s + (v.size || 0), 0))})`], [binds.length, "host folders mounted"]]
+        .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("")}</div>
+      <div class="charts">
+        <div class="card"><div class="head"><h3>Biggest volumes</h3>${h ? "" : `<span class="small muted">colored by host</span>`}</div>
+          ${bars(vols.slice(0, 12).map(v => ({label: `<span class="mono">${esc(v.volume)}</span>`, title: `${v.volume} on ${v.host}`, value: v.size || 0, color: h ? null : hostColor(v.host)})), bytes)}${hostLegend}</div>
+        <div class="card"><div class="head"><h3>Space by Compose project</h3></div>
+          ${bars(Object.entries(projects).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([p, s]) => ({label: esc(p), value: s})), bytes)}</div>
+      </div>
+      <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Volume space over time</h3><span class="small muted">per host, measured every 15 minutes</span></div>
+        <div id="g-vol"></div>${hostLegend}</div>
+      <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Volumes</h3></div>
+      <div class="tbl"><table><thead><tr><th>Volume</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:18%">Size</th><th>Last 24 h</th><th>Used by</th></tr></thead><tbody>
+      ${vols.map(v => `<tr><td class="wrap mono">${esc(v.volume)}${v.project ? `<div class="sub2">${esc(v.project)}</div>` : ""}</td>${h ? "" : `<td>${esc(v.host)}</td>`}
+        <td class="n">${v.size != null ? bytes(v.size) : "-"}<div class="bar2" style="width:${(100 * (v.size || 0) / Math.max(1, vols[0]?.size || 1)).toFixed(1)}%"></div></td>
+        <td class="nw">${spark(v.spark)} <span class="small ${(v.growth_24h || 0) > 0 ? "" : "muted"}">${v.growth_24h ? (v.growth_24h > 0 ? "+" : "") + bytes(Math.abs(v.growth_24h)).replace(/^/, v.growth_24h < 0 ? "-" : "") : "no change"}</span></td>
+        <td class="wrap">${v.containers.length ? v.containers.map(c => `${goto(v.host, c.container)} <span class="sub2 mono">${esc(c.destination)}${c.mode === "ro" ? " (ro)" : ""}</span>`).join("<br>") : `<span class="err small">not used</span>`}</td></tr>`).join("")}
+      </tbody></table></div></div>
+      <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Host folders mounted into containers</h3></div>
+      <div class="tbl"><table><thead><tr><th>Folder on the host</th>${h ? "" : "<th>Host</th>"}<th>Containers</th></tr></thead><tbody>
+      ${binds.map(b => `<tr><td class="mono wrap">${esc(b.path)}</td>${h ? "" : `<td>${esc(b.host)}</td>`}<td class="wrap">${b.containers.map(c => `${goto(b.host, c.container)} <span class="sub2 mono">${esc(c.destination)}${c.mode === "ro" ? " (ro)" : ""}</span>`).join("<br>")}</td></tr>`).join("")}
+      </tbody></table></div></div>`;
+    const hist = d.history.filter(x => !h || x.host === h);
+    if (hist.length) chart("g-vol", hist[0].values, hist.map((x, i) => ({label: x.host, color: hostColor(x.host), fmt: bytes, data: i ? x.values : undefined})), {axis: bytes, height: 220});
+    else document.getElementById("g-vol").innerHTML = `<div class="empty">No data yet.</div>`;
+  } else if (S.dk === "networks") {
+    const nets = d.networks.filter(n => !h || n.host === h);
+    const onMany = {};
+    nets.forEach(n => n.containers.forEach(c => { const k = `${n.host}|${c.container}`; onMany[k] = (onMany[k] || 0) + 1; }));
+    const traffic = n => (n.rx || 0) + (n.tx || 0);
+    const sorted = [...nets].sort((a, b) => traffic(b) - traffic(a) || b.containers.length - a.containers.length);
+    document.getElementById("dkInfo").textContent = `${nets.length} networks, ${nets.reduce((s, n) => s + n.containers.length, 0)} attachments`;
+    const tr = d.traffic;
+    const view = {top: tr.top.filter(x => !h || x.host === h), total: tr.total};
+    body.innerHTML = `
+      <div class="charts">
+        <div class="card"><div class="head"><h3>Traffic by network</h3><span class="small muted">in + out of the containers on each, stacked</span></div><div id="g-net"></div><div class="legend" id="l-net"></div></div>
+        <div class="card"><div class="head"><h3>Containers per network</h3></div>
+          ${bars(sorted.filter(n => n.containers.length).sort((a, b) => b.containers.length - a.containers.length).slice(0, 12)
+            .map(n => ({label: `${esc(n.network)}${h ? "" : ` <span class="muted">${esc(n.host)}</span>`}`, value: n.containers.length, color: h ? null : hostColor(n.host)})), v => `${v}`)}${hostLegend}</div>
+      </div>
+      <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Network map</h3><span class="small muted">busiest first · <span style="color:var(--accent2)">⇄</span> = the container is on more than one network</span></div>
+        <div class="netmap">${sorted.map(n => `<div class="ncard">
+          <div class="nh"><b>${esc(n.network)}</b><span class="tag">${esc(n.driver)}</span>${n.internal ? `<span class="tag">internal</span>` : ""}${h ? "" : `<span class="muted small">${esc(n.host)}</span>`}</div>
+          <div class="meta">${n.subnet ? `${esc(n.subnet)}${n.gateway ? ` · gw ${esc(n.gateway)}` : ""}` : "no subnet"}${n.rx != null ? ` · in ${bps(n.rx)} · out ${bps(n.tx)}` : ""}</div>
+          ${n.containers.length ? n.containers.map(c => `<div class="ct"><span>${goto(n.host, c.container)}${onMany[`${n.host}|${c.container}`] > 1 ? `<span class="multi" title="On ${onMany[`${n.host}|${c.container}`]} networks">⇄</span>` : ""}</span><span class="mono muted">${esc(c.ip || "")}</span></div>`).join("")
+            : `<div class="muted small">no container</div>`}</div>`).join("")}</div></div>`;
+    if (view.total.length) stackChart("g-net", "l-net", view, bps);
+    else document.getElementById("g-net").innerHTML = `<div class="empty">No traffic data yet.</div>`;
+  } else {
+    const imgs = d.images.filter(i => !h || i.host === h), max = Math.max(1, ...imgs.map(i => i.size)), unused = imgs.filter(i => !i.in_use);
+    const total = imgs.reduce((s, i) => s + i.size, 0);
+    document.getElementById("dkInfo").textContent = `${imgs.length} images, ${bytes(total)}`;
+    body.innerHTML = `
+      <div class="kpis" style="margin-bottom:1.1rem">${[[imgs.length, "images"], [bytes(total), "space"], [unused.length, `unused (${bytes(unused.reduce((s, i) => s + i.size, 0))})`]]
+        .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("")}</div>
+      <div class="card"><div class="head"><h3>Biggest images</h3>${h ? "" : `<span class="small muted">colored by host</span>`}</div>
+        ${bars(imgs.slice(0, 12).map(i => ({label: `<span class="mono">${esc(i.image)}</span>`, title: `${i.image} on ${i.host}`, value: i.size, color: h ? null : hostColor(i.host)})), bytes)}${hostLegend}</div>
+      <div class="card" style="margin-top:1.25rem"><div class="tbl"><table><thead><tr><th>Image</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:22%">Size</th><th>In use</th></tr></thead><tbody>
+      ${imgs.map(i => `<tr><td class="mono wrap">${esc(i.image)}<div class="sub2">${esc(i.id)}</div></td>${h ? "" : `<td>${esc(i.host)}</td>`}
+        <td class="n">${bytes(i.size)}<div class="bar2" style="width:${(100 * i.size / max).toFixed(1)}%"></div></td>
+        <td>${i.in_use ? `<span class="st up"><i></i>in use</span>` : `<span class="st off"><i></i>unused</span>`}</td></tr>`).join("")}
+      </tbody></table></div></div>`;
+  }
+  body.querySelectorAll("[data-goto]").forEach(a => a.onclick = e => {
+    e.preventDefault(); const [host, name] = a.dataset.goto.split("|");
+    S.ct = {host, name}; S.dk = "containers"; localSet("dk", S.dk); S.cq = name; S.chost = ""; S.cstate = ""; S.ctag = ""; loadCt();
+  });
+}
+
+function setTab(t) {
+  S.tab = t; localSet("tab", t);
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === t));
+  document.getElementById("hostsView").hidden = t !== "hosts";
+  document.getElementById("ctView").hidden = t !== "containers";
+  S.charts.forEach(u => u.destroy()); S.charts = [];
+  if (t === "containers") loadCt(); else detail();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => setTab(b.dataset.t));
+document.querySelectorAll("#dkSub button").forEach(b => b.onclick = () => { S.dk = b.dataset.v; localSet("dk", S.dk); S.ct = null; document.getElementById("cdetail").innerHTML = ""; loadCt(); });
+document.getElementById("chost").onchange = e => { S.chost = e.target.value; S.dk === "containers" ? loadCt() : renderList(); };
+
+load().then(() => setTab(S.tab));
+setInterval(() => { load(); if (S.tab === "containers" && S.dk === "containers" && !S.ct) loadCt(); }, 60000);
+</script>
+</body>
+</html>

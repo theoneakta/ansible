@@ -40,7 +40,10 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import auth
 import categories
+import checks
 import dns
+import infra
+import kuma
 import live
 
 CH_URL = os.environ.get("CLICKHOUSE_URL", "http://clickhouse:8123")
@@ -62,6 +65,8 @@ async def lifespan(_app):
     dns.start()
     live.start()
     categories.start()
+    checks.start(name_of)
+    kuma.start()
     yield
 
 
@@ -92,6 +97,9 @@ async def require_sign_in(request: Request, call_next):
 app.add_middleware(SessionMiddleware, secret_key=auth.SESSION_SECRET, session_cookie="sl_session",
                    max_age=auth.SESSION_DAYS * 86400, same_site="lax", https_only=auth.SECURE)
 app.include_router(auth.router)
+app.include_router(checks.router)  # security checks: /alerts, /api/checks, /api/alerts
+app.include_router(kuma.router)  # applications (Uptime Kuma): /apps, /api/apps
+app.include_router(infra.router)  # infrastructure (Prometheus): /infra, /api/infra
 
 
 @app.get("/login")
@@ -882,4 +890,6 @@ def category_list():
 def health():
     return {"clickhouse": query("SELECT version() AS v")[0]["v"], "names": len(names()),
             "wan_exporter": WAN_EXPORTER, "lan_exporters": LAN_EXPORTERS, "dns": dns.status,
-            "live": live.status, "categories": categories.status}
+            "live": live.status, "categories": categories.status,
+            "checks": {k: v for k, v in checks.status.items() if k != "errors"},
+            "kuma": {k: v for k, v in kuma.status.items() if k != "last_error" or v}}

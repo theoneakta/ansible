@@ -7,10 +7,11 @@ RUN pip install --no-cache-dir \
         "pyjwt[crypto]==2.9.*" \
         "itsdangerous==2.2.*" \
         "python-multipart==0.0.*" \
-        "ldap3==2.9.*"
+        "ldap3==2.9.*" \
+        "python-socketio[client]==5.*"
 
 WORKDIR /app
-COPY app.py auth.py dns.py live.py categories.py /app/
+COPY app.py auth.py dns.py live.py categories.py checks.py kuma.py infra.py /app/
 COPY static /app/static
 
 # Nothing written at runtime - an unprivileged user with no host account is

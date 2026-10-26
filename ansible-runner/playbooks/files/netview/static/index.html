@@ -55,6 +55,10 @@
   nav a.active { color: var(--text); border-color: var(--border); background: var(--surface); }
   nav a:hover { text-decoration: none; color: var(--text); }
   nav a .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--s3); margin-right: .35rem; vertical-align: 1px; }
+  /* The three sections (Applications / Network / Infrastructure), on every page. */
+  nav.sections { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; flex-wrap: nowrap; }
+  nav.sections a { color: var(--muted); padding: .35rem .9rem; font-size: .88rem; border: 0; border-radius: 0; }
+  nav.sections a.active { color: var(--text); background: var(--surface2); box-shadow: inset 0 -2px 0 var(--accent2); }
   .spacer { flex: 1; }
   .timebar { display: flex; align-items: center; gap: .5rem; }
   .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; flex-wrap: wrap; }
@@ -197,12 +201,14 @@
 <body>
 <header>
   <h1><a href="#/" title="Sentry Lens"><img src="/static/logo.svg" alt="">Sentry <span>Lens</span></a></h1>
+  <nav class="sections" aria-label="Sections"><a href="/apps">Applications</a><a href="#/" class="active">Network</a><a href="/infra">Infrastructure</a></nav>
   <nav>
     <a href="#/" data-page="explore">Overview</a>
     <a href="#/live" data-page="live"><span class="dot"></span>Live</a>
     <a href="#/hosts" data-page="hosts">Devices</a>
     <a href="#/sites" data-page="sites">Websites</a>
     <a href="#/new" data-page="new">New today</a>
+    <a href="/alerts">Alerts</a>
     <a href="#/admin" data-page="admin" id="navAdmin" hidden>Admin <span class="badge" id="pendingBadge" hidden></span></a>
   </nav>
   <div class="spacer"></div>
@@ -1202,7 +1208,7 @@ async function route() {
   const page = path === "/live" ? "live" : path === "/hosts" ? "hosts" : path === "/sites" ? "sites"
     : path === "/new" ? "new" : path === "/admin" ? "admin" : "explore";
   const navPage = page === "explore" && q.get("host") ? "hosts" : page === "explore" && q.get("site") ? "sites" : page;
-  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.dataset.page === navPage));
+  document.querySelectorAll("nav:not(.sections) a").forEach(a => a.classList.toggle("active", a.dataset.page === navPage));
   const zoomed = q.get("from") && q.get("to");
   const range = q.get("range") || localGet("range") || "6h";
   document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", !zoomed && b.dataset.r === range));

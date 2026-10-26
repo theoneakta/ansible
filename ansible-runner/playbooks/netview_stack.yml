@@ -99,10 +99,16 @@
       192.168.3.5: lububntu
       192.168.3.7: docker-apps
       192.168.3.8: docker-apps2
-      192.168.3.150: akvorado
+      192.168.3.150: rocky10
       192.168.3.188: truenas
       192.168.3.236: pve5
       192.168.3.237: pve6
+    # Applications section: Uptime Kuma (2.x) at this URL, signed in with the
+    # vault login of this inventory host (web group).
+    netview_kuma_url: https://kuma.aktasolutions.com
+    netview_kuma_host: kuma.aktasolutions.com
+    # Infrastructure section: Prometheus on the Akvorado network ('' = off).
+    netview_prometheus_url: http://prometheus:9090
 
   pre_tasks:
     # Same login handling as akvorado_stack.yml.
@@ -281,6 +287,24 @@
       register: auth_file
       no_log: true
 
+    # The Applications section: Uptime Kuma, with the login of its inventory
+    # host (web group, per-host vault). No host or no login = section off.
+    - name: Uptime Kuma login (secrets - root only)
+      ansible.builtin.copy:
+        dest: "{{ netview_dir }}/kuma.env"
+        content: |
+          # Managed by ansible-runner (netview_stack.yml) - changes are overwritten.
+          KUMA_URL={{ netview_kuma_url if kuma_login else '' }}
+          KUMA_USER={{ hostvars[netview_kuma_host].vault_win_user if kuma_login else '' }}
+          KUMA_PASS={{ hostvars[netview_kuma_host].vault_win_password if kuma_login else '' }}
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        kuma_login: "{{ netview_kuma_host in hostvars and hostvars[netview_kuma_host].vault_win_password is defined }}"
+      register: kuma_file
+      no_log: true
+
     # ------------------------------------------------------------- app
     # Docker CE on Rocky runs with SELinux support off (see akvorado_stack.yml);
     # the rule keeps the bind mount readable if that's turned on.
@@ -324,7 +348,7 @@
               read_only: true
               ports:
                 - {{ netview_port }}:8000/tcp
-              env_file: [.env, session.env, auth.env]
+              env_file: [.env, session.env, auth.env, kuma.env]
               environment:
                 CLICKHOUSE_URL: http://clickhouse:8123
                 WAN_EXPORTER: {{ netview_wan_exporter }}
@@ -341,6 +365,8 @@
                 CF_ACCESS_AUD: "{{ netview_cf_aud }}"
                 ADMIN_EMAILS: "{{ netview_admin_emails | join(',') }}"
                 SESSION_DAYS: "{{ netview_session_days }}"
+                # Infrastructure section: Prometheus (prometheus_stack.yml) on the same network.
+                PROM_URL: "{{ netview_prometheus_url }}"
               volumes:
                 - ./names.json:/data/names.json:ro
               networks: [akvorado]
@@ -358,6 +384,7 @@
       args:
         chdir: "{{ netview_dir }}"
       when: app_src is changed or compose_file is changed or key_file is changed or session_file is changed or auth_file is changed
+            or kuma_file is changed
       changed_when: true
 
     - name: Make sure it's running
