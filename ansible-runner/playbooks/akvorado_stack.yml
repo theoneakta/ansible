@@ -43,7 +43,7 @@
       192.168.3.5: lububntu
       192.168.3.7: docker-apps
       192.168.3.8: docker-apps2
-      192.168.3.150: akvorado
+      192.168.3.150: rocky10
       192.168.3.236: pve5
       192.168.3.237: pve6
     # softflowd exporters: the Linux hosts (linux_software.yml --softflowd)

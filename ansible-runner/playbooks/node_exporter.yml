@@ -1,0 +1,226 @@
+---
+# Prometheus node_exporter on the Linux servers and the Proxmox nodes: CPU,
+# memory, disks, filesystems, network, load and systemd service states on
+# TCP 9100, scraped by Prometheus on the collector (prometheus_stack.yml) -
+# what Sentry Lens's Infrastructure section shows.
+#
+#   host:9100 <-- Prometheus (192.168.3.150) --> Sentry Lens /infra
+#
+# The official release binary (checksum-verified) as /usr/local/bin/
+# node_exporter, run by systemd as an unprivileged system user, sandboxed.
+# Where a host firewall is on (firewalld or ufw), 9100 opens to the collector
+# only. Linux hosts: the vault account with sudo; Proxmox nodes ("SSH only"
+# hosts): root, no sudo.
+#
+# Run:  ./run.sh node_exporter.yml
+#       ./run.sh node_exporter.yml --limit 192.168.3.7
+#       ./run.sh node_exporter.yml -e node_exporter_state=absent    (remove it)
+
+- name: node_exporter
+  hosts: "{{ node_exporter_hosts | default('linux:192.168.3.236:192.168.3.237') }}"
+  gather_facts: false
+  become: "{{ 'ssh' not in group_names }}"
+  vars:
+    node_exporter_state: present
+    node_exporter_version: "1.9.1"
+    node_exporter_port: 9100
+    # Who may scrape it (the host firewall rule): Prometheus's host.
+    node_exporter_scraper: 192.168.3.150
+
+  pre_tasks:
+    # Same login handling as linux_software.yml / akvorado_stack.yml.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined and 'ssh' not in group_names
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+    - name: Gather facts
+      ansible.builtin.setup:
+        gather_subset: [min]
+
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - node_exporter_state in ['present', 'absent']
+          - node_exporter_scraper is match('^\d{1,3}(\.\d{1,3}){3}$')
+          - ansible_facts['architecture'] in ['x86_64', 'aarch64']
+        fail_msg: "node_exporter_state is present/absent, the scraper an IPv4 address; x86_64 or aarch64 hosts only."
+
+    - name: Firewall in use
+      ansible.builtin.shell: |
+        for s in firewalld ufw; do systemctl is-active --quiet $s && { echo $s; exit 0; }; done; echo none
+      register: host_fw
+      changed_when: false
+
+    - name: Version installed
+      ansible.builtin.command: /usr/local/bin/node_exporter --version
+      register: ne_version
+      changed_when: false
+      failed_when: false
+
+    # ------------------------------------------------------------- install
+    - name: Install
+      when: node_exporter_state == 'present'
+      vars:
+        arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] }}"
+        release: "node_exporter-{{ node_exporter_version }}.linux-{{ arch }}"
+        base_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}"
+        # Download only when that version isn't the one installed.
+        fresh: "{{ ('version ' ~ node_exporter_version ~ ' ') not in (ne_version.stdout | default('')) ~ (ne_version.stderr | default('')) }}"
+      block:
+        - name: System user
+          ansible.builtin.user:
+            name: node_exporter
+            system: true
+            shell: /usr/sbin/nologin
+            create_home: false
+
+        - name: Download the release (checksum-verified)
+          ansible.builtin.get_url:
+            url: "{{ base_url }}/{{ release }}.tar.gz"
+            checksum: "sha256:{{ base_url }}/sha256sums.txt"
+            dest: "/tmp/{{ release }}.tar.gz"
+            mode: "0600"
+          when: fresh
+
+        - name: Unpack
+          ansible.builtin.unarchive:
+            src: "/tmp/{{ release }}.tar.gz"
+            dest: /tmp
+            remote_src: true
+            creates: "/tmp/{{ release }}/node_exporter"
+          when: fresh
+
+        - name: The binary
+          ansible.builtin.copy:
+            src: "/tmp/{{ release }}/node_exporter"
+            dest: /usr/local/bin/node_exporter
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+          when: fresh
+          register: ne_bin
+
+        - name: SELinux label of the binary
+          ansible.builtin.command: restorecon /usr/local/bin/node_exporter
+          when: ansible_facts['os_family'] == 'RedHat'
+          changed_when: false
+          failed_when: false
+
+        # Metrics other tools write as files (docker-meta, cadvisor.yml).
+        - name: Textfile folder
+          ansible.builtin.file:
+            path: /var/lib/node_exporter/textfile
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: systemd unit
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/node_exporter.service
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # Managed by ansible-runner (node_exporter.yml) - changes are overwritten.
+              [Unit]
+              Description=Prometheus node_exporter
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              User=node_exporter
+              Group=node_exporter
+              # systemd: the state of every service (the default filesystem
+              # exclusions already leave out Docker's and the pseudo mounts);
+              # textfile: the metrics files other tools leave there.
+              ExecStart=/usr/local/bin/node_exporter --web.listen-address=:{{ node_exporter_port }} --collector.systemd --collector.textfile.directory=/var/lib/node_exporter/textfile
+              Restart=on-failure
+              NoNewPrivileges=true
+              ProtectSystem=strict
+              ProtectHome=read-only
+              PrivateTmp=true
+              ProtectKernelTunables=true
+              ProtectControlGroups=true
+
+              [Install]
+              WantedBy=multi-user.target
+          register: ne_unit
+
+        - name: Running, and at boot
+          ansible.builtin.systemd_service:
+            name: node_exporter
+            state: "{{ 'restarted' if (ne_bin is changed or ne_unit is changed) else 'started' }}"
+            enabled: true
+            daemon_reload: true
+
+        - name: Clean up the download
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["/tmp/{{ release }}.tar.gz", "/tmp/{{ release }}"]
+          when: fresh
+
+    # ------------------------------------------------------------- firewall
+    - name: Open the port to the scraper (firewalld)
+      ansible.posix.firewalld:
+        rich_rule: >-
+          rule family="ipv4" source address="{{ node_exporter_scraper }}"
+          port port="{{ node_exporter_port }}" protocol="tcp" accept
+        permanent: true
+        immediate: true
+        state: "{{ 'enabled' if node_exporter_state == 'present' else 'disabled' }}"
+      when: host_fw.stdout == 'firewalld'
+
+    - name: Open the port to the scraper (ufw)
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ node_exporter_scraper }}"
+        to_port: "{{ node_exporter_port | string }}"
+        proto: tcp
+        comment: node_exporter (ansible-runner)
+        delete: "{{ node_exporter_state == 'absent' }}"
+      when: host_fw.stdout == 'ufw'
+
+    # ------------------------------------------------------------- remove
+    - name: Remove
+      when: node_exporter_state == 'absent'
+      block:
+        - name: Stop it
+          ansible.builtin.systemd_service:
+            name: node_exporter
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Delete the unit and the binary
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: [/etc/systemd/system/node_exporter.service, /usr/local/bin/node_exporter]
+
+    # ------------------------------------------------------------- check
+    - name: Answering
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ node_exporter_port }}/metrics"
+        return_content: false
+      register: ne_check
+      until: ne_check is succeeded
+      retries: 5
+      delay: 2
+      when: node_exporter_state == 'present'

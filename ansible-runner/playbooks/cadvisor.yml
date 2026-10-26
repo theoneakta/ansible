@@ -1,0 +1,262 @@
+---
+# cAdvisor on the Docker hosts: CPU, memory, network and uptime of every
+# container on TCP 9338, scraped by Prometheus on the collector
+# (prometheus_stack.yml) - the containers in Sentry Lens's Infrastructure
+# section. Hosts without Docker are skipped.
+#
+#   containers <-- cadvisor (host network) :9338 <-- Prometheus (192.168.3.150)
+#
+# On the host's network rather than a published port, so the host firewall
+# applies: where one is on (firewalld or ufw), 9338 opens to the collector
+# only (a published Docker port would bypass it). Read-only mounts of the
+# host's filesystems; the per-CPU, per-process, TCP/UDP and disk-I/O metrics
+# are left out (thousands of series for little use here).
+#
+# Run:  ./run.sh cadvisor.yml
+#       ./run.sh cadvisor.yml --limit 192.168.3.7
+#       ./run.sh cadvisor.yml -e cadvisor_state=absent    (remove it)
+
+- name: cAdvisor
+  hosts: "{{ cadvisor_hosts | default('linux') }}"
+  gather_facts: false
+  become: true
+  vars:
+    cadvisor_state: present
+    cadvisor_image: ghcr.io/google/cadvisor:0.60.6
+    cadvisor_port: 9338
+    cadvisor_dir: /opt/cadvisor
+    cadvisor_scraper: 192.168.3.150
+
+  pre_tasks:
+    # Same login handling as node_exporter.yml.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+    - name: Docker installed?
+      ansible.builtin.command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Skip a host without Docker
+      ansible.builtin.meta: end_host
+      when: docker_version.rc != 0
+
+  tasks:
+    - name: Firewall in use
+      ansible.builtin.shell: |
+        for s in firewalld ufw; do systemctl is-active --quiet $s && { echo $s; exit 0; }; done; echo none
+      register: host_fw
+      changed_when: false
+
+    - name: Run it
+      when: cadvisor_state == 'present'
+      block:
+        - name: Folder
+          ansible.builtin.file:
+            path: "{{ cadvisor_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Compose file
+          ansible.builtin.copy:
+            dest: "{{ cadvisor_dir }}/docker-compose.yml"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+              services:
+                cadvisor:
+                  image: {{ cadvisor_image }}
+                  restart: unless-stopped
+                  network_mode: host
+                  read_only: true
+                  command:
+                    - --port={{ cadvisor_port }}
+                    - --docker_only=true
+                    - --housekeeping_interval=30s
+                    - --store_container_labels=false
+                    - --whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service
+                    - --disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,perf_event,process,referenced_memory,resctrl,sched,tcp,udp,disk
+                  volumes:
+                    - /:/rootfs:ro
+                    - /var/run:/var/run:ro
+                    - /sys:/sys:ro
+                    - /var/lib/docker/:/var/lib/docker:ro
+                    - /dev/disk/:/dev/disk:ro
+                  logging:
+                    driver: json-file
+                    options: {max-size: 10m, max-file: "3"}
+          register: cadvisor_compose
+
+        - name: Start (or update)
+          ansible.builtin.command: docker compose up -d --wait
+          args:
+            chdir: "{{ cadvisor_dir }}"
+          register: cadvisor_up
+          changed_when: "'Started' in cadvisor_up.stderr or 'Created' in cadvisor_up.stderr or 'Recreated' in cadvisor_up.stderr"
+
+        # docker-meta: what only Docker knows (stopped containers, health,
+        # restarts, mounts, volumes and their sizes, networks, ports, images)
+        # as metrics in node_exporter's textfile folder (node_exporter.yml) -
+        # metadata only, never environment variables. Every minute.
+        - name: docker-meta script
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/docker_meta.py"
+            dest: /usr/local/bin/docker-meta
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Textfile folder (node_exporter.yml makes it too)
+          ansible.builtin.file:
+            path: /var/lib/node_exporter/textfile
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: docker-meta service and timer
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ item.name }}"
+            owner: root
+            group: root
+            mode: "0644"
+            content: "{{ item.content }}"
+          loop:
+            - name: docker-meta.service
+              content: |
+                # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                [Unit]
+                Description=Docker metadata for Prometheus (node_exporter textfile)
+                After=docker.service
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/python3 -I /usr/local/bin/docker-meta
+                ProtectSystem=strict
+                ReadWritePaths=/var/lib/node_exporter
+                ProtectHome=true
+                PrivateTmp=true
+                NoNewPrivileges=true
+            - name: docker-meta.timer
+              content: |
+                # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                [Unit]
+                Description=docker-meta every minute
+                [Timer]
+                OnBootSec=1min
+                OnUnitActiveSec=1min
+                AccuracySec=5s
+                [Install]
+                WantedBy=timers.target
+            # The disk use, measured apart: minutes on a host with big volumes.
+            - name: docker-meta-df.service
+              content: |
+                # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                [Unit]
+                Description=Docker disk use for docker-meta (docker system df)
+                After=docker.service
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/python3 -I /usr/local/bin/docker-meta --df
+                TimeoutStartSec=20min
+                Nice=10
+                IOSchedulingClass=idle
+                ProtectSystem=strict
+                ReadWritePaths=/var/lib/node_exporter
+                ProtectHome=true
+                PrivateTmp=true
+                NoNewPrivileges=true
+            - name: docker-meta-df.timer
+              content: |
+                # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                [Unit]
+                Description=docker-meta disk use every 15 minutes
+                [Timer]
+                OnBootSec=3min
+                OnUnitActiveSec=15min
+                [Install]
+                WantedBy=timers.target
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: docker-meta once now, then every minute (disk use every 15)
+          ansible.builtin.systemd_service:
+            name: "{{ item.name }}"
+            state: "{{ item.state }}"
+            enabled: "{{ item.enabled | default(omit) }}"
+            daemon_reload: true
+          loop:
+            - {name: docker-meta.timer, state: started, enabled: true}
+            - {name: docker-meta-df.timer, state: started, enabled: true}
+            - {name: docker-meta.service, state: restarted}
+
+        - name: First disk-use measure (in the background - it can take minutes)
+          ansible.builtin.command: systemctl start --no-block docker-meta-df.service
+          changed_when: false
+
+    - name: Open the port to the scraper (firewalld)
+      ansible.posix.firewalld:
+        rich_rule: >-
+          rule family="ipv4" source address="{{ cadvisor_scraper }}"
+          port port="{{ cadvisor_port }}" protocol="tcp" accept
+        permanent: true
+        immediate: true
+        state: "{{ 'enabled' if cadvisor_state == 'present' else 'disabled' }}"
+      when: host_fw.stdout == 'firewalld'
+
+    - name: Open the port to the scraper (ufw)
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ cadvisor_scraper }}"
+        to_port: "{{ cadvisor_port | string }}"
+        proto: tcp
+        comment: cadvisor (ansible-runner)
+        delete: "{{ cadvisor_state == 'absent' }}"
+      when: host_fw.stdout == 'ufw'
+
+    - name: Remove
+      when: cadvisor_state == 'absent'
+      block:
+        - name: Stop and delete the container
+          ansible.builtin.command: docker compose down
+          args:
+            chdir: "{{ cadvisor_dir }}"
+            removes: "{{ cadvisor_dir }}/docker-compose.yml"
+
+        - name: Delete the folder
+          ansible.builtin.file:
+            path: "{{ cadvisor_dir }}"
+            state: absent
+
+    - name: Answering
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ cadvisor_port }}/metrics"
+        return_content: true
+      register: cadvisor_check
+      until: cadvisor_check is succeeded and 'container_cpu_usage_seconds_total' in cadvisor_check.content
+      retries: 10
+      delay: 3
+      when: cadvisor_state == 'present'
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Docker {{ docker_version.stdout }}: {{ cadvisor_check.content | default('') | regex_findall('container_last_seen\\{[^}]*name=\"([^\"]+)\"') | unique | length }} containers seen"
+      when: cadvisor_state == 'present'
