@@ -360,6 +360,8 @@
                 SESSION_DAYS: "{{ netview_session_days }}"
                 # Infrastructure section: Prometheus (prometheus_stack.yml) on the same network.
                 PROM_URL: "{{ netview_prometheus_url }}"
+                # Assets > Collectors: the LAN address in the install lines (with PUBLIC_URL).
+                COLLECTOR_LAN_URL: "http://{{ site_server_ip }}:{{ netview_port }}"
               volumes:
                 - ./names.json:/data/names.json:ro
               networks: [akvorado]

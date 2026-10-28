@@ -38,13 +38,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+import assets
 import auth
 import categories
 import checks
+import dist
 import dns
 import infra
 import kuma
 import live
+import snmp
 
 CH_URL = os.environ.get("CLICKHOUSE_URL", "http://clickhouse:8123")
 NAMES_FILE = pathlib.Path(os.environ.get("NAMES_FILE", "/data/names.json"))
@@ -67,6 +70,7 @@ async def lifespan(_app):
     categories.start()
     checks.start(name_of)
     kuma.start()
+    assets.start(name_of)
     yield
 
 
@@ -79,7 +83,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # GitHub / any OIDC, admin approval) and/or a Cloudflare Access token in
 # front. Every request needs an approved account - the LAN address included;
 # pages without one go to /login, /api gets a 401 (403 while pending).
-OPEN_PATHS = ("/static/", "/login", "/auth/", "/api/health")  # the login page, its assets and flows; the health check
+OPEN_PATHS = ("/static/", "/login", "/auth/", "/api/health", "/api/collector/", "/collector/")  # the login page, its assets and flows; the health check; the collectors (their own key)
 
 
 @app.middleware("http")
@@ -100,6 +104,9 @@ app.include_router(auth.router)
 app.include_router(checks.router)  # security checks: /alerts, /api/checks, /api/alerts
 app.include_router(kuma.router)  # applications (Uptime Kuma): /apps, /api/apps
 app.include_router(infra.router)  # infrastructure (Prometheus): /infra, /api/infra
+app.include_router(assets.router)  # assets found by the collectors: /assets, /api/assets, /api/collector(s)
+app.include_router(snmp.router)  # SNMP readings and credentials: /api/snmp, /api/credentials, /api/collector/snmp|counters
+app.include_router(dist.router)  # the collector's installers and binaries: /collector/...
 
 
 @app.get("/login")

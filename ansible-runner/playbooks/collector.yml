@@ -1,0 +1,100 @@
+---
+# A Sentry Lens collector on a Linux host: runs the installer Sentry Lens
+# serves (/collector/install.sh - the same line Assets > Collectors shows),
+# which downloads the collector, checks it and makes it a systemd service.
+# It sweeps the subnets Sentry Lens gives it and only talks out. Windows hosts
+# and Docker: use the lines on the Collectors page.
+#
+# Its key comes from Sentry Lens (Assets > Collectors > Add collector, shown
+# once): -e collector_key=..., or vault_collector_key in the host's vault.
+# The earlier Docker collector (Python, /opt/sentry-collector) is removed.
+#
+# Run:  ./run.sh collector.yml -e collector_key=slc_...                 (on the monitoring server)
+#       ./run.sh collector.yml --limit 192.168.3.7 -e collector_key=slc_...
+#       ./run.sh collector.yml -e collector_state=absent
+
+- name: Sentry Lens collector
+  hosts: "{{ collector_hosts | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    collector_state: present
+    collector_key: "{{ vault_collector_key | default('') }}"
+    # Where Sentry Lens answers - its LAN address by default.
+    collector_url: "http://{{ site_server_ip }}:8082"
+    collector_tls_verify: true
+
+  pre_tasks:
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined and 'ssh' not in group_names
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      check_mode: false
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - collector_state in ['present', 'absent']
+          - collector_state == 'absent' or collector_key is match('^slc_[A-Za-z0-9_-]{30,}$')
+          - collector_url is match('^https?://')
+        fail_msg: >-
+          A collector key from Sentry Lens (Assets > Collectors > Add collector):
+          -e collector_key=slc_... (or vault_collector_key in the host's vault).
+
+    - name: The earlier Docker collector (Python), if there
+      ansible.builtin.stat:
+        path: /opt/sentry-collector/docker-compose.yml
+      register: old_collector
+
+    - name: Remove it
+      when: old_collector.stat.exists
+      block:
+        - name: Stop it
+          ansible.builtin.command: docker compose down --rmi local
+          args:
+            chdir: /opt/sentry-collector
+        - name: Delete its folder
+          ansible.builtin.file:
+            path: /opt/sentry-collector
+            state: absent
+
+    - name: Install (or update) the collector
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        curl -fsSL {{ '' if collector_tls_verify | bool else '-k' }} '{{ collector_url }}/collector/install.sh?url={{ collector_url | urlencode }}'
+        | bash -s -- --key "$SENTRY_KEY" --url '{{ collector_url }}' {{ '' if collector_tls_verify | bool else '--insecure' }}
+      args:
+        executable: /bin/bash
+      environment:
+        SENTRY_KEY: "{{ collector_key }}"
+      register: install
+      changed_when: true
+      no_log: true
+      when: collector_state == 'present'
+
+    - name: Uninstall the collector
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        curl -fsSL {{ '' if collector_tls_verify | bool else '-k' }} '{{ collector_url }}/collector/install.sh' | bash -s -- --uninstall
+      args:
+        executable: /bin/bash
+      register: uninstall
+      changed_when: true
+      when: collector_state == 'absent'
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ (install.stdout_lines | default([])) + (uninstall.stdout_lines | default([])) | reject('search', 'slc_') | list }}"
