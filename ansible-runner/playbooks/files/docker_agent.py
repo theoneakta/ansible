@@ -22,6 +22,14 @@ from a registry that wants a login, built here, or pinned by digest are
 "unknown", "local" or "pinned". Reads and writes nothing else: no
 environment, no settings, no logs of the containers.
 
+A job is never left half-done by the agent itself stopping (an update of the
+agent restarts it): its commands run in their own systemd unit, which goes on
+without it, and the job is kept in STATE until its result is sent - a restarted
+agent waits for those commands, runs the job again (pull + up -d and the
+deletes come out the same run twice) and sends the result. While a job runs it
+tells Sentry Lens every BEAT seconds; Sentry Lens hands a job out again when it
+hears nothing for 5 minutes (dockerops.py).
+
 Run by docker-agent.service (cadvisor.yml); its settings in
 /etc/docker-agent.env: SENTRY_URL, AGENT_HOST, AGENT_KEY, SENTRY_TLS_VERIFY.
 """
@@ -29,16 +37,21 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.0.1"
+VERSION = "1.1.1"
+STATE = os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/docker-agent"), "job.json")
+BEAT = 60
+JOB_ID = re.compile(r"[0-9a-f]{1,32}")
 SOCK = "/var/run/docker.sock"
 POLL = 10
 CHECK_EVERY = 6 * 3600
@@ -95,10 +108,23 @@ def lens(method, path, body=None):
 
 
 # ------------------------------------------------------------------ jobs
-def run(argv, cwd, timeout=900):
-    p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)  # noqa: S603 - fixed argv
-    out = f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
-    return p.returncode, out
+def run(argv, cwd, unit, timeout=1800):
+    """A command in its own transient systemd unit (docker-agent-<unit>): the
+    agent stopping doesn't kill it halfway - a recreate cut short leaves the
+    service down. The same unit still running from before a restart: waited for."""
+    if not shutil.which("systemd-run"):
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)  # noqa: S603 - fixed argv
+        return p.returncode, f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
+    name = f"docker-agent-{unit}"
+    end, waited = time.time() + timeout, False
+    while subprocess.run(["systemctl", "is-active", "--quiet", name]).returncode == 0 and time.time() < end:  # noqa: S603,S607
+        waited = True
+        time.sleep(5)
+    p = subprocess.run(["systemd-run", "--quiet", "--wait", "--pipe", "--collect", f"--unit={name}",  # noqa: S603,S607
+                        f"--working-directory={cwd}", f"--property=RuntimeMaxSec={timeout}", *argv],
+                       capture_output=True, text=True, timeout=timeout + 60, stdin=subprocess.DEVNULL)
+    return p.returncode, (f"(waited for the same step left running before a restart)\n" if waited else "") + \
+        f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
 
 
 def refresh_meta(df=False):
@@ -109,7 +135,7 @@ def refresh_meta(df=False):
     subprocess.run(["systemctl", "start", "--no-block", "docker-meta.service"], capture_output=True)  # noqa: S603,S607
 
 
-def job_update(args):
+def job_update(args, jid):
     name = str(args.get("container", ""))
     if not NAME.fullmatch(name):
         raise ValueError("a container name")
@@ -128,11 +154,25 @@ def job_update(args):
     env = [a for f in lab.get("com.docker.compose.project.environment_file", "").split(",")
            if f and os.path.isfile(os.path.join(folder, f)) for a in ("--env-file", os.path.join(folder, f))]
     base = ["docker", "compose", "-p", project, *[a for f in files for a in ("-f", f)], *env]
-    rc, out = run(base + ["pull", service], folder)
+    rc, out = run(base + ["pull", service], folder, f"{jid}-pull")
     if rc != 0:
         return False, out
-    rc, out2 = run(base + ["up", "-d", "--no-deps", service], folder)
-    return rc == 0, out + "\n" + out2
+    rc, out2 = run(base + ["up", "-d", "--no-deps", service], folder, f"{jid}-up")
+    return rc == 0, out + "\n" + out2 + tidy_names(project, service)
+
+
+def tidy_names(project, service):
+    """A recreate cut short leaves the new container under Compose's temporary
+    name (<id>_<name>), which a later up starts as is: its own name back."""
+    flt = q(json.dumps({"label": [f"com.docker.compose.project={project}", f"com.docker.compose.service={service}"]}))
+    names = {(c.get("Names") or ["/"])[0].lstrip("/"): c["Id"] for c in docker("GET", f"/containers/json?all=1&filters={flt}")}
+    out = ""
+    for name, cid in names.items():
+        m = re.fullmatch(r"[0-9a-f]{12}_(.+)", name)
+        if m and m.group(1) not in names:
+            docker("POST", f"/containers/{cid}/rename?name={q(m.group(1))}")
+            out += f"\nrenamed {name} back to {m.group(1)}"
+    return out
 
 
 def in_use():
@@ -140,7 +180,7 @@ def in_use():
     return {c.get("ImageID", "") for c in docker("GET", "/containers/json?all=1")}
 
 
-def job_delete_images(args):
+def job_delete_images(args, _jid):
     used, lines, ok = in_use(), [], True
     for ref in args.get("images") or []:
         ref = str(ref)
@@ -164,7 +204,7 @@ def job_delete_images(args):
     return ok, "\n".join(lines) or "nothing to do"
 
 
-def job_delete_volumes(args):
+def job_delete_volumes(args, _jid):
     lines, ok = [], True
     users = {}
     for c in docker("GET", "/containers/json?all=1"):
@@ -284,12 +324,104 @@ def report_updates():
 JOBS = {"update": job_update, "delete_images": job_delete_images, "delete_volumes": job_delete_volumes}
 
 
+# ------------------------------------------------------------------ the job in hand, kept
+def keep(state):
+    """The job in hand (and its result once there) - in STATE until Sentry Lens has the result."""
+    if state is None:
+        try:
+            os.remove(STATE)
+        except FileNotFoundError:
+            pass
+        return
+    os.makedirs(os.path.dirname(STATE), mode=0o700, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE)
+
+
+def kept():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def execute(j):
+    kind, args, jid = j.get("kind"), j.get("args") or {}, str(j.get("id", ""))
+    if not JOB_ID.fullmatch(jid):
+        return False, "an odd job ID"
+    if kind == "check_updates":
+        report_updates()
+        return True, "checked"
+    if kind not in JOBS:
+        return False, f"this agent ({VERSION}) doesn't know {kind!r}"
+    try:
+        return JOBS[kind](args, jid)
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def send_result(state):
+    """True once Sentry Lens has it (then the job is forgotten here)."""
+    j, r = state["job"], state["result"]
+    try:
+        lens("POST", f"/api/docker-agent/jobs/{q(str(j.get('id', '')))}", {"ok": r["ok"], "log": r["log"][-LOG_MAX:]})
+    except urllib.error.HTTPError as e:
+        if e.code != 404:  # 404: Sentry Lens no longer has the job - nothing to send it to
+            log(f"couldn't send job {j.get('id')}'s result (tried again in {POLL} s): {e}")
+            return False
+    except (urllib.error.URLError, OSError) as e:
+        log(f"couldn't send job {j.get('id')}'s result (tried again in {POLL} s): {e}")
+        return False
+    keep(None)
+    return True
+
+
+def handle(j, resumed=False):
+    """Run a job - telling Sentry Lens every BEAT s that it's still going - then send its result."""
+    log(f"job {j.get('id')}: {j.get('kind')} {json.dumps(j.get('args') or {})[:200]}{' (again: cut short by a restart)' if resumed else ''}")
+    keep({"job": j, "result": None})
+    box = {}
+    t = threading.Thread(target=lambda: box.update(zip(("ok", "log"), execute(j))), daemon=True)
+    t.start()
+    while True:
+        t.join(BEAT)
+        if not t.is_alive():
+            break
+        try:
+            lens("POST", f"/api/docker-agent/jobs/{q(str(j.get('id', '')))}", {"running": True})
+        except (urllib.error.URLError, OSError):
+            pass
+    if resumed:
+        box["log"] = "(run again: the agent was restarted while it ran)\n" + box.get("log", "")
+    state = {"job": j, "result": {"ok": bool(box.get("ok")), "log": box.get("log", "")}}
+    keep(state)
+    send_result(state)
+    if j.get("kind") in JOBS:
+        try:
+            refresh_meta(df=j.get("kind") != "update")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"couldn't refresh docker-meta: {e}")
+    if j.get("kind") == "update" and box.get("ok"):
+        report_updates()
+
+
 def main():
     if not (URL and HOST and KEY):
         sys.exit("SENTRY_URL, AGENT_HOST and AGENT_KEY are needed (/etc/docker-agent.env)")
     log(f"docker-agent {VERSION} for {HOST} -> {URL}")
     last_check, refused = 0, 0
+    # A job cut short by a restart: run again (its commands, still running, are waited for).
+    state = kept()
+    if state and state.get("result") is None:
+        handle(state["job"], resumed=True)
     while True:
+        state = kept()
+        if state and state.get("result") is not None and not send_result(state):
+            time.sleep(POLL)  # Sentry Lens can't be reached: its result first
+            continue
         try:
             jobs = lens("GET", f"/api/docker-agent/jobs?version={VERSION}").get("jobs", [])
             refused = 0
@@ -302,29 +434,9 @@ def main():
             log(f"can't reach Sentry Lens: {e}")
             jobs = []
         for j in jobs:
-            kind, args = j.get("kind"), j.get("args") or {}
-            log(f"job {j.get('id')}: {kind} {json.dumps(args)[:200]}")
-            if kind == "check_updates":
-                report_updates(); last_check = time.time()
-                ok, out = True, "checked"
-            elif kind in JOBS:
-                try:
-                    ok, out = JOBS[kind](args)
-                except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
-                    ok, out = False, str(e)
-            else:
-                ok, out = False, f"this agent ({VERSION}) doesn't know {kind!r}"
-            try:
-                lens("POST", f"/api/docker-agent/jobs/{q(str(j.get('id', '')))}", {"ok": ok, "log": out[-LOG_MAX:]})
-            except (urllib.error.URLError, OSError) as e:
-                log(f"couldn't send job {j.get('id')}'s result: {e}")
-            if kind in JOBS:
-                try:
-                    refresh_meta(df=kind != "update")
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    log(f"couldn't refresh docker-meta: {e}")
-            if kind == "update" and ok:
-                report_updates(); last_check = time.time()
+            handle(j)
+            if j.get("kind") in ("check_updates", "update"):
+                last_check = time.time()
         if time.time() - last_check > CHECK_EVERY:
             last_check = time.time()
             report_updates()

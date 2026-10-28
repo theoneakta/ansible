@@ -277,6 +277,9 @@
                   Wants=network-online.target
                   [Service]
                   EnvironmentFile=/etc/docker-agent.env
+                  # The job in hand, until its result is sent (docker_agent.py).
+                  StateDirectory=docker-agent
+                  StateDirectoryMode=0700
                   ExecStart=/usr/bin/python3 -I /usr/local/bin/docker-agent
                   Restart=always
                   RestartSec=30

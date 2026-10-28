@@ -4,7 +4,10 @@ docker-agent (files/docker_agent.py, cadvisor.yml), which asks here for its
 host's jobs: no port opened on the hosts, no login to them kept here.
 
 An admin queues a job on the Infrastructure > Docker page; the agent picks it
-up within seconds and posts its result. What a job may touch is checked here
+up within seconds (one at a time), tells every minute that it's still on it,
+and posts its result. A job it went quiet on for STALL seconds (the agent or
+its host stopped) is handed out again, up to TRIES times - pull + up -d and the
+deletes come out the same run twice. What a job may touch is checked here
 against what docker-meta reports (a Compose container; images and volumes no
 container uses), and again on the host when it runs. Destructive jobs need
 the confirmation word the page asked the admin to type.
@@ -35,7 +38,8 @@ HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 KINDS = ("update", "delete_images", "delete_volumes", "check_updates")
 CONFIRM = "delete"  # what the page asks to type before a delete
 QUEUED_FOR = 3600  # a job no agent picked up within this: expired
-RUNNING_FOR = 1800  # a job picked up without a result within this: lost
+STALL = 300  # a job picked up, then no word from the agent for this long: handed out again
+TRIES = 3  # ... this many times in all - then failed
 SEEN_EVERY = 60  # an agent's contact is written at most this often
 ONLINE = 120
 
@@ -47,6 +51,9 @@ DDL = [
     """CREATE TABLE IF NOT EXISTS netview.docker_agents (
         host String, version String, last_seen DateTime, checked DateTime, updates String, ver UInt64
     ) ENGINE = ReplacingMergeTree(ver) ORDER BY host""",
+    # The agent's last word on a running job, and how many times it was handed out.
+    "ALTER TABLE netview.docker_jobs ADD COLUMN IF NOT EXISTS beat DateTime DEFAULT 0",
+    "ALTER TABLE netview.docker_jobs ADD COLUMN IF NOT EXISTS tries UInt8 DEFAULT 0",
 ]
 _ready = [False]
 _seen = {}  # host -> when its contact was last written
@@ -82,19 +89,29 @@ def jobs(host="", limit=40):
              + " ORDER BY created DESC LIMIT {n:UInt32}", h=host, n=limit)
     now = time.time()
     for j in rows:
-        for k in ("created", "started", "finished"):
-            j[k] = _ts(j[k])
+        for k in ("created", "started", "finished", "beat"):
+            j[k] = _ts(j.get(k) or 0)
         j["args"] = json.loads(j["args"] or "{}")
+        j["tries"] = int(j.get("tries") or 0)
         if j["state"] == "queued" and now - j["created"] > QUEUED_FOR:
             j["state"] = "expired"
-        elif j["state"] == "running" and now - j["started"] > RUNNING_FOR:
-            j["state"] = "lost"
+        elif j["state"] == "running" and now - max(j["started"], j["beat"]) > STALL:
+            # The agent went quiet on it (stopped, or its host): again, or failed after TRIES.
+            again = j["tries"] < TRIES
+            note = (f"No word from the agent for {STALL // 60} minutes (try {j['tries']} of {TRIES})"
+                    + (" - handed out again." if again else " - given up."))
+            j |= {"state": "queued" if again else "failed", "finished": 0 if again else now,
+                  "log": (j["log"] + "\n" if j["log"] else "") + note}
+            if again:
+                j["created"] = max(j["created"], now - QUEUED_FOR + 600)  # keeps it from expiring right away
+            save_job(j)
     return rows
 
 
 def save_job(j):
     insert("docker_jobs", [j | {"args": json.dumps(j["args"]) if not isinstance(j["args"], str) else j["args"],
-                                **{k: int(j.get(k) or 0) for k in ("created", "started", "finished")}, "ver": time.time_ns()}])
+                                **{k: int(j.get(k) or 0) for k in ("created", "started", "finished", "beat")},
+                                "tries": int(j.get("tries") or 0), "ver": time.time_ns()}])
 
 
 # ------------------------------------------------------------------ the agent's side
@@ -118,25 +135,38 @@ def _contact(host, version, **more):
 
 @router.get("/api/docker-agent/jobs")
 def agent_jobs(request: Request, version: str = ""):
-    """The host's queued jobs - handed out once (they're running from now)."""
+    """The host's oldest queued job - one at a time (the agent runs them one by
+    one: a second handed out with it would go quiet while it waits)."""
     host = _agent(request)
     _contact(host, version)
-    out = []
-    for j in jobs(host, 20):
+    rows = jobs(host, 20)
+    if any(j["state"] == "running" for j in rows):
+        return {"jobs": []}  # one in hand already (handed out again if it goes quiet)
+    for j in reversed(rows):
         if j["state"] == "queued":
-            save_job(j | {"state": "running", "started": time.time()})
-            out.append({"id": j["id"], "kind": j["kind"], "args": j["args"]})
-    return {"jobs": list(reversed(out))}
+            now = time.time()
+            save_job(j | {"state": "running", "started": now, "beat": now, "tries": j["tries"] + 1})
+            return {"jobs": [{"id": j["id"], "kind": j["kind"], "args": j["args"]}]}
+    return {"jobs": []}
 
 
 @router.post("/api/docker-agent/jobs/{jid}")
 async def agent_result(request: Request, jid: str):
+    """{running: true} - still on it; or {ok, log} - its result (taken even after
+    it was handed out again or given up: what really happened wins)."""
     host = _agent(request)
     b = await request.json()
     j = next((j for j in jobs(host, 100) if j["id"] == jid), None)
     if not j:
         raise HTTPException(404, "no such job")
-    save_job(j | {"state": "done" if b.get("ok") else "failed", "finished": time.time(), "log": str(b.get("log", ""))[-16000:]})
+    if b.get("running"):
+        if j["state"] == "running":
+            save_job(j | {"beat": time.time()})
+        return {"ok": True}
+    log = str(b.get("log", ""))
+    if j["log"]:  # what Sentry Lens noted on the way (handed out again)
+        log = j["log"] + "\n" + log
+    save_job(j | {"state": "done" if b.get("ok") else "failed", "finished": time.time(), "log": log[-16000:]})
     return {"ok": True}
 
 
