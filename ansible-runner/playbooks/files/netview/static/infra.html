@@ -806,7 +806,7 @@ function renderJobs() {
   if (!el || S.tab !== "containers") return;
   const hosts = Object.keys(S.act.agents).sort(), h = S.chost;
   const jobs = S.act.jobs.filter(j => !h || j.host === h).slice(0, 15);
-  const again = j => j.tries > (j.state === "queued" ? 0 : 1) ? ` <span class="muted small" title="The agent went quiet on it - handed out again">try ${j.tries + (j.state === "queued" ? 1 : 0)} of 3</span>` : "";
+  const again = j => j.tries > (j.state === "queued" ? 0 : 1) ? ` <span class="muted small" title="Turned away, or the agent went quiet on it - tried again">try ${j.tries + (j.state === "queued" ? 1 : 0)} of 3${j.state === "queued" && j.after > Date.now() / 1000 ? `, at ${new Date(j.after * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : ""}</span>` : "";
   const st = j => ({queued: `<span class="st off"><i></i>waiting</span>${again(j)}`, running: `<span class="st warn"><i></i>running</span>${again(j)}`, done: `<span class="st up"><i></i>done</span>`,
     failed: `<span class="st down"><i></i>failed</span>`, expired: `<span class="st off"><i></i>not picked up</span>`, lost: `<span class="st down"><i></i>no result</span>`})[j.state] || esc(j.state);
   const target = j => j.kind === "update" ? esc(j.args.container) : j.args.images ? `${j.args.images.length} image${j.args.images.length > 1 ? "s" : ""}`

@@ -48,7 +48,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 STATE = os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/docker-agent"), "job.json")
 BEAT = 60
 JOB_ID = re.compile(r"[0-9a-f]{1,32}")
@@ -108,12 +108,14 @@ def lens(method, path, body=None):
 
 
 # ------------------------------------------------------------------ jobs
-def run(argv, cwd, unit, timeout=1800):
+def run(argv, cwd, unit, env, timeout=1800):
     """A command in its own transient systemd unit (docker-agent-<unit>): the
     agent stopping doesn't kill it halfway - a recreate cut short leaves the
-    service down. The same unit still running from before a restart: waited for."""
+    service down. The same unit still running from before a restart: waited for.
+    env: what it runs with (HOME: Compose expands ~ in a file with it)."""
     if not shutil.which("systemd-run"):
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)  # noqa: S603 - fixed argv
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout,  # noqa: S603 - fixed argv
+                           env={**os.environ, **env})
         return p.returncode, f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
     name = f"docker-agent-{unit}"
     end, waited = time.time() + timeout, False
@@ -121,10 +123,38 @@ def run(argv, cwd, unit, timeout=1800):
         waited = True
         time.sleep(5)
     p = subprocess.run(["systemd-run", "--quiet", "--wait", "--pipe", "--collect", f"--unit={name}",  # noqa: S603,S607
-                        f"--working-directory={cwd}", f"--property=RuntimeMaxSec={timeout}", *argv],
+                        f"--working-directory={cwd}", f"--property=RuntimeMaxSec={timeout}",
+                        *[f"--setenv={k}={v}" for k, v in env.items()], *argv],
                        capture_output=True, text=True, timeout=timeout + 60, stdin=subprocess.DEVNULL)
     return p.returncode, (f"(waited for the same step left running before a restart)\n" if waited else "") + \
         f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
+
+
+# A registry or the network turning a pull away for a moment: tried again.
+TRANSIENT = re.compile(r"toomanyrequests|too many requests|rate limit|i/o timeout|TLS handshake timeout|connection reset"
+                       r"|connection refused|unexpected EOF|503 Service Unavailable|502 Bad Gateway|no such host|temporary failure", re.I)
+PULL_WAITS = (20, 60)  # seconds before the 2nd and 3rd attempt (then Sentry Lens tries the job again later)
+
+
+def owner_env(folder):
+    """What Compose runs with: HOME (and USER) of the project folder's owner -
+    as when its owner ran it, so ~ in the file means what it meant then."""
+    import pwd
+    try:
+        pw = pwd.getpwuid(os.stat(folder).st_uid)
+        return {"HOME": pw.pw_dir, "USER": pw.pw_name}
+    except (KeyError, OSError):
+        return {"HOME": "/root", "USER": "root"}
+
+
+def binds_of_compose(base, service, folder, env, jid):
+    """The host folders `compose up` would mount into the service: {target: source}."""
+    rc, out = run(base + ["config", "--format", "json"], folder, f"{jid}-config", env, timeout=120)
+    if rc != 0:
+        raise RuntimeError("docker compose config failed:\n" + out)
+    cfg = json.loads(out[out.index("{"):])
+    vols = ((cfg.get("services") or {}).get(service) or {}).get("volumes") or []
+    return {v.get("target"): os.path.normpath(v.get("source", "")) for v in vols if v.get("type") == "bind"}
 
 
 def refresh_meta(df=False):
@@ -154,11 +184,31 @@ def job_update(args, jid):
     env = [a for f in lab.get("com.docker.compose.project.environment_file", "").split(",")
            if f and os.path.isfile(os.path.join(folder, f)) for a in ("--env-file", os.path.join(folder, f))]
     base = ["docker", "compose", "-p", project, *[a for f in files for a in ("-f", f)], *env]
-    rc, out = run(base + ["pull", service], folder, f"{jid}-pull")
-    if rc != 0:
-        return False, out
-    rc, out2 = run(base + ["up", "-d", "--no-deps", service], folder, f"{jid}-up")
-    return rc == 0, out + "\n" + out2 + tidy_names(project, service)
+    run_env = owner_env(folder)
+    # The host folders it would mount must be the ones it has: else (a ~ meaning
+    # something else, a file changed since) the recreate is left to a person.
+    have = {m.get("Destination"): os.path.normpath(m.get("Source", "")) for m in d.get("Mounts") or [] if m.get("Type") == "bind"}
+    would = binds_of_compose(base, service, folder, run_env, jid)
+    moved = sorted(t for t in set(have) | set(would) if have.get(t) != would.get(t))
+    if moved:
+        return False, ("Not recreated: its Compose file would now mount other host folders than it has -\n"
+                       + "\n".join(f"  {t}: has {have.get(t, '(nothing)')}, would get {would.get(t, '(nothing)')}" for t in moved)
+                       + "\nCheck the file, then update it by hand. Nothing was changed."), False
+    out = ""
+    for attempt in range(len(PULL_WAITS) + 1):
+        rc, o = run(base + ["pull", service], folder, f"{jid}-pull{attempt}", run_env)
+        out += o
+        if rc == 0:
+            break
+        if not TRANSIENT.search(o):
+            return False, out, False
+        if attempt < len(PULL_WAITS):
+            out += f"\n(the registry or the network turned it away - again in {PULL_WAITS[attempt]} s)\n"
+            time.sleep(PULL_WAITS[attempt])
+    else:
+        return False, out + "\n(still turned away - Sentry Lens tries the job again in 5 minutes)", True
+    rc, out2 = run(base + ["up", "-d", "--no-deps", service], folder, f"{jid}-up", run_env)
+    return rc == 0, out + "\n" + out2 + tidy_names(project, service), False
 
 
 def tidy_names(project, service):
@@ -367,7 +417,7 @@ def send_result(state):
     """True once Sentry Lens has it (then the job is forgotten here)."""
     j, r = state["job"], state["result"]
     try:
-        lens("POST", f"/api/docker-agent/jobs/{q(str(j.get('id', '')))}", {"ok": r["ok"], "log": r["log"][-LOG_MAX:]})
+        lens("POST", f"/api/docker-agent/jobs/{q(str(j.get('id', '')))}", {"ok": r["ok"], "log": r["log"][-LOG_MAX:], "retry": r.get("retry", False)})
     except urllib.error.HTTPError as e:
         if e.code != 404:  # 404: Sentry Lens no longer has the job - nothing to send it to
             log(f"couldn't send job {j.get('id')}'s result (tried again in {POLL} s): {e}")
@@ -384,7 +434,7 @@ def handle(j, resumed=False):
     log(f"job {j.get('id')}: {j.get('kind')} {json.dumps(j.get('args') or {})[:200]}{' (again: cut short by a restart)' if resumed else ''}")
     keep({"job": j, "result": None})
     box = {}
-    t = threading.Thread(target=lambda: box.update(zip(("ok", "log"), execute(j))), daemon=True)
+    t = threading.Thread(target=lambda: box.update(zip(("ok", "log", "retry"), execute(j))), daemon=True)
     t.start()
     while True:
         t.join(BEAT)
@@ -396,7 +446,7 @@ def handle(j, resumed=False):
             pass
     if resumed:
         box["log"] = "(run again: the agent was restarted while it ran)\n" + box.get("log", "")
-    state = {"job": j, "result": {"ok": bool(box.get("ok")), "log": box.get("log", "")}}
+    state = {"job": j, "result": {"ok": bool(box.get("ok")), "log": box.get("log", ""), "retry": bool(box.get("retry"))}}
     keep(state)
     send_result(state)
     if j.get("kind") in JOBS:

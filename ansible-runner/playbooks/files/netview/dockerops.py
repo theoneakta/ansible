@@ -53,6 +53,8 @@ DDL = [
     ) ENGINE = ReplacingMergeTree(ver) ORDER BY host""",
     # The agent's last word on a running job, and how many times it was handed out.
     "ALTER TABLE netview.docker_jobs ADD COLUMN IF NOT EXISTS beat DateTime DEFAULT 0",
+    # A job to try again later (a registry turned a pull away): not handed out before this.
+    "ALTER TABLE netview.docker_jobs ADD COLUMN IF NOT EXISTS after DateTime DEFAULT 0",
     "ALTER TABLE netview.docker_jobs ADD COLUMN IF NOT EXISTS tries UInt8 DEFAULT 0",
 ]
 _ready = [False]
@@ -89,7 +91,7 @@ def jobs(host="", limit=40):
              + " ORDER BY created DESC LIMIT {n:UInt32}", h=host, n=limit)
     now = time.time()
     for j in rows:
-        for k in ("created", "started", "finished", "beat"):
+        for k in ("created", "started", "finished", "beat", "after"):
             j[k] = _ts(j.get(k) or 0)
         j["args"] = json.loads(j["args"] or "{}")
         j["tries"] = int(j.get("tries") or 0)
@@ -110,7 +112,7 @@ def jobs(host="", limit=40):
 
 def save_job(j):
     insert("docker_jobs", [j | {"args": json.dumps(j["args"]) if not isinstance(j["args"], str) else j["args"],
-                                **{k: int(j.get(k) or 0) for k in ("created", "started", "finished", "beat")},
+                                **{k: int(j.get(k) or 0) for k in ("created", "started", "finished", "beat", "after")},
                                 "tries": int(j.get("tries") or 0), "ver": time.time_ns()}])
 
 
@@ -142,9 +144,9 @@ def agent_jobs(request: Request, version: str = ""):
     rows = jobs(host, 20)
     if any(j["state"] == "running" for j in rows):
         return {"jobs": []}  # one in hand already (handed out again if it goes quiet)
+    now = time.time()
     for j in reversed(rows):
-        if j["state"] == "queued":
-            now = time.time()
+        if j["state"] == "queued" and j["after"] <= now:
             save_job(j | {"state": "running", "started": now, "beat": now, "tries": j["tries"] + 1})
             return {"jobs": [{"id": j["id"], "kind": j["kind"], "args": j["args"]}]}
     return {"jobs": []}
@@ -152,8 +154,9 @@ def agent_jobs(request: Request, version: str = ""):
 
 @router.post("/api/docker-agent/jobs/{jid}")
 async def agent_result(request: Request, jid: str):
-    """{running: true} - still on it; or {ok, log} - its result (taken even after
-    it was handed out again or given up: what really happened wins)."""
+    """{running: true} - still on it; or {ok, log, retry} - its result (taken even
+    after it was handed out again or given up: what really happened wins).
+    retry: turned away for now (a registry's rate limit) - again in STALL s, up to TRIES."""
     host = _agent(request)
     b = await request.json()
     j = next((j for j in jobs(host, 100) if j["id"] == jid), None)
@@ -166,7 +169,13 @@ async def agent_result(request: Request, jid: str):
     log = str(b.get("log", ""))
     if j["log"]:  # what Sentry Lens noted on the way (handed out again)
         log = j["log"] + "\n" + log
-    save_job(j | {"state": "done" if b.get("ok") else "failed", "finished": time.time(), "log": log[-16000:]})
+    now = time.time()
+    if not b.get("ok") and b.get("retry") and j["tries"] < TRIES:
+        log += f"\n-- try {j['tries']} of {TRIES} turned away: again in {STALL // 60} minutes --"
+        save_job(j | {"state": "queued", "after": now + STALL, "created": max(j["created"], now - QUEUED_FOR + STALL + 600),
+                      "log": log[-16000:]})
+        return {"ok": True}
+    save_job(j | {"state": "done" if b.get("ok") else "failed", "finished": now, "log": log[-16000:]})
     return {"ok": True}
 
 
