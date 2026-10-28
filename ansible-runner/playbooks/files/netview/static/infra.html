@@ -702,7 +702,7 @@ async function loadCtQuiet() { try { S.cdata = await api("/api/infra/containers"
 
 // ---------------- Docker actions
 // Carried out by docker-agent on each host (it asks Sentry Lens for its jobs):
-// update a Compose container, delete unused images and volumes. Admins only;
+// update a container (recreated as it is), delete unused images and volumes. Admins only;
 // every delete is confirmed by typing a word, and checked again on the host.
 S.act = {agents: {}, jobs: [], confirm: "delete"};
 const agentOf = h => S.act.agents[h];

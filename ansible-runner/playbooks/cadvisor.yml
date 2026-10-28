@@ -27,7 +27,7 @@
     cadvisor_dir: /opt/cadvisor
     cadvisor_scraper: "{{ site_server_ip }}"
     # docker-agent: the Docker actions of Sentry Lens's Infrastructure page
-    # (update a Compose container, delete unused images and volumes). It asks
+    # (update a container, delete unused images and volumes). It asks
     # Sentry Lens for its jobs - nothing listens on the host. false: not installed.
     docker_agent: true
     docker_agent_url: "http://{{ site_server_ip }}:8082"
