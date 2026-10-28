@@ -42,6 +42,7 @@ import assets
 import auth
 import categories
 import checks
+import creds
 import dist
 import dns
 import dockerops
@@ -72,6 +73,7 @@ async def lifespan(_app):
     checks.start(name_of)
     kuma.start()
     assets.start(name_of)
+    creds.start()  # the vault: credentials moved into it once, admins confirmed
     yield
 
 

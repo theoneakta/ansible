@@ -164,6 +164,12 @@
   textarea { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: .4rem .6rem; font: inherit; font-size: .85rem; width: 100%; }
   .form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .7rem; align-items: end; }
   .form label { display: flex; flex-direction: column; gap: .25rem; font-size: .78rem; color: var(--muted); }
+  [hidden] { display: none !important; }   /* over display rules like the one above */
+  .kindpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .5rem; }
+  .kindpick button { text-align: left; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: .55rem .7rem; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: .2rem; }
+  .kindpick button span { color: var(--muted); font-size: .74rem; line-height: 1.3; }
+  .kindpick button.on { border-color: var(--accent2); box-shadow: inset 0 0 0 1px var(--accent2); }
+  .form label .sub2 { color: var(--muted); font-size: .72rem; }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; }
   .uplot { font-family: inherit; }
 </style>
@@ -660,69 +666,126 @@ async function snmpDetail(key, box, hours = 24) {
 }
 
 // ---------------- credentials (admins)
+// ---------------- credentials: SNMP, SSH, WinRM, Proxmox API - kept in Sentry Lens's vault when it has one
+// Each kind: what it's for, its own fields, and its own columns in the list.
+const CRED = {
+  snmp_v2c: {label: "SNMP v2c", group: "snmp", what: "A read-only community - switches, routers, printers, NAS, UPS."},
+  snmp_v3: {label: "SNMP v3", group: "snmp", what: "A v3 user with read access - the same devices, signed and encrypted."},
+  ssh: {label: "SSH", group: "ssh", what: "A Linux, Proxmox or network-gear login - the collector reads OS, hardware, software and updates."},
+  winrm: {label: "WinRM", group: "winrm", what: "A Windows login (no administrator rights needed) - the collector reads it over WinRM."},
+  proxmox: {label: "Proxmox API", group: "proxmox", what: "An API token with the PVEAuditor role - VMs, containers, storage, nodes."},
+};
+const CRED_GROUPS = [["snmp", "Network devices - SNMP"], ["ssh", "Linux, Proxmox, network gear - SSH"], ["winrm", "Windows - WinRM"], ["proxmox", "Proxmox - API"]];
+const CRED_SECRETS = ["community", "auth_pass", "priv_pass", "password", "private_key", "secret"];
+// The form's fields, by kind: [name, label, input, hint].
+function credFields(kind) {
+  const pw = (n, ph = "") => `<input type="password" name="${n}" class="filter" autocomplete="new-password" placeholder="${ph}">`;
+  const tx = (n, ph = "") => `<input type="text" name="${n}" class="filter" autocomplete="off" spellcheck="false" placeholder="${ph}">`;
+  const port = d => `<input type="number" name="port" class="filter" min="1" max="65535" placeholder="${d}">`;
+  return {
+    snmp_v2c: [["community", "Community", pw("community", "public is a poor choice - a read-only one of your own"), "Read-only is all it needs."]],
+    snmp_v3: [["user", "User", tx("user", "snmpreader")],
+      ["level", "Security level", `<select name="level"><option value="authPriv">authPriv - signed and encrypted</option><option value="authNoPriv">authNoPriv - signed</option><option value="noAuthNoPriv">noAuthNoPriv</option></select>`],
+      ["auth_proto", "Authentication", `<select name="auth_proto"><option>SHA</option><option>SHA-256</option><option>SHA-512</option><option>SHA-224</option><option>SHA-384</option><option>MD5</option></select>`],
+      ["auth_pass", "Authentication password", pw("auth_pass", "8 characters or more")],
+      ["priv_proto", "Privacy (encryption)", `<select name="priv_proto"><option>AES</option><option>AES-256</option><option>AES-192</option><option>DES</option></select>`],
+      ["priv_pass", "Privacy password", pw("priv_pass", "8 characters or more")]],
+    ssh: [["user", "User", tx("user", "sentry"), "An account with no sudo is enough."],
+      ["password", "Password", pw("password", "or a private key below")],
+      ["private_key", "Private key", `<textarea name="private_key" class="filter" rows="4" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:.75rem" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>`, "Instead of a password, or with it."],
+      ["port", "Port", port(22)]],
+    winrm: [["user", "User", tx("user", "sentry, PC\\sentry or sentry@domain"), "Remote Management Users is enough - no administrator."],
+      ["password", "Password", pw("password")],
+      ["https", "Transport", `<select name="https"><option value="true">HTTPS (5986)</option><option value="false">HTTP (5985)</option></select>`],
+      ["port", "Port", port("5986 / 5985")]],
+    proxmox: [["user", "Token ID", tx("user", "sentry@pve!lens"), "Datacenter > Permissions > API Tokens - with the PVEAuditor role."],
+      ["secret", "Token secret", pw("secret", "the UUID shown when the token was made")],
+      ["port", "Port", port(8006)]],
+  }[kind];
+}
 async function credsTab() {
   const body = document.getElementById("body");
   let d;
   try { d = await api("/api/credentials"); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
-  const noKey = S.cols.collectors.filter(c => !c.creds_ok);
+  const noKey = S.cols.collectors.filter(c => !c.creds_ok), v = d.vault || {};
+  const byGroup = g => d.credentials.filter(c => (CRED[c.kind] || {}).group === g);
+  const scope = c => c.scope.length ? c.scope.map(esc).join(", ") : `<span class="muted">everywhere</span>`;
+  const added = c => `${c.created ? ago(c.created) : "-"}${c.by ? `<div class="sub2">${esc(c.by)}</div>` : ""}${c.origin ? `<div class="sub2">made by ${esc(c.origin)}</div>` : ""}`;
+  const acts = c => `<td class="nw"><button class="btn" data-editcred="${esc(c.id)}">Edit</button> <button class="btn danger" data-delcred="${esc(c.id)}">Delete</button></td>`;
+  const x = c => c.edit || {};
+  const COLS = {
+    snmp: [["Name", c => `<b>${esc(c.name)}</b>`], ["Version", c => c.kind === "snmp_v2c" ? "v2c community" : `v3 user <span class="mono">${esc(x(c).user)}</span><div class="sub2">${esc(x(c).level || "")}${x(c).auth_proto ? ` - ${esc(x(c).auth_proto)}/${esc(x(c).priv_proto || "-")}` : ""}</div>`],
+           ["Scope", scope], ["Devices answering", c => `<span class="n">${c.devices}</span>`], ["Added", added]],
+    ssh: [["Name", c => `<b>${esc(c.name)}</b>`], ["User", c => `<span class="mono">${esc(x(c).user)}</span>`], ["Signs in with", c => x(c).key ? `key${x(c).key === "in the vault" ? " (in the vault)" : ""}` : "password"],
+          ["Port", c => x(c).port || 22], ["Scope", scope], ["Added", added]],
+    winrm: [["Name", c => `<b>${esc(c.name)}</b>`], ["User", c => `<span class="mono">${esc(x(c).user)}</span>`], ["Transport", c => `${x(c).https === false ? "HTTP" : "HTTPS"} ${x(c).port || ""}`],
+            ["Scope", scope], ["Added", added]],
+    proxmox: [["Name", c => `<b>${esc(c.name)}</b>`], ["Token ID", c => `<span class="mono">${esc(x(c).user)}</span>`], ["Port", c => x(c).port || 8006], ["Scope", scope], ["Added", added]],
+  };
   body.innerHTML = `
-    <p class="muted small" style="margin-top:0">What the collectors try on the devices they find - stored encrypted, never shown again, sent only to collectors whose subnets meet the credential's scope (encrypted with the collector's own key).
-      Read-only SNMP is all this needs: on the device, a read-only community or a v3 user with read access.</p>
+    <div class="card" style="margin-bottom:1rem;display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+      ${v.on ? `<span class="st ${v.error ? "off" : "on"}"><i></i>${v.error ? "vault unreachable" : "in the vault"}</span>
+        <span class="small">Kept in Sentry Lens's vault - Vaultwarden, organization <b>${esc(v.org)}</b> / <b>${esc(v.collection)}</b>: you see and edit them in any Bitwarden app too.</span>
+        <span style="flex:1"></span><a class="btn" href="${esc(v.url)}" target="_blank" rel="noopener">Open the vault</a>
+        ${v.error ? `<div class="err small" style="flex-basis:100%">${esc(v.error)} - the collectors keep the last ones read.</div>` : ""}`
+      : `<span class="st off"><i></i>no vault</span><span class="small">Kept here, encrypted with Sentry Lens's key. With Sentry Lens's vault (vaultwarden.yml) they move into it.</span>`}
+    </div>
     ${noKey.length ? `<p class="err small">${noKey.map(c => esc(c.name)).join(", ")}: made before credentials could be sent - regenerate its key on the Collectors tab, then restart it with the new one.</p>` : ""}
     <details class="card" id="creddet" style="margin-bottom:1.1rem" ${d.credentials.length ? "" : "open"}><summary style="cursor:pointer"><b id="credtitle">Add a credential</b></summary>
+      <div class="kindpick" id="credkind" style="margin-top:.9rem">${Object.entries(CRED).map(([k, c]) => `<button type="button" data-kind="${k}"><b>${c.label}</b><span>${c.what}</span></button>`).join("")}</div>
       <form class="form" id="credf" style="margin-top:.9rem">
-        <label>Name<input type="text" name="cname" class="filter" placeholder="switches-ro" required maxlength="60"></label>
-        <label>Kind<select name="kind"><option value="snmp_v2c">SNMP v2c (community)</option><option value="snmp_v3">SNMP v3 (user)</option></select></label>
-        <label>Only for these subnets (empty: everywhere)<input type="text" name="scope" class="filter" placeholder="192.168.3.0/24"></label>
-        <label data-k="snmp_v2c">Community<input type="password" name="community" class="filter" autocomplete="off"></label>
-        <label data-k="snmp_v3" hidden>User<input type="text" name="user" class="filter" autocomplete="off"></label>
-        <label data-k="snmp_v3" hidden>Security level<select name="level"><option value="">from the passwords</option><option value="authPriv">authPriv (signed, encrypted)</option><option value="authNoPriv">authNoPriv (signed)</option><option value="noAuthNoPriv">noAuthNoPriv</option></select></label>
-        <label data-k="snmp_v3" hidden>Authentication<select name="auth_proto"><option>SHA</option><option>SHA-256</option><option>SHA-512</option><option>SHA-224</option><option>SHA-384</option><option>MD5</option></select></label>
-        <label data-k="snmp_v3" hidden>Authentication password<input type="password" name="auth_pass" class="filter" autocomplete="off"></label>
-        <label data-k="snmp_v3" hidden>Privacy (encryption)<select name="priv_proto"><option>AES</option><option>AES-256</option><option>AES-192</option><option>DES</option></select></label>
-        <label data-k="snmp_v3" hidden>Privacy password (empty: none)<input type="password" name="priv_pass" class="filter" autocomplete="off"></label>
-        <div><button class="btn primary" id="credsave">Add</button> <button type="button" class="btn" id="credcancel" hidden>Cancel</button></div>
+        <label>Name<input type="text" name="cname" class="filter" required maxlength="80" placeholder="what it's for - e.g. Linux servers"></label>
+        <label>For these hosts or subnets<input type="text" name="scope" class="filter" placeholder="empty: everywhere - 192.168.1.0/24, 192.168.1.20"></label>
+        <div id="credfields" style="display:contents"></div>
+        <div style="grid-column:1/-1"><button class="btn primary" id="credsave">Add</button> <button type="button" class="btn" id="credcancel" hidden>Cancel</button></div>
       </form><div id="credmsg" class="small"></div></details>
-    ${d.credentials.length ? `<div class="tbl"><table><thead><tr><th>Name</th><th>Kind</th><th>Scope</th><th class="n">Devices answering</th><th>Added</th><th></th></tr></thead><tbody>
-      ${d.credentials.map(c => `<tr><td><b>${esc(c.name)}</b></td><td class="small">${esc(c.summary)}</td><td class="mono small">${c.scope.length ? c.scope.map(esc).join(", ") : "everywhere"}</td>
-        <td class="n">${c.devices}</td><td class="small">${ago(c.created)}${c.by ? ` by ${esc(c.by)}` : ""}</td>
-        <td class="nw"><button class="btn" data-editcred="${esc(c.id)}">Edit</button> <button class="btn danger" data-delcred="${esc(c.id)}">Delete</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No credential yet.</div>`}`;
+    ${d.credentials.length ? CRED_GROUPS.filter(([g]) => byGroup(g).length).map(([g, title]) => `
+      <div class="card" style="margin-bottom:1rem"><div class="head"><h3>${title}</h3><span class="small muted">${byGroup(g).length}</span></div>
+        <div class="tbl"><table><thead><tr>${COLS[g].map(([h]) => `<th>${h}</th>`).join("")}<th></th></tr></thead><tbody>
+        ${byGroup(g).map(c => `<tr>${COLS[g].map(([, f]) => `<td class="small">${f(c)}</td>`).join("")}${acts(c)}</tr>`).join("")}</tbody></table></div></div>`).join("")
+      : `<div class="empty">No credential yet.</div>`}`;
   const f = document.getElementById("credf");
-  let editing = null;  // the credential being edited, else adding
-  const kinds = () => f.querySelectorAll("[data-k]").forEach(l => l.hidden = l.dataset.k !== f.kind.value);
-  f.kind.onchange = kinds;
-  // Editing: the secrets are never sent back - an empty community or password keeps the stored one.
-  const secretFields = ["community", "auth_pass", "priv_pass"];
+  let editing = null, kind = "snmp_v2c";  // the credential being edited, else adding
+  const setKind = (k, keep) => {
+    kind = k;
+    document.querySelectorAll("#credkind button").forEach(b => b.classList.toggle("on", b.dataset.kind === k));
+    document.getElementById("credfields").innerHTML = credFields(k).map(([n, label, input, hint]) =>
+      `<label${n === "private_key" ? ' style="grid-column:1/-1"' : ""}>${label}${input}${hint ? `<span class="sub2">${hint}</span>` : ""}</label>`).join("");
+    if (keep) keep();
+  };
+  document.querySelectorAll("#credkind button").forEach(b => b.onclick = () => { if (!editing || editing.kind.startsWith("snmp") === b.dataset.kind.startsWith("snmp")) setKind(b.dataset.kind); });
+  setKind(kind);
+  // Editing: the secrets are never sent back - one left empty keeps the stored one.
   body.querySelectorAll("[data-editcred]").forEach(btn => btn.onclick = () => {
-    const c = d.credentials.find(c => c.id === btn.dataset.editcred), x = c.edit || {};
+    const c = d.credentials.find(c => c.id === btn.dataset.editcred), e = c.edit || {};
     editing = c;
     f.reset();
-    f.cname.value = c.name; f.kind.value = c.kind; f.scope.value = c.scope.join(", ");
-    f.user.value = x.user || ""; f.level.value = x.level || "";
-    if (x.auth_proto) f.auth_proto.value = x.auth_proto;
-    if (x.priv_proto) f.priv_proto.value = x.priv_proto;
-    secretFields.forEach(n => f[n].placeholder = "unchanged - type to replace");
+    f.cname.value = c.name; f.scope.value = c.scope.join(", ");
+    setKind(c.kind, () => {
+      for (const [k, val] of Object.entries(e)) if (f[k] && val !== undefined && val !== "") f[k].value = String(val);
+      CRED_SECRETS.forEach(n => { if (f[n]) f[n].placeholder = n === "private_key" && e.key === "in the vault" ? "the key in the vault - paste one to replace it" : "unchanged - type to replace"; });
+    });
     document.getElementById("credtitle").textContent = `Edit ${c.name}`;
     document.getElementById("credsave").textContent = "Save";
     document.getElementById("credcancel").hidden = false;
     document.getElementById("credmsg").innerHTML = "";
-    kinds();
     const det = document.getElementById("creddet"); det.open = true; det.scrollIntoView({behavior: "smooth", block: "start"});
   });
   document.getElementById("credcancel").onclick = () => credsTab();
-  f.onsubmit = async e => {
-    e.preventDefault();
-    const b = {name: f.cname.value, kind: f.kind.value, scope: f.scope.value};
-    if (b.kind === "snmp_v2c") b.community = f.community.value;
-    else Object.assign(b, {user: f.user.value, level: f.level.value, auth_proto: f.auth_proto.value, auth_pass: f.auth_pass.value, priv_proto: f.priv_proto.value, priv_pass: f.priv_pass.value});
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const b = {name: f.cname.value, kind, scope: f.scope.value};
+    credFields(kind).forEach(([n]) => { if (f[n] && f[n].value !== "") b[n] = f[n].value; });
     try {
       await post(editing ? `/api/credentials/${editing.id}` : "/api/credentials", b);
       await credsTab();
-      if (editing) document.getElementById("creddet").open = true, document.getElementById("credmsg").innerHTML = `<span class="ok">${esc(b.name)} saved - the collectors use it from their next contact (within a minute).</span>`;
+      document.getElementById("creddet").open = true;
+      document.getElementById("credmsg").innerHTML = `<span class="ok">${esc(b.name)} ${editing ? "saved" : "added"}${v.on ? " in the vault" : ""} - the collectors use it from their next contact (within a minute).</span>`;
     } catch (err) { document.getElementById("credmsg").innerHTML = `<span class="err">${esc(err.message)}</span>`; }
   };
   body.querySelectorAll("[data-delcred]").forEach(btn => btn.onclick = async () => {
-    if (!confirm("Delete this credential? The collectors stop using it from their next contact.")) return;
+    const c = d.credentials.find(c => c.id === btn.dataset.delcred);
+    if (!confirm(`Delete ${c.name}? The collectors stop using it from their next contact.${v.on ? " It goes to the vault's trash (restorable there for 30 days)." : ""}`)) return;
     try { await post(`/api/credentials/${btn.dataset.delcred}`, {delete: true}); credsTab(); } catch (err) { alert(err.message); }
   });
 }

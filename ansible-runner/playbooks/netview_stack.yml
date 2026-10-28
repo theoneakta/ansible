@@ -324,6 +324,20 @@
         mode: u=rwX,go=rX
       register: app_src
 
+    # Sentry Lens's vault (SentryLens's vaultwarden.yml writes both): empty
+    # without one - the credentials are then kept in ClickHouse, encrypted.
+    - name: The vault's settings and certificate (empty without a vault)
+      ansible.builtin.copy:
+        dest: "{{ netview_dir }}/{{ item.file }}"
+        content: ""
+        force: false
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {file: vault.env, mode: "0600"}
+        - {file: vault-ca.pem, mode: "0644"}
+
     - name: Compose file
       ansible.builtin.copy:
         dest: "{{ netview_dir }}/docker-compose.yml"
@@ -341,7 +355,7 @@
               read_only: true
               ports:
                 - {{ netview_port }}:8000/tcp
-              env_file: [.env, session.env, auth.env, kuma.env]
+              env_file: [.env, session.env, auth.env, kuma.env, vault.env]
               environment:
                 CLICKHOUSE_URL: http://clickhouse:8123
                 WAN_EXPORTER: {{ netview_wan_exporter }}
@@ -364,6 +378,7 @@
                 COLLECTOR_LAN_URL: "http://{{ site_server_ip }}:{{ netview_port }}"
               volumes:
                 - ./names.json:/data/names.json:ro
+                - ./vault-ca.pem:/data/vault-ca.pem:ro   # the vault's own certificate, checked
               networks: [akvorado]
               logging:
                 driver: json-file

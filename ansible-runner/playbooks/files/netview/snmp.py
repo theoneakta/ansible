@@ -25,7 +25,6 @@ import hashlib
 import ipaddress
 import json
 import re
-import secrets
 import time
 
 from cryptography.fernet import Fernet
@@ -33,6 +32,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import assets
 import auth
+import creds
 
 router = APIRouter()
 KEEP_DAYS = 90
@@ -139,108 +139,51 @@ def _admin(request):
 
 
 # ------------------------------------------------------------------ credentials
-KINDS = {"snmp_v2c", "snmp_v3"}
-V3_AUTH = {"MD5", "SHA", "SHA-224", "SHA-256", "SHA-384", "SHA-512"}
-V3_PRIV = {"DES", "AES", "AES-192", "AES-256"}
-
-
-def credentials(include_deleted=False):
-    return {r["id"]: r for r in q("SELECT * FROM netview.credentials FINAL" + ("" if include_deleted else " WHERE deleted = 0"))}
-
-
-def _secret_of(c):
-    return json.loads(auth._fernet.decrypt(c["secret"].encode()))
-
-
-def public_cred(c, used=None):
-    # What the edit form shows: everything but the community and the passwords.
-    s = _secret_of(c)
-    return {k: c[k] for k in ("id", "name", "kind", "scope", "summary", "by")} | {
-        "created": assets._ts(c["created"]), "devices": (used or {}).get(c["id"], 0),
-        "edit": {k: s[k] for k in ("user", "level", "auth_proto", "priv_proto") if k in s}}
-
-
-def make_secret(b, kind, old=None):
-    """The secret and its summary, from {community} or {user, level, auth_proto,
-    auth_pass, priv_proto, priv_pass}. Editing (old: its secret, same kind): a
-    value left empty is kept. No level: the one the passwords give."""
-    old = old or {}
-    if kind == "snmp_v2c":
-        community = str(b.get("community") or old.get("community", ""))
-        if not 1 <= len(community) <= 64:
-            raise HTTPException(400, "a community (1 to 64 characters)")
-        return {"community": community}, "SNMP v2c community"
-    user = str(b.get("user") or old.get("user", ""))
-    if not re.fullmatch(r"[\w.@-]{1,32}", user):
-        raise HTTPException(400, "a v3 user name")
-    auth_pass, priv_pass = b.get("auth_pass") or old.get("auth_pass", ""), b.get("priv_pass") or old.get("priv_pass", "")
-    level = b.get("level") or ("authPriv" if auth_pass and priv_pass else "authNoPriv" if auth_pass else "noAuthNoPriv")
-    if level not in ("noAuthNoPriv", "authNoPriv", "authPriv"):
-        raise HTTPException(400, "level: noAuthNoPriv, authNoPriv or authPriv")
-    secret = {"user": user, "level": level}
-    if level != "noAuthNoPriv":
-        proto = b.get("auth_proto") or old.get("auth_proto")
-        if proto not in V3_AUTH or not 8 <= len(auth_pass) <= 128:
-            raise HTTPException(400, f"auth protocol one of {sorted(V3_AUTH)}, password 8 characters or more")
-        secret |= {"auth_proto": proto, "auth_pass": auth_pass}
-    if level == "authPriv":
-        proto = b.get("priv_proto") or old.get("priv_proto")
-        if proto not in V3_PRIV or not 8 <= len(priv_pass) <= 128:
-            raise HTTPException(400, f"privacy protocol one of {sorted(V3_PRIV)}, password 8 characters or more")
-        secret |= {"priv_proto": proto, "priv_pass": priv_pass}
-    summary = f"SNMP v3, user {user}, {level}" + (f" ({secret.get('auth_proto')}/{secret.get('priv_proto', '-')})" if level != "noAuthNoPriv" else "")
-    return secret, summary
-
-
+# Kept by creds.py: in Sentry Lens's vault (Vaultwarden) when it has one, else here.
 @router.get("/api/credentials")
 def list_credentials(request: Request):
     _admin(request)
     used = {r["cred"]: r["n"] for r in q("SELECT cred, count() AS n FROM netview.snmp_devices FINAL GROUP BY cred")}
-    return {"credentials": sorted((public_cred(c, used) for c in credentials().values()), key=lambda c: c["name"].lower())}
+    return {"credentials": sorted((creds.public(c, used) for c in creds.all_creds().values()), key=lambda c: c["name"].lower()),
+            "vault": creds.status(), "kinds": creds.KINDS}
 
 
 @router.post("/api/credentials")
 async def add_credential(request: Request):
-    """{name, kind: snmp_v2c, community, scope} or {name, kind: snmp_v3, user,
-    auth_proto, auth_pass, priv_proto, priv_pass, scope} - scope: subnets ([] = everywhere)."""
+    """{name, kind, scope, and the kind's fields} - kind: snmp_v2c {community},
+    snmp_v3 {user, level, auth_proto, auth_pass, priv_proto, priv_pass}, ssh
+    {user, password and / or private_key, port}, winrm {user, password, https,
+    port}, proxmox {user: user@realm!token, secret, port}; scope: hosts or
+    subnets ([] = everywhere)."""
     by = _admin(request)
     b = await request.json()
-    name, kind = str(b.get("name", "")).strip()[:60], b.get("kind")
-    if not name or kind not in KINDS:
-        raise HTTPException(400, "a name, and kind snmp_v2c or snmp_v3")
-    scope = assets.check_subnets(b["scope"]) if b.get("scope") else []
-    secret, summary = make_secret(b, kind)
-    cid = secrets.token_hex(6)
-    insert("credentials", [{"id": cid, "name": name, "kind": kind, "scope": scope, "summary": summary,
-                            "secret": auth._fernet.encrypt(json.dumps(secret).encode()).decode(), "created": int(time.time()),
-                            "by": by, "deleted": 0, "ver": time.time_ns()}])
-    return {"id": cid}
+    name, kind = str(b.get("name", "")).strip()[:80], b.get("kind")
+    if not name or kind not in creds.KINDS:
+        raise HTTPException(400, f"a name, and a kind: {', '.join(creds.KINDS)}")
+    secret, summary = creds.make_secret(b, kind)
+    return {"id": creds.save({"name": name, "kind": kind, "scope": creds.check_scope(b.get("scope")), "secret": secret,
+                              "summary": summary, "by": by, "created": int(time.time())})}
 
 
 @router.post("/api/credentials/{cid}")
 async def change_credential(request: Request, cid: str):
-    """{delete: true} or {name, scope, kind, and its secret's fields (add_credential) -
-    empty ones kept}. The collectors get the change at their next contact."""
+    """{delete: true} or {name, scope, kind, and its fields - empty secrets kept}.
+    The collectors get the change at their next contact."""
     by = _admin(request)
-    c = credentials().get(cid)
+    c = creds.all_creds().get(cid)
     if not c:
         raise HTTPException(404, "no such credential")
     b = await request.json()
     if b.get("delete"):
-        c["deleted"] = 1
-    else:
-        if b.get("name"):
-            c["name"] = str(b["name"]).strip()[:60]
-        if "scope" in b:
-            c["scope"] = assets.check_subnets(b["scope"]) if b["scope"] else []
-        kind = b.get("kind") or c["kind"]
-        if kind not in KINDS:
-            raise HTTPException(400, "kind snmp_v2c or snmp_v3")
-        if kind != c["kind"] or any(b.get(k) for k in ("community", "user", "level", "auth_proto", "auth_pass", "priv_proto", "priv_pass")):
-            secret, summary = make_secret(b, kind, _secret_of(c) if kind == c["kind"] else None)
-            c |= {"kind": kind, "summary": summary, "by": by,
-                  "secret": auth._fernet.encrypt(json.dumps(secret).encode()).decode()}
-    insert("credentials", [c | {"created": assets._ts(c["created"]), "ver": time.time_ns()}])
+        creds.delete(cid)
+        return {"ok": True}
+    kind = b.get("kind") or c["kind"]
+    if kind not in creds.KINDS:
+        raise HTTPException(400, f"a kind: {', '.join(creds.KINDS)}")
+    secret, summary = creds.make_secret(b, kind, c["secret"] if kind == c["kind"] else None)
+    c |= {"name": str(b.get("name") or c["name"]).strip()[:80], "kind": kind, "secret": secret, "summary": summary, "by": by,
+          "scope": creds.check_scope(b["scope"]) if "scope" in b else c["scope"]}
+    creds.save(c, cid)
     return {"ok": True}
 
 
@@ -250,16 +193,10 @@ def collector_fernet(key):
 
 
 def for_collector(c):
-    """The credentials whose scope meets the collector's subnets, encrypted for it ('' if it can't get them)."""
+    """The credentials for this collector (creds.py), encrypted for it ('' if it can't get them)."""
     if not c.get("key_enc"):
         return "", 0
-    nets = [ipaddress.ip_network(s) for s in c["subnets"]]
-    out = []
-    for cr in credentials().values():
-        scope = [ipaddress.ip_network(s) for s in cr["scope"]]
-        if scope and not any(a.overlaps(b) for a in scope for b in nets if a.version == b.version):
-            continue
-        out.append({"id": cr["id"], "kind": cr["kind"], "scope": cr["scope"]} | json.loads(auth._fernet.decrypt(cr["secret"].encode())))
+    out = creds.for_collector(c, c.get("version", ""))
     key = auth._fernet.decrypt(c["key_enc"].encode()).decode()
     return collector_fernet(key).encrypt(json.dumps(out).encode()).decode(), len(out)
 
@@ -293,7 +230,7 @@ def ingest(c, b):
         key = key_for(ip)
         s, e = d.get("system") or {}, d.get("entity") or {}
         interfaces = d.get("interfaces") or []
-        devs.append({"key": key, "ip": ip, "collector": c["id"], "cred": str(d.get("cred", ""))[:20],
+        devs.append({"key": key, "ip": ip, "collector": c["id"], "cred": str(d.get("cred", ""))[:40],
                      "sys_name": str(s.get("name", ""))[:200], "sys_descr": str(s.get("descr", ""))[:500],
                      "sys_object_id": str(s.get("object_id", ""))[:120], "location": str(s.get("location", ""))[:200],
                      "contact": str(s.get("contact", ""))[:200], "uptime_s": int(s.get("uptime_s") or 0),
