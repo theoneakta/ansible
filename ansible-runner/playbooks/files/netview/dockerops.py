@@ -36,7 +36,7 @@ from assets import _ts  # ClickHouse DateTime -> epoch seconds
 
 router = APIRouter()
 HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
-KINDS = ("update", "delete_images", "delete_volumes", "check_updates")
+KINDS = ("update", "restart", "delete_images", "delete_volumes", "check_updates")
 CONFIRM = "delete"  # what the page asks to type before a delete
 QUEUED_FOR = 3600  # a job no agent picked up within this: expired
 STALL = 300  # a job picked up, then no word from the agent for this long: handed out again
@@ -227,7 +227,7 @@ async def queue(request: Request):
     if host not in agents():
         raise HTTPException(409, f"{host} has no docker-agent yet - run cadvisor.yml for it")
     args = {}
-    if kind == "update":
+    if kind in ("update", "restart"):
         name = str(b.get("container", ""))
         info = infra.docker_state(host)[0].get((host, name))
         if not info:

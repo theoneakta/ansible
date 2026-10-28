@@ -633,7 +633,8 @@ async function ctDetail() {
   box.innerHTML = `
     <div class="exphead"><b>${esc(d.name)}</b>${stateTag(d)}<span class="tag">${esc(d.host)}</span>
       <span class="mono muted small" title="Image">${esc(d.image)}</span><span class="spacer"></span>
-      ${isAdmin() ? `<button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Check & update"}</button>` : ""}
+      ${isAdmin() ? `<button class="btn" id="crestart" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${d.state === "running" ? "Restart" : "Start"}</button>
+        <button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Check & update"}</button>` : ""}
       <div class="seg" id="cper">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
       <button class="btn" id="cclose" title="Close">&times;</button></div>
     <div class="expgrid">
@@ -676,6 +677,8 @@ async function ctDetail() {
     </div>`;
   const upd = box.querySelector("#cupd");
   if (upd) upd.onclick = e => { e.stopPropagation(); updateContainer(d); };
+  const rst = box.querySelector("#crestart");
+  if (rst) rst.onclick = e => { e.stopPropagation(); restartContainer(d); };
   box.querySelector("#cclose").onclick = e => { e.stopPropagation(); S.ct = null; closeDetail(); document.getElementById("cdetail").innerHTML = ""; };
   box.querySelectorAll("#cper button").forEach(b => b.onclick = e => { e.stopPropagation(); S.hours = +b.dataset.h; localSet("hours", S.hours); ctDetail(); });
   const c1 = css("--s1"), c2 = css("--s2"), small = {height: 130, into: S.dcharts};
@@ -709,7 +712,7 @@ const agentOf = h => S.act.agents[h];
 const NO_AGENT = h => `No docker-agent on ${h} yet - run cadvisor.yml for it`;
 const updOf = r => ((agentOf(r.host) || {}).updates || {})[r.image];
 const updBadge = r => updOf(r)?.status === "update" ? ` <span class="st warn" title="A newer ${esc(r.image)} is on its registry"><i></i>update</span>` : "";
-const KIND_LABEL = {update: "Update", delete_images: "Delete images", delete_volumes: "Delete volumes", check_updates: "Check for updates"};
+const KIND_LABEL = {update: "Update", restart: "Restart", delete_images: "Delete images", delete_volumes: "Delete volumes", check_updates: "Check for updates"};
 const ago = t => { if (!t) return "never"; const s = Date.now() / 1000 - t; return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
 
 async function loadAct() {
@@ -743,6 +746,19 @@ async function queueJob(body) {
   await post("/api/infra/docker-actions", body);
   await loadAct();
   document.getElementById("dkJobs")?.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+// Restart one container as it is (Docker's restart - nothing recreated); a stopped one is started.
+async function restartContainer(d) {
+  const running = d.state === "running";
+  const ok = await confirmBox({title: `${running ? "Restart" : "Start"} ${d.name}?`, ok: running ? "Restart" : "Start",
+    html: `On <b>${esc(d.host)}</b>: ${running ? `Docker stops <b>${esc(d.name)}</b> (giving it its usual time to shut down) and starts it again`
+      : `Docker starts <b>${esc(d.name)}</b>, stopped ${d.stopped_since ? dur(Date.now() / 1000 - d.stopped_since) + " ago" : ""}`} - the same container,
+      settings and data; nothing is pulled or recreated.
+      ${running ? `<p class="err">It's unavailable for a moment while it restarts.</p>` : ""}`});
+  if (!ok) return;
+  try { await queueJob({host: d.host, kind: "restart", container: d.name}); }
+  catch (e) { alert(e.message); }
 }
 
 // Update one container: pull its image's latest, recreate it as it is (only the image new).
@@ -809,7 +825,7 @@ function renderJobs() {
   const again = j => j.tries > (j.state === "queued" ? 0 : 1) ? ` <span class="muted small" title="Turned away, or the agent went quiet on it - tried again">try ${j.tries + (j.state === "queued" ? 1 : 0)} of 3${j.state === "queued" && j.after > Date.now() / 1000 ? `, at ${new Date(j.after * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : ""}</span>` : "";
   const st = j => ({queued: `<span class="st off"><i></i>waiting</span>${again(j)}`, running: `<span class="st warn"><i></i>running</span>${again(j)}`, done: `<span class="st up"><i></i>done</span>`,
     failed: `<span class="st down"><i></i>failed</span>`, expired: `<span class="st off"><i></i>not picked up</span>`, lost: `<span class="st down"><i></i>no result</span>`})[j.state] || esc(j.state);
-  const target = j => j.kind === "update" ? esc(j.args.container) : j.args.images ? `${j.args.images.length} image${j.args.images.length > 1 ? "s" : ""}`
+  const target = j => j.args.container ? esc(j.args.container) : j.args.images ? `${j.args.images.length} image${j.args.images.length > 1 ? "s" : ""}`
     : j.args.volumes ? `${j.args.volumes.length} volume${j.args.volumes.length > 1 ? "s" : ""}` : "";
   const updates = hosts.filter(x => !h || x === h).reduce((n, x) => n + Object.values(S.act.agents[x].updates).filter(u => u.status === "update").length, 0);
   el.innerHTML = `<div class="card" style="margin-top:1.25rem"><div class="head"><h3>Actions</h3>

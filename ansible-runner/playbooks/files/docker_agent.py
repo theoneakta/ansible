@@ -5,7 +5,7 @@ containers have a newer image.
 
 It only talks out: every POLL seconds it asks Sentry Lens for this host's
 queued jobs (its key: Authorization, its host name: X-Host), runs them, and
-posts each one's result. No port is opened. It knows four jobs, nothing else:
+posts each one's result. No port is opened. It knows five jobs, nothing else:
 
   update          pull a container's image and, when it changed, recreate the
                   container as it is: its own settings (docker inspect) - name,
@@ -17,6 +17,7 @@ posts each one's result. No port is opened. It knows four jobs, nothing else:
   delete_images   remove these images - each only if no container (running
                   or not) uses it: a tag is untagged, the last tag removes it
   delete_volumes  remove these volumes - each only if no container uses it
+  restart         restart a container as it is (a stopped one is started)
   check_updates   compare each container's image with its registry, now
 
 Every CHECK_EVERY it checks for updates by itself: the digest the registry
@@ -50,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 STATE = os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/docker-agent"), "job.json")
 BEAT = 60
 JOB_ID = re.compile(r"[0-9a-f]{1,32}")
@@ -300,6 +301,23 @@ def resume(name, jid):
     return ""
 
 
+def job_restart(args, _jid):
+    """Restart a container as it is (a stopped one is started) - Docker's own
+    restart: stopped with its stop timeout, started again, nothing recreated."""
+    name = str(args.get("container", ""))
+    if not NAME.fullmatch(name):
+        raise ValueError("a container name")
+    d = docker("GET", f"/containers/{q(name)}/json")
+    was = "running" if (d.get("State") or {}).get("Running") else (d.get("State") or {}).get("Status", "stopped")
+    stop_t = (d.get("Config") or {}).get("StopTimeout") or 10
+    docker("POST", f"/containers/{d['Id']}/restart?t={stop_t}", timeout=stop_t + 120)
+    time.sleep(5)
+    st = docker("GET", f"/containers/{d['Id']}/json")["State"]
+    if not st.get("Running") or st.get("Restarting"):
+        return False, f"{name} ({was}) was restarted but isn't running (exit {st.get('ExitCode')}, {st.get('Status')})"
+    return True, f"{name} {'restarted' if was == 'running' else 'started'} - it was {was}"
+
+
 def in_use():
     """The image IDs any container (running or not) uses."""
     return {c.get("ImageID", "") for c in docker("GET", "/containers/json?all=1")}
@@ -446,7 +464,7 @@ def report_updates():
         log(f"couldn't check or send the updates: {e}")
 
 
-JOBS = {"update": job_update, "delete_images": job_delete_images, "delete_volumes": job_delete_volumes}
+JOBS = {"update": job_update, "restart": job_restart, "delete_images": job_delete_images, "delete_volumes": job_delete_volumes}
 
 
 # ------------------------------------------------------------------ the job in hand, kept
@@ -526,7 +544,7 @@ def handle(j, resumed=False):
     send_result(state)
     if j.get("kind") in JOBS:
         try:
-            refresh_meta(df=j.get("kind") != "update")
+            refresh_meta(df=j.get("kind") in ("delete_images", "delete_volumes"))
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"couldn't refresh docker-meta: {e}")
     if j.get("kind") == "update" and box.get("ok"):
