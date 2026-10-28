@@ -26,6 +26,15 @@
     cadvisor_port: 9338
     cadvisor_dir: /opt/cadvisor
     cadvisor_scraper: "{{ site_server_ip }}"
+    # docker-agent: the Docker actions of Sentry Lens's Infrastructure page
+    # (update a Compose container, delete unused images and volumes). It asks
+    # Sentry Lens for its jobs - nothing listens on the host. false: not installed.
+    docker_agent: true
+    docker_agent_url: "http://{{ site_server_ip }}:8082"
+    # The Sentry Lens host (netview_stack.yml): its session secret keys the agents.
+    docker_agent_lens_host: "{{ groups['monitoring'][0] }}"
+    # The host as Prometheus names it (prometheus_stack.yml) - the page's name for it.
+    docker_agent_host: "{{ (site_names | default({})).get(inventory_hostname, inventory_hostname) }}"
 
   pre_tasks:
     # Same login handling as node_exporter.yml.
@@ -215,6 +224,75 @@
           ansible.builtin.command: systemctl start --no-block docker-meta-df.service
           changed_when: false
 
+        # docker-agent (files/docker_agent.py): its key is derived from Sentry
+        # Lens's session secret and the host's name, as dockerops.py does.
+        - name: docker-agent
+          when: docker_agent | bool
+          block:
+            - name: Sentry Lens's session secret (to derive the host's key)
+              ansible.builtin.slurp:
+                src: /opt/netview/session.env
+              delegate_to: "{{ docker_agent_lens_host }}"
+              run_once: true
+              register: lens_session
+              no_log: true
+
+            - name: docker-agent script
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/files/docker_agent.py"
+                dest: /usr/local/bin/docker-agent
+                owner: root
+                group: root
+                mode: "0755"
+              register: agent_script
+
+            - name: docker-agent settings (its key - root only)
+              ansible.builtin.copy:
+                dest: /etc/docker-agent.env
+                owner: root
+                group: root
+                mode: "0600"
+                content: |
+                  # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                  SENTRY_URL={{ docker_agent_url }}
+                  AGENT_HOST={{ docker_agent_host }}
+                  AGENT_KEY=dka_{{ ('sentry-lens-docker-agent:' ~ session_secret ~ ':' ~ docker_agent_host) | hash('sha256') }}
+              vars:
+                session_secret: "{{ (lens_session.content | b64decode) | regex_search('(?m)^SESSION_SECRET=(.*)$', '\\1') | first }}"
+              register: agent_env
+              no_log: true
+
+            - name: docker-agent service
+              ansible.builtin.copy:
+                dest: /etc/systemd/system/docker-agent.service
+                owner: root
+                group: root
+                mode: "0644"
+                content: |
+                  # Managed by ansible-runner (cadvisor.yml) - changes are overwritten.
+                  # Docker actions asked for on Sentry Lens (outgoing only) - files/docker_agent.py.
+                  [Unit]
+                  Description=Sentry Lens docker-agent
+                  After=docker.service network-online.target
+                  Wants=network-online.target
+                  [Service]
+                  EnvironmentFile=/etc/docker-agent.env
+                  ExecStart=/usr/bin/python3 -I /usr/local/bin/docker-agent
+                  Restart=always
+                  RestartSec=30
+                  NoNewPrivileges=true
+                  PrivateTmp=true
+                  [Install]
+                  WantedBy=multi-user.target
+              register: agent_unit
+
+            - name: docker-agent running
+              ansible.builtin.systemd_service:
+                name: docker-agent
+                state: "{{ 'restarted' if agent_script is changed or agent_env is changed or agent_unit is changed else 'started' }}"
+                enabled: true
+                daemon_reload: true
+
     - name: Open the port to the scraper (firewalld)
       ansible.posix.firewalld:
         rich_rule: >-
@@ -248,6 +326,19 @@
           ansible.builtin.file:
             path: "{{ cadvisor_dir }}"
             state: absent
+
+        - name: Stop docker-agent
+          ansible.builtin.systemd_service:
+            name: docker-agent
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Delete docker-agent
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: [/etc/systemd/system/docker-agent.service, /etc/docker-agent.env, /usr/local/bin/docker-agent]
 
     - name: Answering
       ansible.builtin.uri:

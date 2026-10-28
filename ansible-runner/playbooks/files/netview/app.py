@@ -44,6 +44,7 @@ import categories
 import checks
 import dist
 import dns
+import dockerops
 import infra
 import kuma
 import live
@@ -83,7 +84,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # GitHub / any OIDC, admin approval) and/or a Cloudflare Access token in
 # front. Every request needs an approved account - the LAN address included;
 # pages without one go to /login, /api gets a 401 (403 while pending).
-OPEN_PATHS = ("/static/", "/login", "/auth/", "/api/health", "/api/collector/", "/collector/")  # the login page, its assets and flows; the health check; the collectors (their own key)
+OPEN_PATHS = ("/static/", "/login", "/auth/", "/api/health", "/api/collector/", "/collector/", "/api/docker-agent/")  # the login page, its assets and flows; the health check; the collectors and Docker agents (their own key)
 
 
 @app.middleware("http")
@@ -107,6 +108,7 @@ app.include_router(infra.router)  # infrastructure (Prometheus): /infra, /api/in
 app.include_router(assets.router)  # assets found by the collectors: /assets, /api/assets, /api/collector(s)
 app.include_router(snmp.router)  # SNMP readings and credentials: /api/snmp, /api/credentials, /api/collector/snmp|counters
 app.include_router(dist.router)  # the collector's installers and binaries: /collector/...
+app.include_router(dockerops.router)  # Docker actions: /api/infra/docker-actions, /api/docker-agent/... (docker-agent on each host)
 
 
 @app.get("/login")

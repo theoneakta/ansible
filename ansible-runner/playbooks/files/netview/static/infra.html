@@ -62,10 +62,27 @@
   .st.down { color: #ff7b72; border-color: var(--down); background: #f8514922; }
   .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .35rem; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-  .host { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.05rem; cursor: pointer; display: flex; flex-direction: column; gap: .7rem; }
+  /* Hosts: one long box each, its details opening right under it (as the Docker rows). */
+  .grid { display: flex; flex-direction: column; gap: .6rem; }
+  .host { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .8rem 1.05rem; cursor: pointer;
+          display: grid; grid-template-columns: minmax(12rem, 1.1fr) repeat(3, minmax(10rem, 1fr)) minmax(13rem, 1.2fr) 1rem; gap: .5rem 1.4rem; align-items: center; }
   .host:hover { border-color: #3a4556; }
-  .host.sel { border-color: var(--accent2); }
+  .host.sel { border-color: var(--accent2); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .host .id { min-width: 0; display: flex; flex-direction: column; gap: .25rem; }
+  .host .chev { color: var(--muted); transition: transform .15s; text-align: right; }
+  .host.sel .chev { transform: rotate(90deg); color: var(--accent2); }
+  .host .meter { grid-template-columns: 3.6rem 1fr; }
+  .host .meter .v { grid-column: 1 / -1; text-align: left; min-width: 0; font-size: .75rem; color: var(--muted); margin-top: -.2rem; }
+  .host .meter .v .flag { font-size: .7rem; }
+  #detail { border: 1px solid var(--accent2); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); margin-top: -.6rem; padding: 1rem; background: var(--bg); }
+  #detail:empty { display: none; }
+  #detail > .card:last-child, #detail > .charts:last-child { margin-bottom: 0; }
+  @media (max-width: 1000px) {
+    .host { grid-template-columns: 1fr 1fr 1rem; }
+    .host .id { grid-column: 1 / 3; } .host .chev { grid-column: 3; grid-row: 1; }
+    .host .foot { grid-column: 1 / -1; }
+  }
+  @media (max-width: 560px) { .host { grid-template-columns: 1fr 1rem; } .host .id { grid-column: 1; } .host .chev { grid-column: 2; } }
   .host.down { opacity: .75; }
   .host .top { display: flex; align-items: center; gap: .5rem; }
   .host .nm { font-weight: 600; font-size: 1rem; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -163,6 +180,22 @@
   .mrow2 .n { text-align: right; font-variant-numeric: tabular-nums; }
   .expcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
   .spark { vertical-align: middle; }
+  /* Docker actions: the buttons, the confirmation dialog, the jobs. */
+  .btn.danger { border-color: var(--down); color: #ff7b72; }
+  .btn.primary { border-color: var(--accent2); color: var(--accent2); }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn.sm { padding: .15rem .55rem; font-size: .75rem; }
+  .acts { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .7rem; }
+  td.cb, th.cb { width: 1.6rem; padding-right: 0; }
+  td.cb input, th.cb input { width: 1rem; height: 1rem; accent-color: var(--accent2); cursor: pointer; }
+  .modal-bg { position: fixed; inset: 0; background: #000a; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; width: min(560px, 100%); max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px #000a; }
+  .modal.danger { border-top: 3px solid var(--down); }
+  .modal h3 { margin: 0 0 .6rem; }
+  .modal ul { margin: .5rem 0; padding-left: 1.1rem; max-height: 14rem; overflow: auto; font-size: .82rem; }
+  .modal .foot2 { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; flex-wrap: wrap; }
+  .modal input[type=text] { width: 100%; margin-top: .3rem; }
+  .joblog { white-space: pre-wrap; font-size: .72rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; margin: .3rem 0 0; max-height: 18rem; overflow: auto; }
   .vbar { display: grid; grid-template-columns: minmax(8rem, 16rem) 1fr 5.5rem; gap: .6rem; align-items: center; font-size: .8rem; margin: .3rem 0; }
   .vbar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .vbar .track { height: 12px; background: var(--surface2); border-radius: 0 4px 4px 0; }
@@ -207,6 +240,7 @@
     </div>
     <div id="dkBody"></div>
     <div id="cdetail"></div>
+    <div id="dkJobs"></div>
   </div>
 </main>
 
@@ -257,16 +291,26 @@ function render() {
     [`<span class="dot ${s.up < s.total ? "down" : "up"}"></span>${s.up}/${s.total}`, "hosts up"], [pct(s.cpu), "average CPU"], [pct(s.mem), "average memory"],
     [s.disk_warn, "disks 85% full or more"], [s.failed, "failed services"], [s.containers, "containers running"]]
     .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
-  document.getElementById("grid").innerHTML = hosts.map(h => `<div class="host ${h.up ? "" : "down"} ${h.host === S.sel ? "sel" : ""}" data-h="${esc(h.host)}">
-      <div class="top"><span class="nm" title="${esc(h.instance)}">${esc(h.host)}</span>${h.role !== "server" ? `<span class="tag">${esc(h.role)}</span>` : ""}
+  // The open host's panel is moved out and back in, not rebuilt: its charts survive a refresh.
+  const det = document.getElementById("detail"), grid = document.getElementById("grid");
+  document.getElementById("hostsView").appendChild(det);
+  grid.innerHTML = hosts.map(h => `<div class="host ${h.up ? "" : "down"} ${h.host === S.sel ? "sel" : ""}" data-h="${esc(h.host)}" role="button" tabindex="0" aria-expanded="${h.host === S.sel}">
+      <div class="id"><div class="top"><span class="nm" title="${esc(h.instance)}">${esc(h.host)}</span>${h.role !== "server" ? `<span class="tag">${esc(h.role)}</span>` : ""}
         <span class="st ${h.up ? "up" : "down"}"><i></i>${h.up ? "up" : "down"}</span></div>
-      <div class="os">${h.up ? `${esc(h.os)}${h.hostname && h.hostname !== h.host ? ` · ${esc(h.hostname)}` : ""}` : `${esc(h.instance)} - not answering`}</div>
-      ${h.up ? `${meter("CPU", h.cpu, `${pct(h.cpu)} of ${h.cores}`)}${meter("Memory", h.mem, `${pct(h.mem)} of ${bytes(h.mem_total)}`)}
-        ${meter("Disk /", h.root)}${h.disk_max != null && h.disk_max - (h.root || 0) > 1 ? meter("Fullest", h.disk_max) : ""}
+        <div class="os">${h.up ? `${esc(h.os)}${h.hostname && h.hostname !== h.host ? ` · ${esc(h.hostname)}` : ""}` : `${esc(h.instance)} - not answering`}</div></div>
+      ${h.up ? `${meter("CPU", h.cpu, `${pct(h.cpu)} of ${h.cores} cores`)}${meter("Memory", h.mem, `${pct(h.mem)} of ${bytes(h.mem_total)}`)}
+        ${h.disk_max != null && h.disk_max - (h.root || 0) > 1 ? meter("Disk", h.disk_max, `fullest ${pct(h.disk_max)} · / ${pct(h.root)}`) : meter("Disk /", h.root)}
         <div class="foot"><span>in <b>${bps(h.rx)}</b></span><span>out <b>${bps(h.tx)}</b></span><span>load <b>${h.load1?.toFixed(2) ?? "-"}</b></span>
-          <span>up <b>${dur(h.uptime)}</b></span>${h.containers ? `<span><b>${h.containers}</b> containers</span>` : ""}${h.failed ? `<span class="err">${h.failed} failed service${h.failed > 1 ? "s" : ""}</span>` : ""}</div>` : ""}
+          <span>up <b>${dur(h.uptime)}</b></span>${h.containers ? `<span><b>${h.containers}</b> containers</span>` : ""}${h.failed ? `<span class="err">${h.failed} failed service${h.failed > 1 ? "s" : ""}</span>` : ""}</div>`
+        : `<div class="muted small" style="grid-column:2 / -2">No data - node_exporter isn't answering.</div>`}
+      <span class="chev" aria-hidden="true">&#9656;</span>
     </div>`).join("");
-  document.querySelectorAll(".host").forEach(c => c.onclick = () => select(c.dataset.h));
+  const box = S.sel && grid.querySelector(`.host[data-h="${CSS.escape(S.sel)}"]`);
+  if (box) box.after(det);
+  grid.querySelectorAll(".host").forEach(c => {
+    c.onclick = () => select(c.dataset.h);
+    c.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(c.dataset.h); } };
+  });
 }
 
 function select(name) {
@@ -320,7 +364,8 @@ async function detail() {
   chart("c-mem", d.mem, [{label: "Memory", color: c1, fmt: pct}], {max: 100});
   chart("c-net", d.rx, [{label: "In", color: c1, fmt: bps}, {label: "Out", color: c2, fmt: bps, data: d.tx}], {axis: bps});
   chart("c-load", d.load, [{label: "Load", color: c1, fmt: v => v.toFixed(2)}], {});
-  el.scrollIntoView({behavior: "smooth", block: "start"});
+  const box = document.querySelector(`.host[data-h="${CSS.escape(d.host)}"]`);
+  if (box && box.getBoundingClientRect().top < 0) box.scrollIntoView({behavior: "smooth", block: "start"});
 }
 
 // A time chart: one or two series on one y-scale, 2px lines, crosshair tooltip.
@@ -402,15 +447,16 @@ async function loadCt() {
   document.getElementById("dkPer").hidden = S.dk === "images";
   document.querySelectorAll("#dkPer button").forEach(b => b.onclick = () => { S.hours = +b.dataset.h; localSet("hours", S.hours); loadCt(); });
   const body = document.getElementById("dkBody");
+  const act = loadAct();  // the agents, their update checks, the jobs (none: the actions are off)
   try {
     if (S.dk === "containers") {
-      const [c, o] = await Promise.all([api("/api/infra/containers"), api(`/api/infra/docker?hours=${S.hours}${S.chost ? `&host=${encodeURIComponent(S.chost)}` : ""}`)]);
+      const [c, o] = await Promise.all([api("/api/infra/containers"), api(`/api/infra/docker?hours=${S.hours}${S.chost ? `&host=${encodeURIComponent(S.chost)}` : ""}`), act]);
       S.cdata = c; S.over = o;
       hostSelect([...new Set(c.containers.map(x => x.host))].sort());
       renderCt();
       if (S.ct) ctDetail();
     } else {
-      const d = await api(`/api/infra/${S.dk}${S.dk !== "images" ? `?hours=${S.hours}` : ""}`);
+      const [d] = await Promise.all([api(`/api/infra/${S.dk}${S.dk !== "images" ? `?hours=${S.hours}` : ""}`), act]);
       hostSelect([...new Set(d[S.dk].map(x => x.host))].sort());
       S.list = d; renderList();
     }
@@ -422,7 +468,7 @@ function renderCt() {
   S.charts.forEach(u => u.destroy()); S.charts = [];
   const d = S.cdata, o = S.over, q = S.cq.toLowerCase();
   const all = d.containers.filter(c => !S.chost || c.host === S.chost);
-  const rows = all.filter(c => (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
+  const rows = all.filter(c => (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "updates" ? updOf(c)?.status === "update" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
     && (!S.ctag || c.tags.includes(S.ctag) || c.project === S.ctag)
     && (!q || `${c.name} ${c.image} ${c.project} ${c.tags.join(" ")}`.toLowerCase().includes(q)));
   const running = all.filter(c => c.state === "running").length, unhealthy = all.filter(c => c.health === "unhealthy").length;
@@ -448,7 +494,7 @@ function renderCt() {
     <div class="card" style="margin-top:1.25rem">
       <div class="toolbar">
         <input type="text" id="cq" placeholder="Search name, image, project or tag" value="${esc(S.cq)}" aria-label="Search containers">
-        <div class="seg" id="cstate">${[["", "All"], ["running", "Running"], ["stopped", "Stopped"], ["unhealthy", "Unhealthy"]].map(([v, l]) => `<button data-s="${v}" class="${v === S.cstate ? "active" : ""}">${l}</button>`).join("")}</div>
+        <div class="seg" id="cstate">${[["", "All"], ["running", "Running"], ["stopped", "Stopped"], ["unhealthy", "Unhealthy"], ["updates", "Updates"]].map(([v, l]) => `<button data-s="${v}" class="${v === S.cstate ? "active" : ""}">${l}</button>`).join("")}</div>
       </div>
       ${tags.length || projects.length ? `<div style="margin:-.3rem 0 .7rem">${tags.map(t => `<button class="chip ${t === S.ctag ? "on" : ""}" data-tag="${esc(t)}" title="Tag">#${esc(t)}</button>`).join("")}
         ${projects.map(p => `<button class="chip ${p === S.ctag ? "on" : ""}" data-tag="${esc(p)}" title="Compose project">${esc(p)}</button>`).join("")}</div>` : ""}
@@ -477,7 +523,7 @@ function ctTable(rows, withHost) {
     ${rows.map(r => `<tr class="click ${S.ct && S.ct.host === r.host && S.ct.name === r.name ? "sel" : ""}" data-ct="${esc(r.host)}|${esc(r.name)}">
       <td class="wrap"><b>${esc(r.name)}</b><div class="sub2">${r.project ? esc(r.project) : esc(r.image)}</div>${chips(r.tags.map(t => "#" + t))}</td>
       ${withHost ? `<td>${esc(r.host)}</td>` : ""}
-      <td class="wrap">${stateTag(r)}</td>
+      <td class="wrap">${stateTag(r)}${updBadge(r)}</td>
       <td class="n">${r.state === "running" ? pct(r.cpu) : "-"}<div class="bar2" style="width:${(100 * (r.cpu || 0) / maxCpu).toFixed(0)}%"></div></td>
       <td class="n">${r.state === "running" ? bytes(r.mem) : "-"}${r.limit ? `<div class="sub2">of ${bytes(r.limit)} (${pct(100 * (r.mem || 0) / r.limit)})</div>` : ""}<div class="bar2" style="width:${(100 * (r.mem || 0) / maxMem).toFixed(0)}%"></div></td>
       <td class="n">${r.network_mode === "host" ? `<span class="muted small" title="Host networking: its traffic is the host's">host network</span>` : `${bps(r.rx)}<div class="sub2">${bps(r.tx)}</div>`}</td>
@@ -504,7 +550,7 @@ function wireCt(root) {
 function currentRows() {
   const q = S.cq.toLowerCase();
   return S.cdata.containers.filter(c => (!S.chost || c.host === S.chost)
-    && (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
+    && (!S.cstate || (S.cstate === "unhealthy" ? c.health === "unhealthy" : S.cstate === "updates" ? updOf(c)?.status === "update" : S.cstate === "stopped" ? c.state !== "running" : c.state === S.cstate))
     && (!S.ctag || c.tags.includes(S.ctag) || c.project === S.ctag)
     && (!q || `${c.name} ${c.image} ${c.project} ${c.tags.join(" ")}`.toLowerCase().includes(q)));
 }
@@ -587,6 +633,7 @@ async function ctDetail() {
   box.innerHTML = `
     <div class="exphead"><b>${esc(d.name)}</b>${stateTag(d)}<span class="tag">${esc(d.host)}</span>
       <span class="mono muted small" title="Image">${esc(d.image)}</span><span class="spacer"></span>
+      ${isAdmin() && d.project ? `<button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Pull & recreate"}</button>` : ""}
       <div class="seg" id="cper">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
       <button class="btn" id="cclose" title="Close">&times;</button></div>
     <div class="expgrid">
@@ -614,6 +661,11 @@ async function ctDetail() {
         ${ports.length ? ports.map(p => `<div class="mrow2"><span class="mono">${esc(p.host_ip || "0.0.0.0")}:${esc(p.public_port)}</span><span class="mono n">→ ${esc(p.private_port)}/${esc(p.proto)}</span></div>`).join("")
           : `<div class="muted small">${d.network_mode === "host" ? "host networking: the host's own ports" : "none"}</div>`}
         <h4 style="margin-top:.8rem">Image</h4><div class="mono small" style="word-break:break-all">${esc(d.image)}</div>
+        ${(() => { const u = updOf(d), a = agentOf(d.host);
+          if (!a) return `<div class="muted small">Updates: not checked (${esc(NO_AGENT(d.host))})</div>`;
+          const say = {update: `<span style="color:#e3b341">a newer image is on its registry</span>${d.project ? "" : " - not a Compose container: update it by hand"}`,
+            current: `<span class="ok">the latest</span>`, local: "built on this host (or private) - nothing to check", pinned: "pinned by digest - nothing to check"};
+          return `<div class="small">${u ? say[u.status] || `<span class="muted">unknown${u.error ? ` (${esc(u.error)})` : ""}</span>` : `<span class="muted">not checked yet</span>`} <span class="muted">· checked ${ago(a.checked)}</span></div>`; })()}
       </section>
     </div>
     <div class="expcharts">
@@ -622,6 +674,8 @@ async function ctDetail() {
       <div><h4>Network <span class="legend-i"><i class="sw" style="background:${css("--s1")}"></i>in <i class="sw" style="background:${css("--s2")}"></i>out</span></h4><div id="cc-net"></div></div>
       <div><h4>Disk I/O <span class="legend-i"><i class="sw" style="background:${css("--s1")}"></i>read <i class="sw" style="background:${css("--s2")}"></i>write</span></h4><div id="cc-io"></div></div>
     </div>`;
+  const upd = box.querySelector("#cupd");
+  if (upd) upd.onclick = e => { e.stopPropagation(); updateContainer(d); };
   box.querySelector("#cclose").onclick = e => { e.stopPropagation(); S.ct = null; closeDetail(); document.getElementById("cdetail").innerHTML = ""; };
   box.querySelectorAll("#cper button").forEach(b => b.onclick = e => { e.stopPropagation(); S.hours = +b.dataset.h; localSet("hours", S.hours); ctDetail(); });
   const c1 = css("--s1"), c2 = css("--s2"), small = {height: 130, into: S.dcharts};
@@ -645,6 +699,152 @@ async function ctDetail() {
   (row || box).scrollIntoView({behavior: "smooth", block: "nearest"});
 }
 async function loadCtQuiet() { try { S.cdata = await api("/api/infra/containers"); } catch (e) {} }
+
+// ---------------- Docker actions
+// Carried out by docker-agent on each host (it asks Sentry Lens for its jobs):
+// update a Compose container, delete unused images and volumes. Admins only;
+// every delete is confirmed by typing a word, and checked again on the host.
+S.act = {agents: {}, jobs: [], confirm: "delete"};
+const agentOf = h => S.act.agents[h];
+const NO_AGENT = h => `No docker-agent on ${h} yet - run cadvisor.yml for it`;
+const updOf = r => ((agentOf(r.host) || {}).updates || {})[r.image];
+const updBadge = r => updOf(r)?.status === "update" ? ` <span class="st warn" title="A newer ${esc(r.image)} is on its registry"><i></i>update</span>` : "";
+const KIND_LABEL = {update: "Update", delete_images: "Delete images", delete_volumes: "Delete volumes", check_updates: "Check for updates"};
+const ago = t => { if (!t) return "never"; const s = Date.now() / 1000 - t; return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+
+async function loadAct() {
+  try { S.act = await api("/api/infra/docker-actions"); } catch (e) { return; }
+  renderJobs(); watchJobs();
+}
+
+// A confirmation dialog: resolves true only on its button; with a word, the button waits until it's typed.
+function confirmBox({title, html, word, ok = "Confirm", danger = false}) {
+  return new Promise(resolve => {
+    const bg = document.createElement("div");
+    bg.className = "modal-bg";
+    bg.innerHTML = `<div class="modal ${danger ? "danger" : ""}" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+      <h3 id="mTitle">${esc(title)}</h3><div class="small">${html}</div>
+      ${word ? `<label class="small" style="display:block;margin-top:.9rem">Type <b class="mono">${esc(word)}</b> to confirm<input type="text" id="mWord" autocomplete="off" spellcheck="false"></label>` : ""}
+      <div class="foot2"><button class="btn" id="mNo">Cancel</button><button class="btn ${danger ? "danger" : "primary"}" id="mYes" ${word ? "disabled" : ""}>${esc(ok)}</button></div></div>`;
+    document.body.appendChild(bg);
+    const done = v => { bg.remove(); document.removeEventListener("keydown", key); resolve(v); };
+    const key = e => { if (e.key === "Escape") done(false); };
+    document.addEventListener("keydown", key);
+    bg.onclick = e => { if (e.target === bg) done(false); };
+    bg.querySelector("#mNo").onclick = () => done(false);
+    const yes = bg.querySelector("#mYes"), w = bg.querySelector("#mWord");
+    yes.onclick = () => done(true);
+    if (w) { w.oninput = () => yes.disabled = w.value.trim() !== word; w.onkeydown = e => { if (e.key === "Enter" && !yes.disabled) done(true); }; w.focus(); }
+    else bg.querySelector("#mNo").focus();
+  });
+}
+
+async function queueJob(body) {
+  await post("/api/infra/docker-actions", body);
+  await loadAct();
+  document.getElementById("dkJobs")?.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+// Update one Compose container: pull its image's latest, recreate it.
+async function updateContainer(d) {
+  const u = updOf(d);
+  const ok = await confirmBox({title: `Update ${d.name}?`, ok: "Pull and recreate",
+    html: `On <b>${esc(d.host)}</b>: <span class="mono">docker compose pull ${esc(d.service)}</span> then <span class="mono">up -d ${esc(d.service)}</span>
+      in its project <b>${esc(d.project)}</b>, with its own Compose file.
+      <p>${u?.status === "update" ? `A newer <span class="mono">${esc(d.image)}</span> is on its registry.` : u?.status === "current" ? `Its image is already the latest (checked ${ago(agentOf(d.host)?.checked)}) - it's recreated anyway.` : "Whether a newer image is out isn't known - it pulls whatever the tag points to now."}</p>
+      <p class="err">The container stops and starts again: a short interruption. Its volumes are kept.</p>`});
+  if (!ok) return;
+  try { await queueJob({host: d.host, kind: "update", container: d.name}); }
+  catch (e) { alert(e.message); }
+}
+
+// Delete images or volumes: [{host, ref, label, size}] - one job per host, after typing the word.
+async function deleteItems(kind, items) {
+  if (!items.length) return;
+  const what = kind === "delete_images" ? "image" : "volume", n = items.length;
+  const byHost = {};
+  items.forEach(i => (byHost[i.host] = byHost[i.host] || []).push(i));
+  const total = items.reduce((s, i) => s + (i.size || 0), 0);
+  const ok = await confirmBox({title: `Delete ${n} unused ${what}${n > 1 ? "s" : ""}?`, ok: `Delete ${n}`, danger: true, word: S.act.confirm,
+    html: `${Object.entries(byHost).map(([h, l]) => `<b>${esc(h)}</b><ul>${l.map(i => `<li><span class="mono">${esc(i.label)}</span>${i.size ? ` <span class="muted">${bytes(i.size)}</span>` : ""}</li>`).join("")}</ul>`).join("")}
+      ${total ? `<p>${bytes(total)} freed.</p>` : ""}
+      <p class="err">${kind === "delete_volumes" ? "A volume's data is deleted for good - there's no undo. " : "An image deleted is pulled again the next time something needs it. "}
+      Each one is checked again on the host: one a container uses by then is kept.</p>`});
+  if (!ok) return;
+  const errs = [];
+  for (const [host, l] of Object.entries(byHost)) {
+    try { await post("/api/infra/docker-actions", {host, kind, [kind === "delete_images" ? "images" : "volumes"]: l.map(i => i.ref), confirm: S.act.confirm}); }
+    catch (e) { errs.push(`${host}: ${e.message}`); }
+  }
+  await loadAct();
+  if (errs.length) alert(errs.join("\n"));
+  else document.getElementById("dkJobs")?.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+// The checkboxes, per-row Delete and the toolbar of the images or volumes list.
+function wireDeletes(body, kind, unusedItems) {
+  const sel = () => [...body.querySelectorAll("input[data-del]:checked")].map(c => unusedItems[+c.dataset.del]);
+  const count = () => { const b = body.querySelector("#delSel"); if (b) { const n = sel().length; b.disabled = !n; b.textContent = `Delete selected${n ? ` (${n})` : ""}`; } };
+  body.querySelectorAll("input[data-del]").forEach(c => c.onchange = count);
+  const all = body.querySelector("#delAll");
+  if (all) all.onchange = () => { body.querySelectorAll("input[data-del]:not(:disabled)").forEach(c => c.checked = all.checked); count(); };
+  body.querySelectorAll("button[data-del1]").forEach(b => b.onclick = () => deleteItems(kind, [unusedItems[+b.dataset.del1]]));
+  const s = body.querySelector("#delSel"); if (s) s.onclick = () => deleteItems(kind, sel());
+  const p = body.querySelector("#delAllBtn"); if (p) p.onclick = () => deleteItems(kind, unusedItems.filter(i => agentOf(i.host)));
+}
+const delToolbar = (what, items) => isAdmin() && items.length ? `<div class="acts">
+    <button class="btn danger" id="delAllBtn" ${items.some(i => agentOf(i.host)) ? "" : `disabled title="${esc(NO_AGENT("these hosts"))}"`}>Prune unused ${what} (${items.length}${items.reduce((s, i) => s + (i.size || 0), 0) ? `, ${bytes(items.reduce((s, i) => s + (i.size || 0), 0))}` : ""})</button>
+    <button class="btn danger" id="delSel" disabled>Delete selected</button>
+    <span class="small muted">Only unused ${what} can be deleted - a confirmation lists them first.</span></div>` : "";
+const delCells = (item, idx) => !isAdmin() ? "" : idx < 0 ? `<td class="cb"></td>`
+  : `<td class="cb"><input type="checkbox" data-del="${idx}" aria-label="Select ${esc(item.label)}" ${agentOf(item.host) ? "" : `disabled title="${esc(NO_AGENT(item.host))}"`}></td>`;
+const delBtn = (item, idx) => isAdmin() && idx >= 0 ? ` <button class="btn danger sm" data-del1="${idx}" ${agentOf(item.host) ? "" : `disabled title="${esc(NO_AGENT(item.host))}"`}>Delete</button>` : "";
+
+// The recent jobs, and the agents - under every Docker view.
+function renderJobs() {
+  const el = document.getElementById("dkJobs");
+  if (!el || S.tab !== "containers") return;
+  const hosts = Object.keys(S.act.agents).sort(), h = S.chost;
+  const jobs = S.act.jobs.filter(j => !h || j.host === h).slice(0, 15);
+  const st = j => ({queued: `<span class="st off"><i></i>waiting</span>`, running: `<span class="st warn"><i></i>running</span>`, done: `<span class="st up"><i></i>done</span>`,
+    failed: `<span class="st down"><i></i>failed</span>`, expired: `<span class="st off"><i></i>not picked up</span>`, lost: `<span class="st down"><i></i>no result</span>`})[j.state] || esc(j.state);
+  const target = j => j.kind === "update" ? esc(j.args.container) : j.args.images ? `${j.args.images.length} image${j.args.images.length > 1 ? "s" : ""}`
+    : j.args.volumes ? `${j.args.volumes.length} volume${j.args.volumes.length > 1 ? "s" : ""}` : "";
+  const updates = hosts.filter(x => !h || x === h).reduce((n, x) => n + Object.values(S.act.agents[x].updates).filter(u => u.status === "update").length, 0);
+  el.innerHTML = `<div class="card" style="margin-top:1.25rem"><div class="head"><h3>Actions</h3>
+      <span class="small muted">${hosts.length ? hosts.filter(x => !h || x === h).map(x => { const a = S.act.agents[x];
+        return `${esc(x)}: <span class="${a.online ? "ok" : "err"}">${a.online ? "agent online" : `agent offline (${ago(a.last_seen)})`}</span>, checked ${ago(a.checked)}`; }).join(" · ")
+        : "No docker-agent yet - run cadvisor.yml to install it on the Docker hosts."}${updates ? ` · <b>${updates}</b> image${updates > 1 ? "s" : ""} with an update` : ""}</span>
+      <span class="spacer"></span>${isAdmin() && hosts.length ? `<button class="btn" id="chkUpd">Check for updates now</button>` : ""}</div>
+    ${jobs.length ? `<div class="tbl"><table><thead><tr><th>When</th><th>Host</th><th>Action</th><th>By</th><th>State</th></tr></thead><tbody>
+      ${jobs.map((j, i) => `<tr class="click" data-job="${i}"><td class="nw" title="${when(j.created)}">${ago(j.created)}</td><td>${esc(j.host)}</td>
+        <td>${KIND_LABEL[j.kind] || esc(j.kind)} <span class="muted">${target(j)}</span></td><td class="small">${esc(j.by)}</td><td>${st(j)}</td></tr>
+        <tr hidden data-log="${i}"><td colspan="5"><pre class="joblog">${esc([...(j.args.images || j.args.volumes || []).map(x => "- " + x), j.log || (["queued", "running"].includes(j.state) ? "(waiting for the agent)" : "(no output)")].join("\n"))}</pre></td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="muted small">No action yet.</div>`}</div>`;
+  el.querySelectorAll("tr[data-job]").forEach(tr => tr.onclick = () => { const l = el.querySelector(`tr[data-log="${tr.dataset.job}"]`); l.hidden = !l.hidden; });
+  const c = el.querySelector("#chkUpd");
+  if (c) c.onclick = async () => {
+    const errs = [];
+    for (const x of hosts.filter(x => !h || x === h)) { try { await post("/api/infra/docker-actions", {host: x, kind: "check_updates"}); } catch (e) { errs.push(`${x}: ${e.message}`); } }
+    await loadAct(); if (errs.length) alert(errs.join("\n"));
+  };
+}
+
+// While a job waits or runs: check every 4 s; when one ends, reload the view (now, and once
+// docker-meta and Prometheus have caught up).
+S.jobTimer = null;
+function watchJobs() {
+  const active = () => S.act.jobs.filter(j => ["queued", "running"].includes(j.state)).map(j => j.id).join();
+  if (S.jobTimer || !active()) return;
+  const before = active();
+  S.jobTimer = setTimeout(async () => {
+    S.jobTimer = null;
+    try { S.act = await api("/api/infra/docker-actions"); } catch (e) { return; }
+    renderJobs();
+    if (active() !== before && S.tab === "containers") { loadCt(); setTimeout(() => S.tab === "containers" && loadCt(), 75000); }
+    watchJobs();
+  }, 4000);
+}
 
 // ---------------- volumes, networks, images
 // A small line of a volume's size over the last day (no axis: the number is next to it).
@@ -672,6 +872,7 @@ function renderList() {
   if (S.dk === "volumes") {
     const vols = d.volumes.filter(v => !h || v.host === h), binds = d.binds.filter(b => !h || b.host === h);
     const total = vols.reduce((s, v) => s + (v.size || 0), 0), unused = vols.filter(v => !v.containers.length);
+    const delItems = unused.map(v => ({host: v.host, ref: v.volume, label: v.volume, size: v.size})), delIdx = new Map(unused.map((v, i) => [v, i]));
     const grew = vols.reduce((s, v) => s + Math.max(0, v.growth_24h || 0), 0);
     const projects = {};
     vols.forEach(v => { const p = v.project || "(no Compose project)"; projects[p] = (projects[p] || 0) + (v.size || 0); });
@@ -689,16 +890,18 @@ function renderList() {
       <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Volume space over time</h3><span class="small muted">per host, measured every 15 minutes</span></div>
         <div id="g-vol"></div>${hostLegend}</div>
       <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Volumes</h3></div>
-      <div class="tbl"><table><thead><tr><th>Volume</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:18%">Size</th><th>Last 24 h</th><th>Used by</th></tr></thead><tbody>
-      ${vols.map(v => `<tr><td class="wrap mono">${esc(v.volume)}${v.project ? `<div class="sub2">${esc(v.project)}</div>` : ""}</td>${h ? "" : `<td>${esc(v.host)}</td>`}
+      ${delToolbar("volumes", delItems)}
+      <div class="tbl"><table><thead><tr>${isAdmin() ? `<th class="cb">${delItems.length ? `<input type="checkbox" id="delAll" aria-label="Select every unused volume">` : ""}</th>` : ""}<th>Volume</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:18%">Size</th><th>Last 24 h</th><th>Used by</th></tr></thead><tbody>
+      ${vols.map(v => `<tr>${delCells(delItems[delIdx.get(v)], delIdx.get(v) ?? -1)}<td class="wrap mono">${esc(v.volume)}${v.project ? `<div class="sub2">${esc(v.project)}</div>` : ""}</td>${h ? "" : `<td>${esc(v.host)}</td>`}
         <td class="n">${v.size != null ? bytes(v.size) : "-"}<div class="bar2" style="width:${(100 * (v.size || 0) / Math.max(1, vols[0]?.size || 1)).toFixed(1)}%"></div></td>
         <td class="nw">${spark(v.spark)} <span class="small ${(v.growth_24h || 0) > 0 ? "" : "muted"}">${v.growth_24h ? (v.growth_24h > 0 ? "+" : "") + bytes(Math.abs(v.growth_24h)).replace(/^/, v.growth_24h < 0 ? "-" : "") : "no change"}</span></td>
-        <td class="wrap">${v.containers.length ? v.containers.map(c => `${goto(v.host, c.container)} <span class="sub2 mono">${esc(c.destination)}${c.mode === "ro" ? " (ro)" : ""}</span>`).join("<br>") : `<span class="err small">not used</span>`}</td></tr>`).join("")}
+        <td class="wrap">${v.containers.length ? v.containers.map(c => `${goto(v.host, c.container)} <span class="sub2 mono">${esc(c.destination)}${c.mode === "ro" ? " (ro)" : ""}</span>`).join("<br>") : `<span class="err small">not used</span>${delBtn(delItems[delIdx.get(v)], delIdx.get(v) ?? -1)}`}</td></tr>`).join("")}
       </tbody></table></div></div>
       <div class="card" style="margin-top:1.25rem"><div class="head"><h3>Host folders mounted into containers</h3></div>
       <div class="tbl"><table><thead><tr><th>Folder on the host</th>${h ? "" : "<th>Host</th>"}<th>Containers</th></tr></thead><tbody>
       ${binds.map(b => `<tr><td class="mono wrap">${esc(b.path)}</td>${h ? "" : `<td>${esc(b.host)}</td>`}<td class="wrap">${b.containers.map(c => `${goto(b.host, c.container)} <span class="sub2 mono">${esc(c.destination)}${c.mode === "ro" ? " (ro)" : ""}</span>`).join("<br>")}</td></tr>`).join("")}
       </tbody></table></div></div>`;
+    wireDeletes(body, "delete_volumes", delItems);
     const hist = d.history.filter(x => !h || x.host === h);
     if (hist.length) chart("g-vol", hist[0].values, hist.map((x, i) => ({label: x.host, color: hostColor(x.host), fmt: bytes, data: i ? x.values : undefined})), {axis: bytes, height: 220});
     else document.getElementById("g-vol").innerHTML = `<div class="empty">No data yet.</div>`;
@@ -729,17 +932,22 @@ function renderList() {
   } else {
     const imgs = d.images.filter(i => !h || i.host === h), max = Math.max(1, ...imgs.map(i => i.size)), unused = imgs.filter(i => !i.in_use);
     const total = imgs.reduce((s, i) => s + i.size, 0);
+    // An untagged image is deleted by its ID, a tagged one by its tag (its last tag deletes it).
+    const delItems = unused.map(i => ({host: i.host, ref: i.image !== "<none>" ? i.image : i.id, label: i.image !== "<none>" ? i.image : `<none> ${i.id}`, size: i.size}));
+    const delIdx = new Map(unused.map((i, n) => [i, n]));
     document.getElementById("dkInfo").textContent = `${imgs.length} images, ${bytes(total)}`;
     body.innerHTML = `
       <div class="kpis" style="margin-bottom:1.1rem">${[[imgs.length, "images"], [bytes(total), "space"], [unused.length, `unused (${bytes(unused.reduce((s, i) => s + i.size, 0))})`]]
         .map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("")}</div>
       <div class="card"><div class="head"><h3>Biggest images</h3>${h ? "" : `<span class="small muted">colored by host</span>`}</div>
         ${bars(imgs.slice(0, 12).map(i => ({label: `<span class="mono">${esc(i.image)}</span>`, title: `${i.image} on ${i.host}`, value: i.size, color: h ? null : hostColor(i.host)})), bytes)}${hostLegend}</div>
-      <div class="card" style="margin-top:1.25rem"><div class="tbl"><table><thead><tr><th>Image</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:22%">Size</th><th>In use</th></tr></thead><tbody>
-      ${imgs.map(i => `<tr><td class="mono wrap">${esc(i.image)}<div class="sub2">${esc(i.id)}</div></td>${h ? "" : `<td>${esc(i.host)}</td>`}
+      <div class="card" style="margin-top:1.25rem">${delToolbar("images", delItems)}
+      <div class="tbl"><table><thead><tr>${isAdmin() ? `<th class="cb">${delItems.length ? `<input type="checkbox" id="delAll" aria-label="Select every unused image">` : ""}</th>` : ""}<th>Image</th>${h ? "" : "<th>Host</th>"}<th class="n" style="width:22%">Size</th><th>In use</th></tr></thead><tbody>
+      ${imgs.map(i => `<tr>${delCells(delItems[delIdx.get(i)], delIdx.get(i) ?? -1)}<td class="mono wrap">${esc(i.image)}<div class="sub2">${esc(i.id)}</div></td>${h ? "" : `<td>${esc(i.host)}</td>`}
         <td class="n">${bytes(i.size)}<div class="bar2" style="width:${(100 * i.size / max).toFixed(1)}%"></div></td>
-        <td>${i.in_use ? `<span class="st up"><i></i>in use</span>` : `<span class="st off"><i></i>unused</span>`}</td></tr>`).join("")}
+        <td class="nw">${i.in_use ? `<span class="st up"><i></i>in use</span>` : `<span class="st off"><i></i>unused</span>${delBtn(delItems[delIdx.get(i)], delIdx.get(i))}`}</td></tr>`).join("")}
       </tbody></table></div></div>`;
+    wireDeletes(body, "delete_images", delItems);
   }
   body.querySelectorAll("[data-goto]").forEach(a => a.onclick = e => {
     e.preventDefault(); const [host, name] = a.dataset.goto.split("|");
@@ -757,7 +965,7 @@ function setTab(t) {
 }
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => setTab(b.dataset.t));
 document.querySelectorAll("#dkSub button").forEach(b => b.onclick = () => { S.dk = b.dataset.v; localSet("dk", S.dk); S.ct = null; document.getElementById("cdetail").innerHTML = ""; loadCt(); });
-document.getElementById("chost").onchange = e => { S.chost = e.target.value; S.dk === "containers" ? loadCt() : renderList(); };
+document.getElementById("chost").onchange = e => { S.chost = e.target.value; S.dk === "containers" ? loadCt() : renderList(); renderJobs(); };
 
 load().then(() => setTab(S.tab));
 setInterval(() => { load(); if (S.tab === "containers" && S.dk === "containers" && !S.ct) loadCt(); }, 60000);
