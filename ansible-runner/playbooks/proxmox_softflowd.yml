@@ -19,11 +19,11 @@
 #       ./run.sh proxmox_softflowd.yml -e softflowd_state=absent    (stop it)
 
 - name: softflowd on the Proxmox nodes
-  hosts: "{{ softflowd_nodes | default('192.168.3.236,192.168.3.237') }}"
+  hosts: "{{ softflowd_nodes | default('hypervisors') }}"
   gather_facts: false
   vars:
     softflowd_state: present
-    softflowd_collector: "192.168.3.150:2055"
+    softflowd_collector: "{{ site_server_ip }}:2055"
     # Hosts left out of the capture. The TrueNAS (192.168.3.188) was, for its
     # iSCSI/NFS storage traffic - included since the collector's disk went
     # from 27 to 147 GB (2026-10-24); add it back here if the flows swamp.

@@ -23,12 +23,12 @@
 #       ./run.sh opnsense_geoblock.yml -e geoblock_state=absent      (remove it all)
 
 - name: Country blocking on OPNsense
-  hosts: "{{ geoblock_opnsense | default('192.168.3.1') }}"
+  hosts: "{{ geoblock_opnsense | default('firewall') }}"
   gather_facts: false
   vars:
     geoblock_state: present
     # Russia, China, North Korea, Iran, Belarus (2026-10-24).
-    geoblock_countries: [RU, CN, KP, IR, BY]
+    geoblock_countries: "{{ site_geoblock_countries }}"  # site.yml
     geoblock_outbound: true
     # MaxMind (the GeoIP alias) places some of these countries' networks
     # elsewhere - those in occupied Ukraine under UA. Also block the
@@ -38,11 +38,11 @@
     # ISPs in occupied Donbas / Crimea on Ukrainian-allocated addresses, seen
     # getting through on 2026-10-25 (Sentry Lens): Don Apex, Timer, IP
     # Service, Apex Group.
-    geoblock_asns: [47235, 47626, 59478, 201069]
+    geoblock_asns: "{{ site_geoblock_asns | default([]) }}"  # site.yml
     # LAN hosts the outbound rule leaves alone (e.g. the torrent box).
     geoblock_exempt: []
     # Interface keys (config.xml) blocked inbound: the WAN and the PIA tunnel.
-    geoblock_inbound_interfaces: [wan, opt2]
+    geoblock_inbound_interfaces: "{{ site_firewall_wan_interfaces }}"  # site.yml
 
   tasks:
     - name: Check the parameters

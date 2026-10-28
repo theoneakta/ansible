@@ -17,7 +17,7 @@
 #       ./run.sh node_exporter.yml -e node_exporter_state=absent    (remove it)
 
 - name: node_exporter
-  hosts: "{{ node_exporter_hosts | default('linux:192.168.3.236:192.168.3.237') }}"
+  hosts: "{{ node_exporter_hosts | default('linux:hypervisors') }}"
   gather_facts: false
   become: "{{ 'ssh' not in group_names }}"
   vars:
@@ -25,7 +25,7 @@
     node_exporter_version: "1.9.1"
     node_exporter_port: 9100
     # Who may scrape it (the host firewall rule): Prometheus's host.
-    node_exporter_scraper: 192.168.3.150
+    node_exporter_scraper: "{{ site_server_ip }}"
 
   pre_tasks:
     # Same login handling as linux_software.yml / akvorado_stack.yml.
@@ -35,6 +35,7 @@
 
     - name: Check for the classic sudo (sudo.ws)
       ansible.builtin.raw: command -v sudo.ws
+      check_mode: false  # read-only: also in a dry run
       vars:
         ansible_become: false
       register: sudo_ws
@@ -62,11 +63,13 @@
     - name: Firewall in use
       ansible.builtin.shell: |
         for s in firewalld ufw; do systemctl is-active --quiet $s && { echo $s; exit 0; }; done; echo none
+      check_mode: false
       register: host_fw
       changed_when: false
 
     - name: Version installed
       ansible.builtin.command: /usr/local/bin/node_exporter --version
+      check_mode: false
       register: ne_version
       changed_when: false
       failed_when: false

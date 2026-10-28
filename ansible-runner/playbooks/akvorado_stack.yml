@@ -26,7 +26,7 @@
 #   1.3.1.x SELinux enforcing -> /opt/akvorado labelled for containers.
 
 - name: Akvorado
-  hosts: "{{ akvorado_host | default('192.168.3.150') }}"
+  hosts: "{{ akvorado_host | default('monitoring') }}"
   become: true
   gather_facts: false
   vars:
@@ -37,35 +37,19 @@
     akvorado_http_port: 8081
     akvorado_user: admin
 
-    # Exporter names shown in the console (default: the IP address).
-    akvorado_exporter_names:
-      192.168.3.4: torrent
-      192.168.3.5: lububntu
-      192.168.3.7: docker-apps
-      192.168.3.8: docker-apps2
-      192.168.3.150: rocky10
-      192.168.3.236: pve5
-      192.168.3.237: pve6
+    # Exporter names shown in the console (default: the IP address) - the
+    # site's names (inventory/group_vars/all/site.yml).
+    akvorado_exporter_names: "{{ site_names | default({}) }}"
     # softflowd exporters: the Linux hosts (linux_software.yml --softflowd)
     # and the Proxmox nodes (proxmox_softflowd.yml).
-    akvorado_exporters: "{{ groups['linux'] + ['192.168.3.236', '192.168.3.237'] }}"
-    # Exporters with several interfaces, named by ifindex - e.g. the firewall
-    # (opnsense_netflow.yml; ifindex = netstat -i "Link#"). A description
+    akvorado_exporters: "{{ groups['linux'] | default([]) + site_hypervisors | default([]) }}"
+    # The firewall (opnsense_netflow.yml) is an exporter with several
+    # interfaces, named by ifindex: site_firewall_interfaces. A description
     # "Transit: <provider>" or "VPN: <provider>" marks the interface as
     # leaving the network (boundary external), anything else is internal.
-    akvorado_static_exporters:
-      192.168.3.1:
-        name: opnsense
-        ifindexes:
-          5: {name: ix0, description: "Transit: ISP"}
-          6: {name: ix1, description: LAN}
-          13: {name: wg0, description: "VPN: PIA"}
-          14: {name: tailscale0, description: Tailscale}
 
     # Fills the Src/DstNetName and Role fields.
-    akvorado_networks:
-      192.168.3.0/24: {name: lan, role: lan}
-      100.64.0.0/10: {name: tailscale, role: vpn}
+    akvorado_networks: "{{ site_networks }}"
 
     # Raw flows (IPs and ports) and the consolidated tables - sized for the
     # 27 GB disk on 192.168.3.150.
@@ -87,6 +71,7 @@
 
     - name: Check for the classic sudo (sudo.ws)
       ansible.builtin.raw: command -v sudo.ws
+      check_mode: false  # read-only: also in a dry run
       vars:
         ansible_become: false
       register: sudo_ws
@@ -254,21 +239,21 @@
                       description: Traffic seen by softflowd
                       speed: 1000
           {% endfor %}
-          {% for ip, exp in akvorado_static_exporters.items() %}
-                  {{ ip }}:
-                    name: {{ exp.name }}
+          {% if site_firewall | default('') %}
+                  {{ site_firewall }}:
+                    name: {{ site_firewall_name }}
                     default:
                       name: other
                       description: Unknown interface
                       speed: 1000
                     ifindexes:
-          {% for idx, intf in exp.ifindexes.items() %}
-                      {{ idx }}:
-                        name: {{ intf.name }}
-                        description: "{{ intf.description }}"
-                        speed: {{ intf.speed | default(1000) }}
+          {% for intf in site_firewall_interfaces | dict2items | sort(attribute='value.ifindex') %}
+                      {{ intf.value.ifindex }}:
+                        name: {{ intf.key }}
+                        description: "{{ intf.value.description }}"
+                        speed: {{ intf.value.speed | default(1000) }}
           {% endfor %}
-          {% endfor %}
+          {% endif %}
 
           core:
             # softflowd exports every flow (no sampling) and doesn't say so.

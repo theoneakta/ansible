@@ -23,15 +23,15 @@
 #       ./run.sh opnsense_netflow.yml -e '{"netflow_targets": ["192.168.3.150:2055"]}'
 
 - name: NetFlow export on OPNsense
-  hosts: "{{ netflow_opnsense | default('192.168.3.1') }}"
+  hosts: "{{ netflow_opnsense | default('firewall') }}"
   gather_facts: false
   vars:
     # Interface keys as in config.xml (lan, wan, opt1...).
-    netflow_interfaces: [lan, opt1]  # opt1 = tailscale
+    netflow_interfaces: "{{ site_firewall_netflow_interfaces }}"  # site.yml
     # Interfaces where only outgoing traffic is captured (WANs with NAT, if
     # captured too) - avoids counting a routed flow twice.
     netflow_egress_only: []
-    netflow_targets: ["192.168.3.150:2055"]
+    netflow_targets: ["{{ site_server_ip }}:2055"]
     netflow_version: v9
     # Long-running connections reported every minute instead of every 30.
     netflow_active_timeout: 60

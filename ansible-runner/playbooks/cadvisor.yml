@@ -17,7 +17,7 @@
 #       ./run.sh cadvisor.yml -e cadvisor_state=absent    (remove it)
 
 - name: cAdvisor
-  hosts: "{{ cadvisor_hosts | default('linux') }}"
+  hosts: "{{ cadvisor_hosts | default('docker_hosts') }}"
   gather_facts: false
   become: true
   vars:
@@ -25,7 +25,7 @@
     cadvisor_image: ghcr.io/google/cadvisor:0.60.6
     cadvisor_port: 9338
     cadvisor_dir: /opt/cadvisor
-    cadvisor_scraper: 192.168.3.150
+    cadvisor_scraper: "{{ site_server_ip }}"
 
   pre_tasks:
     # Same login handling as node_exporter.yml.
@@ -35,6 +35,7 @@
 
     - name: Check for the classic sudo (sudo.ws)
       ansible.builtin.raw: command -v sudo.ws
+      check_mode: false  # read-only: also in a dry run
       vars:
         ansible_become: false
       register: sudo_ws
@@ -48,6 +49,7 @@
 
     - name: Docker installed?
       ansible.builtin.command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
+      check_mode: false
       register: docker_version
       changed_when: false
       failed_when: false
@@ -60,6 +62,7 @@
     - name: Firewall in use
       ansible.builtin.shell: |
         for s in firewalld ufw; do systemctl is-active --quiet $s && { echo $s; exit 0; }; done; echo none
+      check_mode: false
       register: host_fw
       changed_when: false
 

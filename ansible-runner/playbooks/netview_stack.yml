@@ -39,13 +39,13 @@
 # root-owned file), the container runs as an unprivileged UID.
 
 - name: netview
-  hosts: "{{ akvorado_host | default('192.168.3.150') }}"
+  hosts: "{{ akvorado_host | default('monitoring') }}"
   become: true
   gather_facts: false
   vars:
     netview_dir: /opt/netview
     netview_port: 8082
-    netview_firewall: 192.168.3.1
+    netview_firewall: "{{ site_firewall }}"  # site.yml (its inventory name: its vault login)
     netview_dns: true
     netview_dns_retention_days: 30
     # Live page: the firewall interfaces shown, by device (as in
@@ -59,20 +59,17 @@
     # tunnel_port = a VPN whose devices also tunnel past the firewall: their
     # UDP conversations on that port (Tailscale's direct WireGuard, to a VPS
     # or between LAN devices) count under this interface too.
-    netview_live_interfaces:
-      ix0: {label: Internet, external: true, kind: wan}
-      wg0: {label: VPN (PIA), external: true, kind: vpn}
-      ix1: {label: LAN, external: false, kind: lan, netflow: true}
-      tailscale0: {label: Tailscale, external: true, kind: vpn, netflow: true, tunnel_port: 41641}
+    # The firewall's interfaces in site.yml (site_firewall_interfaces).
+    netview_live_interfaces: "{{ site_firewall_interfaces }}"
     netview_live_top_iface: lan  # OPNsense interface key whose hosts get live rates
     # Sign-in (see the top). Team = the Zero Trust team name (<team>.cloudflareaccess.com),
     # AUD = the Access application's "Application Audience (AUD) Tag".
-    netview_public_url: https://netview.aktasolutions.com
+    netview_public_url: "{{ site_public_url }}"  # site.yml
     # builtin = the app's login page; cloudflare = trust a Cloudflare Access
     # token too; off = no login (LAN only).
-    netview_auth_methods: [builtin, cloudflare]
-    netview_cf_team: aktasolutions.cloudflareaccess.com   # cloudflare_access.yml (2026-10-24)
-    netview_cf_aud: 8375c22f885da275b33199b69162b781b7eaef18c61320c90c94383955584ed6
+    netview_auth_methods: "{{ ['builtin', 'cloudflare'] if site_cloudflare_aud | default('') else ['builtin'] }}"
+    netview_cf_team: "{{ site_cloudflare_team | default('') }}"   # site.yml (cloudflare_access.yml)
+    netview_cf_aud: "{{ site_cloudflare_aud | default('') }}"
     # Approved admins as soon as they sign in: here the Cloudflare account's
     # email (the one the Access policy lets through) - [] for a fresh install.
     netview_admin_emails: "{{ [hostvars['cloudflare.com'].vault_win_user] if hostvars['cloudflare.com'].vault_win_user is defined else [] }}"
@@ -89,24 +86,16 @@
     netview_session_days: 7
     # Exporter names as in akvorado_stack.yml: the firewall answers for the
     # internet, the Proxmox nodes' softflowd for LAN-to-LAN.
-    netview_wan_exporter: opnsense
-    netview_lan_exporters: [pve5, pve6]
+    netview_wan_exporter: "{{ site_firewall_name }}"
+    netview_lan_exporters: "{{ site_hypervisors | map('extract', dict(site_hypervisors | zip(site_hypervisors)) | combine(site_names | default({}))) | list }}"
     # Names for addresses the DHCP server doesn't know (static IPs) - these
     # win over the leases.
-    netview_names:
-      192.168.3.1: opnsense
-      192.168.3.4: torrent
-      192.168.3.5: lububntu
-      192.168.3.7: docker-apps
-      192.168.3.8: docker-apps2
-      192.168.3.150: rocky10
-      192.168.3.188: truenas
-      192.168.3.236: pve5
-      192.168.3.237: pve6
+    netview_names: "{{ site_names | default({}) }}"  # site.yml
     # Applications section: Uptime Kuma (2.x) at this URL, signed in with the
     # vault login of this inventory host (web group).
-    netview_kuma_url: https://kuma.aktasolutions.com
-    netview_kuma_host: kuma.aktasolutions.com
+    # Deployed by kuma_stack.yml (site_kuma_deploy), or an existing one.
+    netview_kuma_url: "{{ 'http://uptime-kuma:3001' if site_kuma_deploy | default(false) | bool else site_kuma_url | default('') }}"
+    netview_kuma_host: "{{ site_kuma_host | default('') }}"
     # Infrastructure section: Prometheus on the Akvorado network ('' = off).
     netview_prometheus_url: http://prometheus:9090
 
@@ -119,6 +108,7 @@
 
     - name: Check for the classic sudo (sudo.ws)
       ansible.builtin.raw: command -v sudo.ws
+      check_mode: false  # read-only: also in a dry run
       vars:
         ansible_become: false
       register: sudo_ws
@@ -138,6 +128,7 @@
 
     - name: Check the Akvorado network is there
       ansible.builtin.command: docker network inspect akvorado_default --format '{% raw %}{{.Name}}{% endraw %}'
+      check_mode: false
       changed_when: false
       register: akv_net
       failed_when: false
@@ -151,6 +142,7 @@
   tasks:
     # ------------------------------------------------------------- names
     - name: Read the firewall's DHCP leases (OPNsense API)
+      check_mode: false  # read-only: also in a dry run
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/opnsense_leases_api.py"]
       environment:
@@ -230,6 +222,7 @@
         - name: Firewall side
           ansible.builtin.debug:
             msg: "{{ (netview_user.stdout | from_json).log }}"
+          when: not ansible_check_mode  # the step before only runs for real
 
         - name: Write the key file
           ansible.builtin.copy:

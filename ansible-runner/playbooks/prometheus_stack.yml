@@ -16,7 +16,7 @@
 # Run:  ./run.sh prometheus_stack.yml                  (192.168.3.150)
 
 - name: Prometheus
-  hosts: "{{ prometheus_host | default('192.168.3.150') }}"
+  hosts: "{{ prometheus_host | default('monitoring') }}"
   become: true
   gather_facts: false
   vars:
@@ -24,27 +24,17 @@
     prometheus_image: prom/prometheus:v3.5.1   # the 3.5 long-term-support line
     prometheus_retention: 30d
     prometheus_scrape_interval: 30s
-    # Hosts running node_exporter (port 9100).
-    prometheus_node_hosts: "{{ groups['linux'] + ['192.168.3.236', '192.168.3.237'] }}"
+    # Hosts running node_exporter (port 9100): the Linux hosts and the
+    # hypervisors (inventory groups, see inventory/group_vars/all/site.yml).
+    prometheus_node_hosts: "{{ (groups['linux'] | default([]) + site_hypervisors) | unique }}"
     prometheus_node_port: 9100
     # Docker hosts running cAdvisor (cadvisor.yml, port 9338) - the containers.
-    prometheus_cadvisor_hosts: [192.168.3.6, 192.168.3.7, 192.168.3.8, 192.168.3.150]
+    prometheus_cadvisor_hosts: "{{ site_docker_hosts }}"
     prometheus_cadvisor_port: 9338
     # Display names (node_exporter also reports each host's own name).
-    prometheus_names:
-      192.168.3.4: torrent
-      192.168.3.5: lububntu
-      192.168.3.6: docker-apps-domo
-      192.168.3.7: docker-apps
-      192.168.3.8: docker-apps2
-      192.168.3.150: rocky10
-      192.168.3.154: linux-154
-      192.168.3.236: pve5
-      192.168.3.237: pve6
+    prometheus_names: "{{ site_names | default({}) }}"
     # A role per host, for grouping in Sentry Lens.
-    prometheus_roles:
-      192.168.3.236: hypervisor
-      192.168.3.237: hypervisor
+    prometheus_roles: "{{ dict(site_hypervisors | product(['hypervisor'])) }}"
 
   pre_tasks:
     # Same login handling as akvorado_stack.yml.
@@ -54,6 +44,7 @@
 
     - name: Check for the classic sudo (sudo.ws)
       ansible.builtin.raw: command -v sudo.ws
+      check_mode: false  # read-only: also in a dry run
       vars:
         ansible_become: false
       register: sudo_ws
@@ -71,6 +62,7 @@
 
     - name: Check the Akvorado network is there
       ansible.builtin.command: docker network inspect akvorado_default --format '{% raw %}{{.Name}}{% endraw %}'
+      check_mode: false
       changed_when: false
       register: akv_net
       failed_when: false
@@ -137,7 +129,7 @@
         content: |
           [
           {% for h in prometheus_node_hosts %}
-            {"targets": ["{{ h }}:{{ prometheus_node_port }}"],
+            {"targets": ["{{ hostvars[h].ansible_host | default(h) }}:{{ prometheus_node_port }}"],
              "labels": {"host": {{ prometheus_names.get(h, h) | to_json }}, "role": {{ prometheus_roles.get(h, 'server') | to_json }}}}{{ '' if loop.last else ',' }}
           {% endfor %}
           ]
@@ -151,7 +143,7 @@
         content: |
           [
           {% for h in prometheus_cadvisor_hosts %}
-            {"targets": ["{{ h }}:{{ prometheus_cadvisor_port }}"], "labels": {"host": {{ prometheus_names.get(h, h) | to_json }}}}{{ '' if loop.last else ',' }}
+            {"targets": ["{{ hostvars[h].ansible_host | default(h) }}:{{ prometheus_cadvisor_port }}"], "labels": {"host": {{ prometheus_names.get(h, h) | to_json }}}}{{ '' if loop.last else ',' }}
           {% endfor %}
           ]
 
