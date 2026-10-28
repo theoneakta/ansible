@@ -17,9 +17,16 @@ the confirmation word the page asked the admin to type.
   netview.docker_agents   each host's agent: version, last contact, its last
                           update check {image: {status, local, remote, error}}
 
+A container's logs are read on demand and kept nowhere: the page asks (admins
+only - logs can hold secrets), the host's agent, waiting on
+/api/docker-agent/logs/wait, reads them from Docker and posts them back, and
+the page's request waits for that answer. Live is the page asking again every
+few seconds for what came after its last line.
+
 A host's agent key: derived from SESSION_SECRET and the host name (Prometheus's
 host label) - cadvisor.yml derives the same from this host's session.env.
 """
+import asyncio
 import hashlib
 import hmac
 import json
@@ -261,3 +268,69 @@ async def queue(request: Request):
     save_job({"id": jid, "host": host, "kind": kind, "args": args, "state": "queued", "by": by,
               "created": time.time(), "started": 0, "finished": 0, "log": ""})
     return {"id": jid}
+
+
+# ------------------------------------------------------------------ a container's logs
+LOG_WAIT = 25  # the agent's long poll
+LOG_ANSWER = 20  # the page's wait for the agent's answer
+LOG_ASKS = 4  # at most this many waiting per host
+_log_asks = {}  # host -> asyncio.Queue of asks
+_log_answers = {}  # ask id -> (host, Future)
+_log_seen = {}  # host -> the agent's last wait (an agent before 2.2.0 never waits)
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
+NS = re.compile(r"\d{1,20}")
+
+
+@router.get("/api/docker-agent/logs/wait")
+async def agent_logs_wait(request: Request):
+    """The agent's long poll: the next logs a page asks for on this host, or none within LOG_WAIT s."""
+    host = _agent(request)
+    qu = _log_asks.setdefault(host, asyncio.Queue())
+    _log_seen[host] = time.time()
+    try:
+        while True:
+            ask = await asyncio.wait_for(qu.get(), LOG_WAIT)
+            if ask["id"] in _log_answers:  # the page still waits for it
+                return {"ask": ask}
+    except asyncio.TimeoutError:
+        return {"ask": None}
+    finally:
+        _log_seen[host] = time.time()
+
+
+@router.post("/api/docker-agent/logs/{rid}")
+async def agent_logs_answer(request: Request, rid: str):
+    """{lines: [[ns, stream, text]], tty, cut, error} - the logs asked for."""
+    host = _agent(request)
+    b = await request.json()
+    h, fut = _log_answers.get(rid, (None, None))
+    if h == host and not fut.done():
+        fut.set_result(b)
+    return {"ok": True}
+
+
+@router.get("/api/infra/docker-logs/{host}/{name}")
+async def container_logs(request: Request, host: str, name: str, tail: int = 500, since: str = ""):
+    """A container's last `tail` lines, or those since `since` (ns, inclusive) -
+    [[ns, stream (1 out, 2 err, 0 a terminal's), text]], read now by the host's agent."""
+    _admin(request)
+    if not HOST.fullmatch(host) or not NAME.fullmatch(name) or (since and not NS.fullmatch(since)):
+        raise HTTPException(400, "a host, a container and since in ns")
+    if time.time() - _log_seen.get(host, 0) > LOG_WAIT + 60:
+        raise HTTPException(409, f"the docker-agent on {host} can't show logs - it's offline, or older than 2.2.0 (run cadvisor.yml for it)")
+    if sum(1 for h, _ in _log_answers.values() if h == host) >= LOG_ASKS:
+        raise HTTPException(429, f"already {LOG_ASKS} logs waiting on {host}'s agent")
+    qu = _log_asks.setdefault(host, asyncio.Queue())
+    rid = secrets.token_hex(8)
+    fut = asyncio.get_running_loop().create_future()
+    _log_answers[rid] = (host, fut)
+    try:
+        await qu.put({"id": rid, "container": name, "tail": max(1, min(tail, 5000)), "since": since})
+        b = await asyncio.wait_for(fut, LOG_ANSWER)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"no answer from the docker-agent on {host}") from None
+    finally:
+        _log_answers.pop(rid, None)
+    if b.get("error"):
+        raise HTTPException(502, str(b["error"])[:500])
+    return {"lines": b.get("lines") or [], "tty": bool(b.get("tty")), "cut": bool(b.get("cut"))}

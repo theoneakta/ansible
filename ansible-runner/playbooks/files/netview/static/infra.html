@@ -195,6 +195,25 @@
   .modal ul { margin: .5rem 0; padding-left: 1.1rem; max-height: 14rem; overflow: auto; font-size: .82rem; }
   .modal .foot2 { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; flex-wrap: wrap; }
   .modal input[type=text] { width: 100%; margin-top: .3rem; }
+  td.rowacts { text-align: right; }
+  /* a container's logs, under its row */
+  .lgbar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .6rem; }
+  .lgbar input[type=text] { flex: 1 1 14rem; min-width: 0; }
+  .lgbar label { display: flex; gap: .3rem; align-items: center; font-size: .78rem; color: var(--muted); }
+  .logview { font-family: ui-monospace, Consolas, monospace; font-size: .74rem; line-height: 1.45; background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; padding: .4rem .6rem; height: 26rem; overflow: auto; resize: vertical; }
+  .logview.tall { height: 75vh; }
+  .logview .ll { white-space: pre; }
+  .logview.wrap .ll { white-space: pre-wrap; word-break: break-all; }
+  .logview .lt { color: var(--muted); margin-right: .7rem; user-select: none; }
+  .logview .ll.e2 { border-left: 2px solid var(--down); padding-left: .35rem; margin-left: -.55rem; }
+  .logview .ll.lv-err { color: #ff7b72; }
+  .logview .ll.lv-warn { color: #e3b341; }
+  .logview mark { background: #e3b34155; color: inherit; border-radius: 2px; }
+  .btn.live { border-color: var(--up); color: var(--up); }
+  .btn.live::before { content: ""; display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--up); margin-right: .35rem; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .btn.live::before { animation: none; } }
   .joblog { white-space: pre-wrap; font-size: .72rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; margin: .3rem 0 0; max-height: 18rem; overflow: auto; }
   .vbar { display: grid; grid-template-columns: minmax(8rem, 16rem) 1fr 5.5rem; gap: .6rem; align-items: center; font-size: .8rem; margin: .3rem 0; }
   .vbar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -354,8 +373,8 @@ async function detail() {
         ${d.failed_units.length ? `<ul class="err" style="margin:0;padding-left:1.1rem">${d.failed_units.map(u => `<li>${esc(u)}</li>`).join("")}</ul>` : `<div class="ok">None - every service systemd started is running.</div>`}</div>
     </div>
     ${h.containers ? `<div class="card"><div class="head"><h3>Containers</h3><span class="small muted">${h.containers} running · click one for its history</span></div><div class="tbl" id="hct">Loading...</div></div>` : ""}`;
-  if (h.containers) api(`/api/infra/containers?host=${encodeURIComponent(d.host)}`)
-    .then(c => { const t = document.getElementById("hct"); if (t) { t.innerHTML = ctTable(c.containers, false); wireCt(t); } })
+  if (h.containers) Promise.all([api(`/api/infra/containers?host=${encodeURIComponent(d.host)}`), isAdmin() ? loadAct() : null])
+    .then(([c]) => { const t = document.getElementById("hct"); if (t) { t.innerHTML = ctTable(c.containers, false); wireCt(t); } })
     .catch(e => { const t = document.getElementById("hct"); if (t) t.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
   document.getElementById("close").onclick = () => select(d.host);
   document.querySelectorAll("#per button").forEach(b => b.onclick = () => { S.hours = +b.dataset.h; localSet("hours", S.hours); detail(); });
@@ -519,7 +538,7 @@ function ctTable(rows, withHost) {
   if (!rows.length) return `<div class="empty">No container matches.</div>`;
   const maxMem = Math.max(1, ...rows.map(r => r.mem || 0)), maxCpu = Math.max(1, ...rows.map(r => r.cpu || 0));
   const cols = COLS.filter(([c]) => withHost || c !== "host");
-  return `<table><thead><tr>${cols.map(([c, l]) => `<th class="sort ${NUMERIC.includes(c) ? "n" : ""}" data-sort="${c}">${l}${k === c ? (dir < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead><tbody>
+  return `<table><thead><tr>${cols.map(([c, l]) => `<th class="sort ${NUMERIC.includes(c) ? "n" : ""}" data-sort="${c}">${l}${k === c ? (dir < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
     ${rows.map(r => `<tr class="click ${S.ct && S.ct.host === r.host && S.ct.name === r.name ? "sel" : ""}" data-ct="${esc(r.host)}|${esc(r.name)}">
       <td class="wrap"><b>${esc(r.name)}</b><div class="sub2">${r.project ? esc(r.project) : esc(r.image)}</div>${chips(r.tags.map(t => "#" + t))}</td>
       ${withHost ? `<td>${esc(r.host)}</td>` : ""}
@@ -531,7 +550,9 @@ function ctTable(rows, withHost) {
       <td class="n">${r.volumes}${r.binds ? `<div class="sub2">+${r.binds} folders</div>` : ""}</td>
       <td class="small">${r.ports.filter(p => p.public_port).map(p => `${esc(p.public_port)}/${esc(p.proto)}`).filter((v, i, a) => a.indexOf(v) === i).join(" ") || `<span class="muted">-</span>`}</td>
       <td class="n">${r.restarts ? `<span class="${r.restarts > 3 ? "err" : ""}">${r.restarts}</span>` : "0"}</td>
-      <td class="n">${r.state === "running" ? dur(r.uptime) : r.stopped_since ? `<span class="muted">stopped ${dur(Date.now() / 1000 - r.stopped_since)} ago</span>` : "-"}</td></tr>`).join("")}
+      <td class="n">${r.state === "running" ? dur(r.uptime) : r.stopped_since ? `<span class="muted">stopped ${dur(Date.now() / 1000 - r.stopped_since)} ago</span>` : "-"}</td>
+      ${isAdmin() ? `<td class="nw rowacts"><button class="btn sm ${S.lg && S.lg.host === r.host && S.lg.name === r.name ? "primary" : ""}" data-logs ${logsOff(r.host) ? `disabled title="${esc(logsOff(r.host))}"` : `title="Show its logs under it"`}>Logs</button>
+        <button class="btn sm" data-rst="${esc(r.state)}" data-since="${r.stopped_since || 0}" ${agentOf(r.host) ? "" : `disabled title="${esc(NO_AGENT(r.host))}"`}>${r.state === "running" ? "Restart" : "Start"}</button></td>` : ""}</tr>`).join("")}
   </tbody></table>`;
 }
 function wireCt(root) {
@@ -546,6 +567,17 @@ function wireCt(root) {
     if (S.ct && S.ct.host === host && S.ct.name === name && tr.classList.contains("sel")) { S.ct = null; closeDetail(); return; }
     S.ct = {host, name}; ctDetail();
   });
+  root.querySelectorAll("button[data-rst]").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const [host, name] = b.closest("tr").dataset.ct.split("|");
+    restartContainer({host, name, state: b.dataset.rst, stopped_since: +b.dataset.since});
+  });
+  root.querySelectorAll("button[data-logs]").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const [host, name] = b.closest("tr").dataset.ct.split("|");
+    toggleLogs(host, name);
+  });
+  if (S.lg) mountLogs();
 }
 function currentRows() {
   const q = S.cq.toLowerCase();
@@ -601,7 +633,7 @@ function rowOf(ct) {
   return [...document.querySelectorAll("tr[data-ct]")].find(tr => tr.dataset.ct === `${ct.host}|${ct.name}` && tr.offsetParent);
 }
 function closeDetail() {
-  document.querySelectorAll("tr.exp").forEach(x => x.remove());
+  document.querySelectorAll("tr.exp:not(.logexp)").forEach(x => x.remove());
   document.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel"));
   S.dcharts.forEach(u => u.destroy()); S.dcharts = [];
 }
@@ -633,7 +665,8 @@ async function ctDetail() {
   box.innerHTML = `
     <div class="exphead"><b>${esc(d.name)}</b>${stateTag(d)}<span class="tag">${esc(d.host)}</span>
       <span class="mono muted small" title="Image">${esc(d.image)}</span><span class="spacer"></span>
-      ${isAdmin() ? `<button class="btn" id="crestart" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${d.state === "running" ? "Restart" : "Start"}</button>
+      ${isAdmin() ? `<button class="btn" id="clogs" ${logsOff(d.host) ? `disabled title="${esc(logsOff(d.host))}"` : ""}>Logs</button>
+        <button class="btn" id="crestart"${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${d.state === "running" ? "Restart" : "Start"}</button>
         <button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Check & update"}</button>` : ""}
       <div class="seg" id="cper">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
       <button class="btn" id="cclose" title="Close">&times;</button></div>
@@ -679,6 +712,8 @@ async function ctDetail() {
   if (upd) upd.onclick = e => { e.stopPropagation(); updateContainer(d); };
   const rst = box.querySelector("#crestart");
   if (rst) rst.onclick = e => { e.stopPropagation(); restartContainer(d); };
+  const lgb = box.querySelector("#clogs");
+  if (lgb) lgb.onclick = e => { e.stopPropagation(); toggleLogs(d.host, d.name); };
   box.querySelector("#cclose").onclick = e => { e.stopPropagation(); S.ct = null; closeDetail(); document.getElementById("cdetail").innerHTML = ""; };
   box.querySelectorAll("#cper button").forEach(b => b.onclick = e => { e.stopPropagation(); S.hours = +b.dataset.h; localSet("hours", S.hours); ctDetail(); });
   const c1 = css("--s1"), c2 = css("--s2"), small = {height: 130, into: S.dcharts};
@@ -862,6 +897,142 @@ function watchJobs() {
     watchJobs();
   }, 4000);
 }
+
+// ---------------- a container's logs, under its row
+// Read now by the host's docker-agent (2.2.0 and later), kept nowhere. The filter works on the lines
+// already here; Live asks every 3 s for the lines since the last one.
+const verAtLeast = (v, w) => { const a = String(v || "").split(".").map(Number), b = w.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; return true; };
+const logsOff = h => !agentOf(h) ? NO_AGENT(h) : !verAtLeast(agentOf(h).version, "2.2.0") ? `The docker-agent on ${h} is ${agentOf(h).version} - logs need 2.2.0 (run cadvisor.yml for it)` : "";
+const LV_ERR = /\b(error|fatal|panic|critical|crit|exception|traceback|emerg)\b|level=(error|fatal|crit)|\[(E|ERR|ERROR|FATAL)\]/i;
+const LV_WARN = /\b(warn|warning)\b|level=warn|\[(W|WRN|WARN)\]/i;
+const LOG_KEEP = 20000, LIVE_EVERY = 3000;
+S.lg = null;
+
+function toggleLogs(host, name) {
+  const same = S.lg && S.lg.host === host && S.lg.name === name;
+  stopLogs();
+  if (same) return;
+  S.lg = {host, name, lines: [], tail: +(localGet("lgTail") || 500), q: "", stream: 0, level: "", live: false, wrap: localGet("lgWrap") === "1",
+          tall: false, err: "", busy: false, fails: 0, read: 0, timer: null};
+  mountLogs(); fetchLogs(false);
+}
+function stopLogs() {
+  if (S.lg) clearTimeout(S.lg.timer);
+  S.lg = null;
+  document.querySelectorAll("tr.logexp").forEach(x => x.remove());
+  document.querySelectorAll("button[data-logs].primary").forEach(b => b.classList.remove("primary"));
+}
+
+// (Re)builds the panel under the container's row - after the list is redrawn too; its lines and settings stay.
+function mountLogs() {
+  const L = S.lg;
+  document.querySelectorAll("tr.logexp").forEach(x => x.remove());
+  const row = rowOf(L);
+  if (!row) return;  // filtered out of the list: back when it shows again
+  row.querySelector("button[data-logs]")?.classList.add("primary");
+  const exp = document.createElement("tr");
+  exp.className = "exp logexp";
+  exp.innerHTML = `<td colspan="${row.cells.length}"><div class="expbox">
+    <div class="exphead"><b>Logs</b><span>${esc(L.name)}</span><span class="tag">${esc(L.host)}</span><span class="spacer"></span>
+      <div class="seg" id="lgTail" title="How many of its last lines">${[100, 500, 2000, 5000].map(n => `<button data-n="${n}" class="${n === L.tail ? "active" : ""}">${n}</button>`).join("")}</div>
+      <button class="btn" id="lgReload" title="Read its last lines again">Reload</button>
+      <button class="btn ${L.live ? "live" : ""}" id="lgLive" aria-pressed="${L.live}" title="New lines as they come, every 3 s">${L.live ? "Live" : "Go live"}</button>
+      <button class="btn" id="lgClose" title="Close">&times;</button></div>
+    <div class="lgbar">
+      <input type="text" id="lgQ" placeholder="Filter: words, or /a regex/" value="${esc(L.q)}" aria-label="Filter the lines" spellcheck="false">
+      <div class="seg" id="lgStream">${[[0, "All"], [1, "stdout"], [2, "stderr"]].map(([v, l]) => `<button data-v="${v}" class="${v === L.stream ? "active" : ""}">${l}</button>`).join("")}</div>
+      <div class="seg" id="lgLevel">${[["", "Any level"], ["warn", "Warnings & errors"], ["err", "Errors"]].map(([v, l]) => `<button data-v="${v}" class="${v === L.level ? "active" : ""}">${l}</button>`).join("")}</div>
+      <label><input type="checkbox" id="lgWrap" ${L.wrap ? "checked" : ""}> Wrap</label>
+      <label><input type="checkbox" id="lgTall" ${L.tall ? "checked" : ""}> Taller</label>
+    </div>
+    <div class="logview ${L.wrap ? "wrap" : ""} ${L.tall ? "tall" : ""}" id="lgOut" tabindex="0" aria-label="Log lines"></div>
+    <div class="small muted" id="lgFoot" style="margin-top:.4rem"></div></div></td>`;
+  // Right under the row.
+  row.after(exp);
+  const box = exp.querySelector(".expbox"), out = box.querySelector("#lgOut");
+  box.addEventListener("click", e => e.stopPropagation());
+  box.querySelectorAll("#lgTail button").forEach(b => b.onclick = () => { L.tail = +b.dataset.n; localSet("lgTail", L.tail);
+    box.querySelectorAll("#lgTail button").forEach(x => x.classList.toggle("active", x === b)); fetchLogs(false); });
+  box.querySelector("#lgReload").onclick = () => fetchLogs(false);
+  box.querySelector("#lgLive").onclick = () => { L.live = !L.live; L.fails = 0; clearTimeout(L.timer); mountLogs(); if (L.live) fetchLogs(true); };
+  box.querySelector("#lgClose").onclick = () => stopLogs();
+  let typing;
+  box.querySelector("#lgQ").oninput = e => { clearTimeout(typing); typing = setTimeout(() => { L.q = e.target.value; drawLogs(true); }, 150); };
+  box.querySelectorAll("#lgStream button").forEach(b => b.onclick = () => { L.stream = +b.dataset.v;
+    box.querySelectorAll("#lgStream button").forEach(x => x.classList.toggle("active", x === b)); drawLogs(true); });
+  box.querySelectorAll("#lgLevel button").forEach(b => b.onclick = () => { L.level = b.dataset.v;
+    box.querySelectorAll("#lgLevel button").forEach(x => x.classList.toggle("active", x === b)); drawLogs(true); });
+  box.querySelector("#lgWrap").onchange = e => { L.wrap = e.target.checked; localSet("lgWrap", L.wrap ? "1" : "0"); out.classList.toggle("wrap", L.wrap); };
+  box.querySelector("#lgTall").onchange = e => { L.tall = e.target.checked; out.classList.toggle("tall", L.tall); };
+  drawLogs(true);
+}
+
+// Live: only the lines after the last one (Docker's since is inclusive: the last instant's lines are dropped again).
+async function fetchLogs(more) {
+  const L = S.lg;
+  if (!L || L.busy) return;
+  const last = more && L.lines.length ? L.lines[L.lines.length - 1][0] : "";
+  if (more && !document.getElementById("lgOut")?.offsetParent) { L.timer = setTimeout(() => fetchLogs(true), LIVE_EVERY); return; }  // out of view: paused
+  L.busy = true; L.err = ""; if (!more) drawFoot("Reading...");
+  try {
+    const r = await api(`/api/infra/docker-logs/${encodeURIComponent(L.host)}/${encodeURIComponent(L.name)}?${last ? `since=${last}` : `tail=${L.tail}`}`);
+    if (S.lg !== L) return;
+    if (last) {
+      const seen = new Set(L.lines.filter(x => x[0] === last).map(x => x[1] + x[2]));
+      const add = r.lines.filter(x => x[0] > last || (x[0] === last && !seen.has(x[1] + x[2])));
+      L.lines = L.lines.concat(add).slice(-LOG_KEEP);
+    } else L.lines = r.lines;
+    L.tty = r.tty; L.cut = r.cut; L.read = Date.now(); L.fails = 0;
+  } catch (e) {
+    if (S.lg !== L) return;
+    L.err = e.message; L.fails++;
+    if (L.fails >= 5 && L.live) { L.live = false; L.err += " - live stopped"; mountLogs(); }
+  } finally { L.busy = false; }
+  if (S.lg !== L) return;
+  drawLogs(!more);
+  if (L.live) L.timer = setTimeout(() => fetchLogs(true), LIVE_EVERY);
+}
+
+function logFilter(L) {
+  let re = null, bad = "";
+  const q = L.q.trim();
+  if (q.length > 2 && q.startsWith("/") && q.endsWith("/")) {
+    try { re = new RegExp(q.slice(1, -1), "gi"); } catch (e) { bad = e.message; }
+  }
+  if (!re && q) re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  return {re, bad};
+}
+const lvOf = t => LV_ERR.test(t) ? "err" : LV_WARN.test(t) ? "warn" : "";
+const tsOf = ns => { const d = new Date(Number(ns.slice(0, -6))), now = new Date();
+  const hms = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false});
+  return d.toDateString() === now.toDateString() ? hms : `${d.toLocaleDateString([], {month: "2-digit", day: "2-digit"})} ${hms}`; };
+
+function drawLogs(toEnd) {
+  const L = S.lg, out = document.getElementById("lgOut");
+  if (!L || !out) return;
+  const stick = toEnd || out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
+  const {re, bad} = logFilter(L);
+  const shown = L.lines.filter(([, s, t]) => {
+    if (L.stream && s !== L.stream) return false;
+    if (L.level) { const v = lvOf(t); if (!v || (L.level === "err" && v !== "err")) return false; }
+    if (re) { re.lastIndex = 0; if (!re.test(t)) return false; }
+    return true;
+  });
+  const mark = t => { if (!re) return esc(t); re.lastIndex = 0; let o = "", i = 0, m;
+    while ((m = re.exec(t)) && m[0]) { o += esc(t.slice(i, m.index)) + `<mark>${esc(m[0])}</mark>`; i = m.index + m[0].length; }
+    return o + esc(t.slice(i)); };
+  const MAX = 5000;  // drawn at most (the newest); the filter still looks at every line kept
+  out.innerHTML = shown.length ? shown.slice(-MAX).map(([ns, s, t]) => { const v = lvOf(t);
+      return `<div class="ll ${s === 2 ? "e2" : ""} ${v ? "lv-" + v : ""}"><span class="lt" title="${esc(new Date(Number(ns.slice(0, -6))).toLocaleString())}">${tsOf(ns)}</span>${mark(t)}</div>`; }).join("")
+    : `<div class="muted">${L.read ? (L.lines.length ? "No line matches the filter." : "No log lines.") : ""}</div>`;
+  if (stick) out.scrollTop = out.scrollHeight;
+  drawFoot(L.err ? `<span class="err">${esc(L.err)}</span>` : bad ? `<span class="err">Not a regex: ${esc(bad)}</span>` : "",
+    `${shown.length === L.lines.length ? `${L.lines.length} lines` : `${shown.length} of ${L.lines.length} lines`}${shown.length > MAX ? ` (the newest ${MAX} drawn)` : ""}`
+    + `${L.cut ? " · cut: only part of what it logged fits" : ""}${L.tty ? " · a terminal's output (stdout and stderr mixed)" : " · stderr marked red on the left"}`
+    + `${L.read ? ` · read ${new Date(L.read).toLocaleTimeString()}` : ""}${L.live ? " · live" : ""}`);
+}
+function drawFoot(...parts) { const f = document.getElementById("lgFoot"); if (f) f.innerHTML = parts.filter(Boolean).join(" · "); }
 
 // ---------------- volumes, networks, images
 // A small line of a volume's size over the last day (no axis: the number is next to it).

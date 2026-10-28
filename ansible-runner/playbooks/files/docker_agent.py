@@ -24,8 +24,12 @@ Every CHECK_EVERY it checks for updates by itself: the digest the registry
 has for the image's tag (a HEAD request: no download, and it doesn't count
 against Docker Hub's pull limit) against the ones this host pulled. Images
 from a registry that wants a login, built here, or pinned by digest are
-"unknown", "local" or "pinned". Reads and writes nothing else: no
-environment, no settings, no logs of the containers.
+"unknown", "local" or "pinned".
+
+A container's logs, when an admin opens them on the page: the agent waits on
+Sentry Lens (a long poll, outgoing too) for what a page asks to see, reads
+those lines from Docker and sends them back - kept nowhere. Reads and writes
+nothing else: no environment, no settings.
 
 A job is never left half-done by the agent itself stopping (an update of the
 agent restarts it): the job is kept in STATE until its result is sent, and a
@@ -37,6 +41,7 @@ job out again when it hears nothing for 5 minutes (dockerops.py).
 Run by docker-agent.service (cadvisor.yml); its settings in
 /etc/docker-agent.env: SENTRY_URL, AGENT_HOST, AGENT_KEY, SENTRY_TLS_VERIFY.
 """
+import calendar
 import http.client
 import json
 import os
@@ -51,7 +56,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 STATE = os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/docker-agent"), "job.json")
 BEAT = 60
 JOB_ID = re.compile(r"[0-9a-f]{1,32}")
@@ -105,11 +110,11 @@ def q(s):
 
 
 # ------------------------------------------------------------------ Sentry Lens
-def lens(method, path, body=None):
+def lens(method, path, body=None, timeout=30):
     req = urllib.request.Request(URL + path, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": f"Bearer {KEY}", "X-Host": HOST, "Content-Type": "application/json",
                                           "User-Agent": f"docker-agent/{VERSION}"})
-    with urllib.request.urlopen(req, timeout=30, context=CTX) as r:  # noqa: S310 - our own URL
+    with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:  # noqa: S310 - our own URL
         return json.loads(r.read() or b"{}")
 
 
@@ -467,6 +472,98 @@ def report_updates():
 JOBS = {"update": job_update, "restart": job_restart, "delete_images": job_delete_images, "delete_volumes": job_delete_volumes}
 
 
+# ------------------------------------------------------------------ a container's logs, when a page asks
+LOGS_READ = 4 << 20  # at most this much read from Docker per ask
+LOGS_SEND = 2 << 20  # ... and sent back (the newest lines)
+LINE_MAX = 8000
+SINCE = re.compile(r"\d{1,20}")
+
+
+def ns_of(stamp):
+    """Docker's RFC 3339 timestamp (always UTC, Z) -> ns since the epoch, as a string."""
+    main, _, frac = stamp.rstrip("Z").partition(".")
+    try:
+        s = calendar.timegm(time.strptime(main, "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return "0"
+    return str(s * 1_000_000_000 + int((frac[:9] or "0").ljust(9, "0")))
+
+
+def read_logs(name, tail, since):
+    """[[ns, stream, text]] - stream 1 stdout, 2 stderr, 0 a terminal's (both mixed) - and whether it was cut."""
+    d = docker("GET", f"/containers/{q(name)}/json")
+    tty = bool((d.get("Config") or {}).get("Tty"))
+    path = f"/containers/{d['Id']}/logs?stdout=1&stderr=1&timestamps=1"
+    path += f"&since={int(since) // 1_000_000_000}.{int(since) % 1_000_000_000:09d}" if since else f"&tail={tail}"
+    c = UnixHTTP(60)
+    try:
+        c.request("GET", path)
+        r = c.getresponse()
+        raw = r.read(LOGS_READ + 1)
+    finally:
+        c.close()
+    if r.status >= 300:
+        try:
+            raise RuntimeError(json.loads(raw).get("message", f"HTTP {r.status}"))
+        except ValueError:
+            raise RuntimeError(f"HTTP {r.status}") from None
+    cut = len(raw) > LOGS_READ
+    chunks = [(0, raw)] if tty else []
+    i = 0
+    while not tty and i + 8 <= len(raw):  # stdout and stderr multiplexed: 8-byte headers
+        n = int.from_bytes(raw[i + 4:i + 8], "big")
+        chunks.append((raw[i], raw[i + 8:i + 8 + n]))
+        i += 8 + n
+    lines = []
+    for stream, b in chunks:
+        for ln in b.decode(errors="replace").splitlines():
+            stamp, _, text = ln.partition(" ")
+            ns = ns_of(stamp)
+            if since and int(ns) < int(since):  # Docker's since: to the microsecond at best
+                continue
+            lines.append([ns, stream if stream in (1, 2) else 0, text[:LINE_MAX]])
+    lines = lines[-tail:] if not since else lines
+    size = 0
+    for k in range(len(lines) - 1, -1, -1):  # the newest lines within LOGS_SEND
+        size += len(lines[k][2]) + 30
+        if size > LOGS_SEND:
+            lines, cut = lines[k + 1:], True
+            break
+    return lines, tty, cut
+
+
+def answer_logs(ask):
+    rid, name, since = str(ask.get("id", "")), str(ask.get("container", "")), str(ask.get("since") or "")
+    if not JOB_ID.fullmatch(rid):
+        return
+    try:
+        if not NAME.fullmatch(name) or (since and not SINCE.fullmatch(since)):
+            raise ValueError("a container name, and since in ns")
+        lines, tty, cut = read_logs(name, max(1, min(int(ask.get("tail") or 500), 5000)), since)
+        out = {"lines": lines, "tty": tty, "cut": cut}
+    except (RuntimeError, ValueError, OSError) as e:
+        out = {"error": str(e)}
+    try:
+        lens("POST", f"/api/docker-agent/logs/{rid}", out, timeout=60)
+    except (urllib.error.URLError, OSError) as e:
+        log(f"couldn't send the logs of {name}: {e}")
+
+
+def logs_loop():
+    """Waits on Sentry Lens for logs a page asks for - each answered on a thread of its own."""
+    while True:
+        try:
+            ask = lens("GET", f"/api/docker-agent/logs/wait?version={VERSION}", timeout=60).get("ask")
+        except urllib.error.HTTPError as e:
+            time.sleep(600 if e.code == 404 else POLL)  # 404: a Sentry Lens without logs yet
+            continue
+        except (urllib.error.URLError, OSError, ValueError):
+            time.sleep(POLL)
+            continue
+        if ask:
+            threading.Thread(target=answer_logs, args=(ask,), daemon=True).start()
+
+
 # ------------------------------------------------------------------ the job in hand, kept
 def keep(state):
     """The job in hand (and its result once there) - in STATE until Sentry Lens has the result."""
@@ -555,6 +652,7 @@ def main():
     if not (URL and HOST and KEY):
         sys.exit("SENTRY_URL, AGENT_HOST and AGENT_KEY are needed (/etc/docker-agent.env)")
     log(f"docker-agent {VERSION} for {HOST} -> {URL}")
+    threading.Thread(target=logs_loop, daemon=True).start()
     last_check, refused = 0, 0
     # A job cut short by a restart: run again (its commands, still running, are waited for).
     state = kept()
