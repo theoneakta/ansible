@@ -703,6 +703,78 @@ function credFields(kind) {
       ["port", "Port", port(8006)]],
   }[kind];
 }
+// ---------------- your vault account: made here, encrypted in this browser
+// Vaultwarden's sign-ups stay closed (no mail server: no invitation link);
+// the vault's admins make their account here. Bitwarden's client side, with
+// WebCrypto: the master password never leaves the browser - Sentry Lens only
+// passes the encrypted account on. Browsers only do this on secure pages.
+const VB = {
+  te: new TextEncoder(),
+  b64: buf => { let s = ""; new Uint8Array(buf).forEach(b => { s += String.fromCharCode(b); }); return btoa(s); },
+  cat: (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; a.forEach(x => { o.set(x, i); i += x.length; }); return o; },
+  async pbkdf2(pass, salt, iterations) {
+    const k = await crypto.subtle.importKey("raw", pass, "PBKDF2", false, ["deriveBits"]);
+    return new Uint8Array(await crypto.subtle.deriveBits({name: "PBKDF2", salt, iterations, hash: "SHA-256"}, k, 256));
+  },
+  async hmac(key, data) {
+    const k = await crypto.subtle.importKey("raw", key, {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+    return new Uint8Array(await crypto.subtle.sign("HMAC", k, data));
+  },
+  // HKDF-Expand only (Bitwarden's stretch of the master key): 32 bytes = T(1).
+  expand(prk, info) { return VB.hmac(prk, VB.cat(VB.te.encode(info), new Uint8Array([1]))); },
+  async enc(data, key64) {  // "2." AES-256-CBC + HMAC-SHA256
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const k = await crypto.subtle.importKey("raw", key64.slice(0, 32), "AES-CBC", false, ["encrypt"]);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: "AES-CBC", iv}, k, data));
+    return `2.${VB.b64(iv)}|${VB.b64(ct)}|${VB.b64(await VB.hmac(key64.slice(32), VB.cat(iv, ct)))}`;
+  },
+  async account(email, password) {
+    const iterations = 600000, pw = VB.te.encode(password);
+    const mk = await VB.pbkdf2(pw, VB.te.encode(email.trim().toLowerCase()), iterations);
+    const stretched = VB.cat(await VB.expand(mk, "enc"), await VB.expand(mk, "mac"));
+    const userKey = crypto.getRandomValues(new Uint8Array(64));
+    const pair = await crypto.subtle.generateKey({name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-1"},
+                                                 true, ["encrypt", "decrypt"]);
+    return {masterPasswordHash: VB.b64(await VB.pbkdf2(mk, pw, 1)), kdfIterations: iterations, key: await VB.enc(userKey, stretched),
+            keys: {publicKey: VB.b64(await crypto.subtle.exportKey("spki", pair.publicKey)),
+                   encryptedPrivateKey: await VB.enc(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)), userKey)}};
+  },
+};
+async function vaultMe() {
+  const el = document.getElementById("vaultme");
+  if (!el) return;
+  let m;
+  try { m = await api("/api/vault/me"); } catch (e) { el.innerHTML = ""; return; }
+  const box = inner => `<div class="card" style="margin-bottom:1rem">${inner}</div>`;
+  if (m.status === "none") { el.innerHTML = box(`<span class="small muted">Your email (${esc(m.email)}) isn't one of the vault's admins (sl_admin_emails) - an admin of Sentry Lens can add it.</span>`); return; }
+  if (m.status === "confirmed") { el.innerHTML = box(`<span class="st on"><i></i>your vault account</span> <span class="small">Ready: sign in at <a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.url)}</a> as <b>${esc(m.email)}</b> - the organization's logins are in it.</span>`); return; }
+  if (m.status === "accepted") { el.innerHTML = box(`<span class="st off"><i></i>your vault account</span> <span class="small">Made - Sentry Lens lets you into the organization within 5 minutes.</span>`); return; }
+  if (!window.isSecureContext || !window.crypto?.subtle) {
+    el.innerHTML = box(`<b>Your vault account</b><p class="small" style="margin:.4rem 0 0">Not made yet. Open Sentry Lens over HTTPS (its public address) to make it here:
+      browsers only do the encryption it needs on secure pages - this one is ${esc(location.protocol.replace(":", ""))}.</p>`);
+    return;
+  }
+  el.innerHTML = box(`<b>Your vault account</b>
+    <p class="small" style="margin:.4rem 0 .6rem">Not made yet. Choose your <b>master password</b> for the vault (${esc(m.email)}): this browser encrypts your
+      account with it - Sentry Lens never sees it, and nobody can recover it if you lose it. Then sign in at the vault, or in any Bitwarden app, with it.</p>
+    <form class="form" id="vsform"><label>Master password<input type="password" name="p1" class="filter" autocomplete="new-password" minlength="12" required></label>
+      <label>Again<input type="password" name="p2" class="filter" autocomplete="new-password" required></label>
+      <div><button class="btn primary">Create my vault account</button></div></form><div class="small" id="vsmsg"></div>`);
+  const f = document.getElementById("vsform"), msg = document.getElementById("vsmsg");
+  f.onsubmit = async e => {
+    e.preventDefault();
+    if (f.p1.value.length < 12) { msg.innerHTML = `<span class="err">12 characters or more - a few words make a good one.</span>`; return; }
+    if (f.p1.value !== f.p2.value) { msg.innerHTML = `<span class="err">The two don't match.</span>`; return; }
+    msg.innerHTML = `<span class="muted">Encrypting in this browser...</span>`;
+    try {
+      const acct = await VB.account(m.email, f.p1.value);
+      f.reset();
+      const r = await post("/api/vault/signup", acct);
+      msg.innerHTML = `<span class="ok">Your vault account is made${r.status === "confirmed" ? " and in the organization" : ""}: sign in at <a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.url)}</a> as ${esc(m.email)}.</span>`;
+    } catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+  };
+}
+
 async function credsTab() {
   const body = document.getElementById("body");
   let d;
@@ -730,6 +802,7 @@ async function credsTab() {
         ${v.error ? `<div class="err small" style="flex-basis:100%">${esc(v.error)} - the collectors keep the last ones read.</div>` : ""}`
       : `<span class="st off"><i></i>no vault</span><span class="small">Kept here, encrypted with Sentry Lens's key. With Sentry Lens's vault (vaultwarden.yml) they move into it.</span>`}
     </div>
+    ${v.on ? `<div id="vaultme"></div>` : ""}
     ${noKey.length ? `<p class="err small">${noKey.map(c => esc(c.name)).join(", ")}: made before credentials could be sent - regenerate its key on the Collectors tab, then restart it with the new one.</p>` : ""}
     <details class="card" id="creddet" style="margin-bottom:1.1rem" ${d.credentials.length ? "" : "open"}><summary style="cursor:pointer"><b id="credtitle">Add a credential</b></summary>
       <div class="kindpick" id="credkind" style="margin-top:.9rem">${Object.entries(CRED).map(([k, c]) => `<button type="button" data-kind="${k}"><b>${c.label}</b><span>${c.what}</span></button>`).join("")}</div>
@@ -744,6 +817,7 @@ async function credsTab() {
         <div class="tbl"><table><thead><tr>${COLS[g].map(([h]) => `<th>${h}</th>`).join("")}<th></th></tr></thead><tbody>
         ${byGroup(g).map(c => `<tr>${COLS[g].map(([, f]) => `<td class="small">${f(c)}</td>`).join("")}${acts(c)}</tr>`).join("")}</tbody></table></div></div>`).join("")
       : `<div class="empty">No credential yet.</div>`}`;
+  if (v.on) vaultMe();
   const f = document.getElementById("credf");
   let editing = null, kind = "snmp_v2c";  // the credential being edited, else adding
   const setKind = (k, keep) => {

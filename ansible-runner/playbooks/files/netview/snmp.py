@@ -187,6 +187,24 @@ async def change_credential(request: Request, cid: str):
     return {"ok": True}
 
 
+@router.get("/api/vault/me")
+def vault_me(request: Request):
+    """The signed-in admin's vault account: none (not one of the vault's admins), invited (to make), accepted, confirmed."""
+    email = _admin(request)
+    if not creds.vault_on():
+        return {"vault": False}
+    return {"vault": True, "email": email, "url": creds.VAULT["url"], "status": creds.member(email)}
+
+
+@router.post("/api/vault/signup")
+async def vault_signup(request: Request):
+    """The signed-in admin's vault account, encrypted in their browser (creds.signup)."""
+    email = _admin(request)
+    if not creds.vault_on():
+        raise HTTPException(404, "Sentry Lens has no vault")
+    return {"status": creds.signup(email, await request.json())}
+
+
 def collector_fernet(key):
     """What a collector's credentials are encrypted with: derived from its key (collector.py does the same)."""
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(b"sentry-lens-collector-creds:" + key.encode()).digest()))

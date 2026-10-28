@@ -402,6 +402,55 @@ def confirm_admins():
     return _with_vault(run)
 
 
+def member(email):
+    """An admin's place in the organization: none (not an admin), invited (no
+    vault account yet), accepted (account made, not let in yet), confirmed."""
+    email = (email or "").strip().lower()
+    admins = {a.strip().lower() for a in VAULT["admins"].split(",") if a.strip()}
+    if email not in admins:
+        return "none"
+    m = {x["email"].lower(): x for x in _with_vault(lambda v, org_id, *_: v.members(org_id))}.get(email)
+    return {0: "invited", 1: "accepted", 2: "confirmed"}.get((m or {}).get("status"), "invited")
+
+
+def signup(email, b):
+    """An admin's vault account, made in their browser (master password, keys:
+    all encrypted there - Bitwarden's client side) and passed on as it came:
+    {masterPasswordHash, key, keys: {publicKey, encryptedPrivateKey}, kdfIterations}.
+    Then let into the organization."""
+    import vault
+    email = email.strip().lower()
+    if member(email) != "invited":
+        raise HTTPException(409, "this account is already made, or isn't one of the vault's admins")
+    it = int(b.get("kdfIterations") or 0)
+    keys = b.get("keys") or {}
+    if it < 600000 or not all(isinstance(x, str) and x for x in (b.get("masterPasswordHash"), b.get("key"),
+                                                                 keys.get("publicKey"), keys.get("encryptedPrivateKey"))):
+        raise HTTPException(400, "an incomplete account (kdfIterations 600000 or more, the hash, the keys)")
+    if not str(b["key"]).startswith("2.") or not str(keys["encryptedPrivateKey"]).startswith("2."):
+        raise HTTPException(400, "the keys must come encrypted (2. strings)")
+    body = {"email": email, "name": str(b.get("name") or email.split("@")[0])[:50], "masterPasswordHash": b["masterPasswordHash"],
+            "masterPasswordHint": None, "key": b["key"], "kdf": 0, "kdfIterations": it,
+            "keys": {"publicKey": keys["publicKey"], "encryptedPrivateKey": keys["encryptedPrivateKey"]}}
+    s = vault.requests.Session()
+    s.verify = _verify()
+    s.headers.update({"Bitwarden-Client-Name": "web", "Bitwarden-Client-Version": "2025.1.0"})
+    r = s.post(VAULT["url"].rstrip("/") + "/identity/accounts/register", json=body, timeout=30)
+    if r.status_code == 404:
+        r = s.post(VAULT["url"].rstrip("/") + "/api/accounts/register", json=body, timeout=30)
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("message") or (r.json().get("errorModel") or {}).get("message") or r.text
+        except ValueError:
+            msg = r.text
+        raise HTTPException(400, f"Vaultwarden: {str(msg)[:200]}")
+    try:
+        confirm_admins()
+    except Exception:  # noqa: BLE001 - the upkeep loop does it within 5 minutes
+        pass
+    return member(email)
+
+
 def upkeep_loop():
     time.sleep(20)
     try:
