@@ -1,15 +1,16 @@
-"""Sentry Lens: Docker actions - update a Compose container to its image's
-latest, delete unused images and volumes - carried out on each Docker host by
+"""Sentry Lens: Docker actions - update a container to its image's latest
+(recreated as it is, only the image new), delete unused images and volumes -
+carried out on each Docker host by
 docker-agent (files/docker_agent.py, cadvisor.yml), which asks here for its
 host's jobs: no port opened on the hosts, no login to them kept here.
 
 An admin queues a job on the Infrastructure > Docker page; the agent picks it
 up within seconds (one at a time), tells every minute that it's still on it,
 and posts its result. A job it went quiet on for STALL seconds (the agent or
-its host stopped) is handed out again, up to TRIES times - pull + up -d and the
+its host stopped) is handed out again, up to TRIES times - an update and the
 deletes come out the same run twice. What a job may touch is checked here
-against what docker-meta reports (a Compose container; images and volumes no
-container uses), and again on the host when it runs. Destructive jobs need
+against what docker-meta reports (a container on that host; images and volumes
+no container uses), and again on the host when it runs. Destructive jobs need
 the confirmation word the page asked the admin to type.
 
   netview.docker_jobs     every job (newest version wins): who, what, when, its log
@@ -231,8 +232,6 @@ async def queue(request: Request):
         info = infra.docker_state(host)[0].get((host, name))
         if not info:
             raise HTTPException(404, "no such container on that host")
-        if not info.get("compose_project"):
-            raise HTTPException(400, f"{name} isn't a Compose container - only those can be recreated from their file")
         args = {"container": name}
     elif kind == "delete_images":
         want = [str(x) for x in b.get("images") or []]

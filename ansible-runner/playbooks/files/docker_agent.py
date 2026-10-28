@@ -7,9 +7,13 @@ It only talks out: every POLL seconds it asks Sentry Lens for this host's
 queued jobs (its key: Authorization, its host name: X-Host), runs them, and
 posts each one's result. No port is opened. It knows four jobs, nothing else:
 
-  update          docker compose pull + up -d of one Compose container's
-                  service, in its project's folder, with its project's files
-                  (only Compose containers: their file says how to recreate them)
+  update          pull a container's image and, when it changed, recreate the
+                  container as it is: its own settings (docker inspect) - name,
+                  mounts, environment, ports, networks, restart policy, labels
+                  - with only the image new. No Compose file is read again, so
+                  nothing it says now (a ~, an edit) changes what it mounts.
+                  The old container is kept, renamed, until the new one has
+                  run for 20 s; if it doesn't stay up, the old one is back.
   delete_images   remove these images - each only if no container (running
                   or not) uses it: a tag is untagged, the last tag removes it
   delete_volumes  remove these volumes - each only if no container uses it
@@ -23,12 +27,11 @@ from a registry that wants a login, built here, or pinned by digest are
 environment, no settings, no logs of the containers.
 
 A job is never left half-done by the agent itself stopping (an update of the
-agent restarts it): its commands run in their own systemd unit, which goes on
-without it, and the job is kept in STATE until its result is sent - a restarted
-agent waits for those commands, runs the job again (pull + up -d and the
-deletes come out the same run twice) and sends the result. While a job runs it
-tells Sentry Lens every BEAT seconds; Sentry Lens hands a job out again when it
-hears nothing for 5 minutes (dockerops.py).
+agent restarts it): the job is kept in STATE until its result is sent, and a
+restarted agent runs it again - an update finds the old container it renamed
+and finishes, or puts it back first; the deletes come out the same run twice.
+While a job runs it tells Sentry Lens every BEAT seconds; Sentry Lens hands a
+job out again when it hears nothing for 5 minutes (dockerops.py).
 
 Run by docker-agent.service (cadvisor.yml); its settings in
 /etc/docker-agent.env: SENTRY_URL, AGENT_HOST, AGENT_KEY, SENTRY_TLS_VERIFY.
@@ -37,7 +40,6 @@ import http.client
 import json
 import os
 import re
-import shutil
 import socket
 import ssl
 import subprocess
@@ -48,7 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.2.0"
+VERSION = "2.0.0"
 STATE = os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/docker-agent"), "job.json")
 BEAT = 60
 JOB_ID = re.compile(r"[0-9a-f]{1,32}")
@@ -80,10 +82,13 @@ class UnixHTTP(http.client.HTTPConnection):
         self.sock.connect(SOCK)
 
 
-def docker(method, path, timeout=120):
+def docker(method, path, timeout=120, body=None):
     c = UnixHTTP(timeout)
     try:
-        c.request(method, path)
+        if body is None:
+            c.request(method, path)
+        else:
+            c.request(method, path, body=json.dumps(body), headers={"Content-Type": "application/json"})
         r = c.getresponse()
         body = r.read()
     finally:
@@ -108,121 +113,191 @@ def lens(method, path, body=None):
 
 
 # ------------------------------------------------------------------ jobs
-def run(argv, cwd, unit, env, timeout=1800):
-    """A command in its own transient systemd unit (docker-agent-<unit>): the
-    agent stopping doesn't kill it halfway - a recreate cut short leaves the
-    service down. The same unit still running from before a restart: waited for.
-    env: what it runs with (HOME: Compose expands ~ in a file with it)."""
-    if not shutil.which("systemd-run"):
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout,  # noqa: S603 - fixed argv
-                           env={**os.environ, **env})
-        return p.returncode, f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
-    name = f"docker-agent-{unit}"
-    end, waited = time.time() + timeout, False
-    while subprocess.run(["systemctl", "is-active", "--quiet", name]).returncode == 0 and time.time() < end:  # noqa: S603,S607
-        waited = True
-        time.sleep(5)
-    p = subprocess.run(["systemd-run", "--quiet", "--wait", "--pipe", "--collect", f"--unit={name}",  # noqa: S603,S607
-                        f"--working-directory={cwd}", f"--property=RuntimeMaxSec={timeout}",
-                        *[f"--setenv={k}={v}" for k, v in env.items()], *argv],
-                       capture_output=True, text=True, timeout=timeout + 60, stdin=subprocess.DEVNULL)
-    return p.returncode, (f"(waited for the same step left running before a restart)\n" if waited else "") + \
-        f"$ {' '.join(argv)}\n{p.stdout}{p.stderr}"
-
-
 # A registry or the network turning a pull away for a moment: tried again.
 TRANSIENT = re.compile(r"toomanyrequests|too many requests|rate limit|i/o timeout|TLS handshake timeout|connection reset"
                        r"|connection refused|unexpected EOF|503 Service Unavailable|502 Bad Gateway|no such host|temporary failure", re.I)
 PULL_WAITS = (20, 60)  # seconds before the 2nd and 3rd attempt (then Sentry Lens tries the job again later)
 
 
-def owner_env(folder):
-    """What Compose runs with: HOME (and USER) of the project folder's owner -
-    as when its owner ran it, so ~ in the file means what it meant then."""
-    import pwd
+def docker_stream(method, path, timeout=1800):
+    """A Docker call answering with a stream of JSON lines (a pull): its text, and the first error in it."""
+    c = UnixHTTP(timeout)
     try:
-        pw = pwd.getpwuid(os.stat(folder).st_uid)
-        return {"HOME": pw.pw_dir, "USER": pw.pw_name}
-    except (KeyError, OSError):
-        return {"HOME": "/root", "USER": "root"}
+        c.request(method, path)
+        r = c.getresponse()
+        body = r.read().decode(errors="replace")
+    finally:
+        c.close()
+    err = ""
+    for line in body.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(m, dict) and m.get("error"):
+            err = err or str(m["error"])
+    if r.status >= 300 and not err:
+        err = f"HTTP {r.status}: {body[:300]}"
+    return body, err
 
 
-def binds_of_compose(base, service, folder, env, jid):
-    """The host folders `compose up` would mount into the service: {target: source}."""
-    rc, out = run(base + ["config", "--format", "json"], folder, f"{jid}-config", env, timeout=120)
-    if rc != 0:
-        raise RuntimeError("docker compose config failed:\n" + out)
-    cfg = json.loads(out[out.index("{"):])
-    vols = ((cfg.get("services") or {}).get(service) or {}).get("volumes") or []
-    return {v.get("target"): os.path.normpath(v.get("source", "")) for v in vols if v.get("type") == "bind"}
+def pull(ref):
+    """Pull ref (repo[:tag]) - a registry or the network turning it away is tried
+    again after PULL_WAITS; (ok, log, retry later)."""
+    name, tag = ref, "latest"
+    if ":" in ref.rsplit("/", 1)[-1]:
+        name, tag = ref.rsplit(":", 1)
+    out = f"pull {ref}\n"
+    for attempt in range(len(PULL_WAITS) + 1):
+        _, err = docker_stream("POST", f"/images/create?fromImage={q(name)}&tag={q(tag)}")
+        if not err:
+            return True, out + "pulled\n", False
+        out += f"  {err}\n"
+        if not TRANSIENT.search(err):
+            return False, out, False
+        if attempt < len(PULL_WAITS):
+            out += f"  (the registry or the network turned it away - again in {PULL_WAITS[attempt]} s)\n"
+            time.sleep(PULL_WAITS[attempt])
+    return False, out + "(still turned away - Sentry Lens tries the job again in 5 minutes)\n", True
 
 
-def refresh_meta(df=False):
-    """docker-meta now, so the page shows the change soon - after the disk-use
-    measure when images or volumes went (the image list comes from it)."""
-    if df:
-        subprocess.run(["systemctl", "start", "docker-meta-df.service"], capture_output=True, timeout=1200)  # noqa: S603,S607
-    subprocess.run(["systemctl", "start", "--no-block", "docker-meta.service"], capture_output=True)  # noqa: S603,S607
+def create_body(d, old_image, ref):
+    """The new container's settings: the old one's exactly, but the image - and
+    where it only carried the old image's defaults (command, entrypoint,
+    environment, labels...), the new image's defaults instead."""
+    cfg, img = dict(d.get("Config") or {}), (old_image.get("Config") or {})
+    cfg["Image"] = ref
+    for k in ("Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "StopSignal", "Shell"):
+        if k in cfg and cfg[k] == img.get(k):
+            cfg.pop(k)  # the old image's default: the new image's applies
+    if cfg.get("Env"):
+        cfg["Env"] = [e for e in cfg["Env"] if e not in (img.get("Env") or [])]
+    if cfg.get("Labels"):
+        il = img.get("Labels") or {}
+        cfg["Labels"] = {k: v for k, v in cfg["Labels"].items() if il.get(k) != v}
+    for k in ("ExposedPorts", "Volumes"):
+        if cfg.get(k):
+            cfg[k] = {p: v for p, v in cfg[k].items() if p not in (img.get(k) or {})} or None
+    if cfg.get("Hostname") == d["Id"][:12]:
+        cfg.pop("Hostname")  # Docker's default (the ID): the new one gets its own
+    cfg.pop("MacAddress", None)
+    host = dict(d.get("HostConfig") or {})
+    # Volumes it has that its settings don't name (anonymous ones, an image's
+    # VOLUME): the same volumes again, not new empty ones.
+    named = {(b.split(":")[1] if ":" in b else b) for b in host.get("Binds") or []}
+    named |= {m.get("Target") for m in host.get("Mounts") or []}
+    for m in d.get("Mounts") or []:
+        if m.get("Type") == "volume" and m.get("Destination") not in named:
+            host["Binds"] = (host.get("Binds") or []) + [f"{m['Name']}:{m['Destination']}" + ("" if m.get("RW", True) else ":ro")]
+    nets = (d.get("NetworkSettings") or {}).get("Networks") or {}
+    mode = host.get("NetworkMode", "")
+
+    def endpoint(n):
+        keep = {k: n.get(k) for k in ("IPAMConfig", "Links", "Aliases", "DriverOpts") if n.get(k)}
+        if keep.get("Aliases"):
+            keep["Aliases"] = [a for a in keep["Aliases"] if a != d["Id"][:12]]
+        return keep
+    first = mode if mode in nets else next(iter(nets), "")
+    body = cfg | {"HostConfig": host}
+    if first and not mode.startswith(("container:", "host", "none")):
+        body["NetworkingConfig"] = {"EndpointsConfig": {first: endpoint(nets[first])}}
+    others = {k: endpoint(v) for k, v in nets.items() if k != first} if not mode.startswith(("container:", "host", "none")) else {}
+    return body, others
 
 
 def job_update(args, jid):
+    """Pull the container's image and, when it changed, recreate the container
+    as it is - its own settings (docker inspect), only the image new. The old
+    one is kept, renamed, until the new one runs: if it doesn't, the old one
+    is back as it was."""
     name = str(args.get("container", ""))
     if not NAME.fullmatch(name):
         raise ValueError("a container name")
+    resumed = resume(name, jid)
+    if resumed:
+        return True, resumed, False
     d = docker("GET", f"/containers/{q(name)}/json")
-    lab = (d.get("Config") or {}).get("Labels") or {}
-    project, service = lab.get("com.docker.compose.project", ""), lab.get("com.docker.compose.service", "")
-    folder = lab.get("com.docker.compose.project.working_dir", "")
-    files = [os.path.join(folder, f) for f in lab.get("com.docker.compose.project.config_files", "").split(",") if f]
-    if not (project and service and folder):
-        raise ValueError(f"{name} isn't a Compose container - only those can be recreated from their file")
-    if not os.path.isdir(folder):
-        raise ValueError(f"its project folder {folder} isn't there any more")
-    missing = [f for f in files if not os.path.isfile(f)]
-    if missing:
-        raise ValueError(f"its Compose file {missing[0]} isn't there any more")
-    env = [a for f in lab.get("com.docker.compose.project.environment_file", "").split(",")
-           if f and os.path.isfile(os.path.join(folder, f)) for a in ("--env-file", os.path.join(folder, f))]
-    base = ["docker", "compose", "-p", project, *[a for f in files for a in ("-f", f)], *env]
-    run_env = owner_env(folder)
-    # The host folders it would mount must be the ones it has: else (a ~ meaning
-    # something else, a file changed since) the recreate is left to a person.
-    have = {m.get("Destination"): os.path.normpath(m.get("Source", "")) for m in d.get("Mounts") or [] if m.get("Type") == "bind"}
-    would = binds_of_compose(base, service, folder, run_env, jid)
-    moved = sorted(t for t in set(have) | set(would) if have.get(t) != would.get(t))
-    if moved:
-        return False, ("Not recreated: its Compose file would now mount other host folders than it has -\n"
-                       + "\n".join(f"  {t}: has {have.get(t, '(nothing)')}, would get {would.get(t, '(nothing)')}" for t in moved)
-                       + "\nCheck the file, then update it by hand. Nothing was changed."), False
-    out = ""
-    for attempt in range(len(PULL_WAITS) + 1):
-        rc, o = run(base + ["pull", service], folder, f"{jid}-pull{attempt}", run_env)
-        out += o
-        if rc == 0:
-            break
-        if not TRANSIENT.search(o):
-            return False, out, False
-        if attempt < len(PULL_WAITS):
-            out += f"\n(the registry or the network turned it away - again in {PULL_WAITS[attempt]} s)\n"
-            time.sleep(PULL_WAITS[attempt])
-    else:
-        return False, out + "\n(still turned away - Sentry Lens tries the job again in 5 minutes)", True
-    rc, out2 = run(base + ["up", "-d", "--no-deps", service], folder, f"{jid}-up", run_env)
-    return rc == 0, out + "\n" + out2 + tidy_names(project, service), False
+    name = d["Name"].lstrip("/")
+    ref = (d.get("Config") or {}).get("Image", "")
+    if not ref or ref.startswith("sha256:") or "@" in ref:
+        return False, f"{name} runs an image by ID or digest ({ref}) - nothing to update to", False
+    # Containers living in this one's network (network_mode: container:...) would lose it.
+    tied = [(c.get("Names") or ["?"])[0].lstrip("/") for c in docker("GET", "/containers/json?all=1")
+            if (c.get("HostConfig") or {}).get("NetworkMode", "") in (f"container:{d['Id']}", f"container:{name}")]
+    if tied:
+        return False, f"{', '.join(tied)} use{'s' if len(tied) == 1 else ''} {name}'s network - recreating it would cut them off. Update them together by hand.", False
+    ok, out, retry = pull(ref)
+    if not ok:
+        return False, out, retry
+    new_id = docker("GET", f"/images/{q(ref)}/json")["Id"]
+    if new_id == d["Image"]:
+        return True, out + f"{name} already runs the latest {ref} - not restarted", False
+    old_image = docker("GET", f"/images/{q(d['Image'])}/json")
+    body, others = create_body(d, old_image, ref)
+    was_running = (d.get("State") or {}).get("Running")
+    stop_t = (d.get("Config") or {}).get("StopTimeout") or 10
+    keep = f"{name}_old_{jid}"
+    out += f"recreating {name}: {d['Image'][7:19]} -> {new_id[7:19]}\n"
+    docker("POST", f"/containers/{d['Id']}/stop?t={stop_t}", timeout=stop_t + 60)
+    docker("POST", f"/containers/{d['Id']}/rename?name={q(keep)}")
+    new = None
+
+    def back(why):
+        """Undo: the new container gone, the old one back under its name, started."""
+        for step in (lambda: new and docker("DELETE", f"/containers/{new}?force=1"),
+                     lambda: docker("POST", f"/containers/{d['Id']}/rename?name={q(name)}"),
+                     lambda: was_running and docker("POST", f"/containers/{d['Id']}/start")):
+            try:
+                step()
+            except (RuntimeError, OSError) as e:
+                why += f"\n  (while putting it back: {e})"
+        return False, out + why + f"\n{name} is back as it was, on its old image.", False
+    try:
+        new = _create(name, body)["Id"]
+        for net, ep in others.items():
+            docker("POST", f"/networks/{q(net)}/connect", body={"Container": new, "EndpointConfig": ep})
+        if was_running:
+            docker("POST", f"/containers/{new}/start")
+            time.sleep(20)  # it must stay up: a new image that crashes at once goes back
+            st = docker("GET", f"/containers/{new}/json")["State"]
+            if not st.get("Running") or st.get("Restarting"):
+                return back(f"the new container didn't stay up (exit {st.get('ExitCode')}).")
+    except (RuntimeError, OSError) as e:
+        return back(f"couldn't recreate it: {e}")
+    try:
+        docker("DELETE", f"/containers/{d['Id']}")  # the old one (its volumes stay - the new one has them)
+    except (RuntimeError, OSError) as e:
+        out += f"(the old container {keep} is left: {e})\n"
+    return True, out + f"{name} runs the new image, with its settings as they were", False
 
 
-def tidy_names(project, service):
-    """A recreate cut short leaves the new container under Compose's temporary
-    name (<id>_<name>), which a later up starts as is: its own name back."""
-    flt = q(json.dumps({"label": [f"com.docker.compose.project={project}", f"com.docker.compose.service={service}"]}))
-    names = {(c.get("Names") or ["/"])[0].lstrip("/"): c["Id"] for c in docker("GET", f"/containers/json?all=1&filters={flt}")}
-    out = ""
-    for name, cid in names.items():
-        m = re.fullmatch(r"[0-9a-f]{12}_(.+)", name)
-        if m and m.group(1) not in names:
-            docker("POST", f"/containers/{cid}/rename?name={q(m.group(1))}")
-            out += f"\nrenamed {name} back to {m.group(1)}"
-    return out
+def _create(name, body):
+    return docker("POST", f"/containers/create?name={q(name)}", body=body)
+
+
+def resume(name, jid):
+    """The same job cut short (the agent restarted): its old container, renamed
+    <name>_old_<jid>, is still there. The new one running: done, the old one
+    removed ("" otherwise, after putting the old one back - then it's run again)."""
+    keep = f"{name}_old_{jid}"
+    try:
+        old = docker("GET", f"/containers/{q(keep)}/json")
+    except RuntimeError:
+        return ""
+    try:
+        new = docker("GET", f"/containers/{q(name)}/json")
+    except RuntimeError:
+        new = None
+    if new and (new.get("State") or {}).get("Running"):
+        docker("DELETE", f"/containers/{old['Id']}")
+        return f"(cut short by a restart, then finished: {name} runs the new image; the old container removed)"
+    if new:
+        docker("DELETE", f"/containers/{new['Id']}?force=1")
+    docker("POST", f"/containers/{old['Id']}/rename?name={q(name)}")
+    # It was stopped to be replaced (an update only stops a running one): started again, then updated anew.
+    if not (old.get("State") or {}).get("Running"):
+        docker("POST", f"/containers/{old['Id']}/start")
+    return ""
 
 
 def in_use():

@@ -633,7 +633,7 @@ async function ctDetail() {
   box.innerHTML = `
     <div class="exphead"><b>${esc(d.name)}</b>${stateTag(d)}<span class="tag">${esc(d.host)}</span>
       <span class="mono muted small" title="Image">${esc(d.image)}</span><span class="spacer"></span>
-      ${isAdmin() && d.project ? `<button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Pull & recreate"}</button>` : ""}
+      ${isAdmin() ? `<button class="btn ${updOf(d)?.status === "update" ? "primary" : ""}" id="cupd" ${agentOf(d.host) ? "" : `disabled title="${esc(NO_AGENT(d.host))}"`}>${updOf(d)?.status === "update" ? "Update" : "Check & update"}</button>` : ""}
       <div class="seg" id="cper">${PERIODS.map(([v, l]) => `<button data-h="${v}" class="${v === S.hours ? "active" : ""}">${l}</button>`).join("")}</div>
       <button class="btn" id="cclose" title="Close">&times;</button></div>
     <div class="expgrid">
@@ -663,7 +663,7 @@ async function ctDetail() {
         <h4 style="margin-top:.8rem">Image</h4><div class="mono small" style="word-break:break-all">${esc(d.image)}</div>
         ${(() => { const u = updOf(d), a = agentOf(d.host);
           if (!a) return `<div class="muted small">Updates: not checked (${esc(NO_AGENT(d.host))})</div>`;
-          const say = {update: `<span style="color:#e3b341">a newer image is on its registry</span>${d.project ? "" : " - not a Compose container: update it by hand"}`,
+          const say = {update: `<span style="color:#e3b341">a newer image is on its registry</span>`,
             current: `<span class="ok">the latest</span>`, local: "built on this host (or private) - nothing to check", pinned: "pinned by digest - nothing to check"};
           return `<div class="small">${u ? say[u.status] || `<span class="muted">unknown${u.error ? ` (${esc(u.error)})` : ""}</span>` : `<span class="muted">not checked yet</span>`} <span class="muted">· checked ${ago(a.checked)}</span></div>`; })()}
       </section>
@@ -745,14 +745,14 @@ async function queueJob(body) {
   document.getElementById("dkJobs")?.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
 
-// Update one Compose container: pull its image's latest, recreate it.
+// Update one container: pull its image's latest, recreate it as it is (only the image new).
 async function updateContainer(d) {
   const u = updOf(d);
-  const ok = await confirmBox({title: `Update ${d.name}?`, ok: "Pull and recreate",
-    html: `On <b>${esc(d.host)}</b>: <span class="mono">docker compose pull ${esc(d.service)}</span> then <span class="mono">up -d ${esc(d.service)}</span>
-      in its project <b>${esc(d.project)}</b>, with its own Compose file.
-      <p>${u?.status === "update" ? `A newer <span class="mono">${esc(d.image)}</span> is on its registry.` : u?.status === "current" ? `Its image is already the latest (checked ${ago(agentOf(d.host)?.checked)}) - it's recreated anyway.` : "Whether a newer image is out isn't known - it pulls whatever the tag points to now."}</p>
-      <p class="err">The container stops and starts again: a short interruption. Its volumes are kept.</p>`});
+  const ok = await confirmBox({title: `Update ${d.name}?`, ok: "Update and restart",
+    html: `On <b>${esc(d.host)}</b>: pull <span class="mono">${esc(d.image)}</span> and, if it changed, recreate <b>${esc(d.name)}</b>
+      as it is - the same mounts, environment, ports, networks and restart policy, only the image new.
+      <p>${u?.status === "update" ? "A newer image is on its registry." : u?.status === "current" ? `Its image is already the latest (checked ${ago(agentOf(d.host)?.checked)}) - then nothing is restarted.` : "Whether a newer image is out isn't known - it pulls whatever the tag points to now, and restarts only if that's new."}</p>
+      <p class="err">The container stops and starts again: a short interruption. If the new one doesn't stay up, the old one is put back.</p>`});
   if (!ok) return;
   try { await queueJob({host: d.host, kind: "update", container: d.name}); }
   catch (e) { alert(e.message); }
