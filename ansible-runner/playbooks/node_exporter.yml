@@ -17,7 +17,7 @@
 #       ./run.sh node_exporter.yml -e node_exporter_state=absent    (remove it)
 
 - name: node_exporter
-  hosts: "{{ node_exporter_hosts | default('linux:hypervisors') }}"
+  hosts: "{{ node_exporter_hosts | default('linux:hypervisors:remote_linux') }}"
   gather_facts: false
   become: "{{ 'ssh' not in group_names }}"
   vars:

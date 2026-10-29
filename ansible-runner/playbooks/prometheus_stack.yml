@@ -26,7 +26,7 @@
     prometheus_scrape_interval: 30s
     # Hosts running node_exporter (port 9100): the Linux hosts and the
     # hypervisors (inventory groups, see inventory/group_vars/all/site.yml).
-    prometheus_node_hosts: "{{ (groups['linux'] | default([]) + site_hypervisors) | unique }}"
+    prometheus_node_hosts: "{{ (groups['linux'] | default([]) + site_hypervisors + groups['remote_linux'] | default([])) | unique }}"
     prometheus_node_port: 9100
     # Docker hosts running cAdvisor (cadvisor.yml, port 9338) - the containers.
     prometheus_cadvisor_hosts: "{{ site_docker_hosts }}"
