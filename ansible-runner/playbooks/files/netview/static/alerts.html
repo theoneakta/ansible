@@ -198,7 +198,9 @@ async function listChange(kind, action, net, note = "") {
   await post(`/api/lists/${kind}/${action}`, {net, note});
   await load();
 }
-const MINS = [[0, "All"], [20, "Low+"], [40, "Medium+"], [60, "High+"], [80, "Critical"]];
+// Each one only its own band of scores (the legend's): [from, to, label].
+const MINS = [[0, 100, "All"], [20, 39, "Low"], [40, 59, "Medium"], [60, 79, "High"], [80, 100, "Critical"]];
+const bandOf = m => MINS.find(([v]) => v === m) || MINS[0];
 
 fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
   if (!me) return;
@@ -211,7 +213,7 @@ fetch("/api/me").then(r => r.ok ? r.json() : null).then(me => {
 const isAdmin = () => S.me.auth === false || S.me.role === "admin";
 
 async function load() {
-  const p = new URLSearchParams({range: S.range, min_score: S.min, ignored: S.showIgn});
+  const p = new URLSearchParams({range: S.range, min_score: S.min, max_score: bandOf(S.min)[1], ignored: S.showIgn});
   if (S.check) p.set("check_id", S.check);
   if (S.host) p.set("host", S.host);
   try {
@@ -246,7 +248,7 @@ function filterBar() {
   if (S.check) chips.push(`<span class="chip"><b>Check</b>${esc(titles[S.check] || S.check)}<button data-rm="check" title="Remove">&times;</button></span>`);
   if (S.host) chips.push(`<span class="chip"><b>Device</b>${esc(S.host)}<button data-rm="host" title="Remove">&times;</button></span>`);
   return `<div class="filterbar">
-    <div class="seg" id="mins">${MINS.map(([v, l]) => `<button data-m="${v}" class="${S.min === v ? "active" : ""}">${l}</button>`).join("")}</div>
+    <div class="seg" id="mins">${MINS.map(([v, , l]) => `<button data-m="${v}" class="${S.min === v ? "active" : ""}">${l}</button>`).join("")}</div>
     <div class="seg" id="showIgn" title="Alerts of the devices on the ignore list - recorded, but counted nowhere">
       <button data-i="1" class="${S.showIgn ? "active" : ""}">Show ignored</button><button data-i="0" class="${S.showIgn ? "" : "active"}">Hide ignored</button></div>
     <select id="checkSel" aria-label="Check"><option value="">Every check</option>${S.checks.groups.map(g =>

@@ -1740,7 +1740,7 @@ def country(cc: str, range: str = "24h"):
 
 @router.get("/api/alerts")
 def list_alerts(range: str = "24h", check_id: str = "", host: str = "", min_score: int = 0,
-                ignored: bool = True):
+                max_score: int = 100, ignored: bool = True):
     """Alerts newest first, with totals per check and per device (its risk
     score). Those of devices on the ignore list come as warnings (ignored =
     1, shown unless ignored=false) and count in no total or risk."""
@@ -1754,8 +1754,8 @@ def list_alerts(range: str = "24h", check_id: str = "", host: str = "", min_scor
         except ValueError:
             raise HTTPException(400, "not an IP address")
     p = {"since": int(time.time()) - RANGES[range], "check": check_id, "host": host, "min": max(0, min_score),
-         "ign": nets_of("ignore")} | NOT_OWN_PARAMS()
-    where = ("t >= toDateTime({since:UInt32}) AND score >= {min:UInt32}"
+         "max": min(100, max(0, max_score)), "ign": nets_of("ignore")} | NOT_OWN_PARAMS()
+    where = ("t >= toDateTime({since:UInt32}) AND score BETWEEN {min:UInt32} AND {max:UInt32}"
              " AND ({check:String} = '' OR check_id = {check:String}) AND ({host:String} = '' OR host = {host:String})"
              " AND " + NOT_OWN)
     ign = in_nets("host", "ign")
