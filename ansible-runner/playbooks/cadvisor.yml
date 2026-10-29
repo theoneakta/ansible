@@ -25,12 +25,16 @@
     cadvisor_image: ghcr.io/google/cadvisor:0.60.6
     cadvisor_port: 9338
     cadvisor_dir: /opt/cadvisor
-    cadvisor_scraper: "{{ site_server_ip }}"
+    # The Sentry Lens / Prometheus host as THIS host reaches it: sentry_address
+    # in the inventory (a host outside the LAN: its Tailscale address), else
+    # the LAN one. (An inventory variable can't override a play's own vars -
+    # hence the default() rather than setting these per host.)
+    cadvisor_scraper: "{{ sentry_address | default(site_server_ip) }}"
     # docker-agent: the Docker actions of Sentry Lens's Infrastructure page
-    # (update a container, delete unused images and volumes). It asks
+    # (update a Compose container, delete unused images and volumes). It asks
     # Sentry Lens for its jobs - nothing listens on the host. false: not installed.
     docker_agent: true
-    docker_agent_url: "http://{{ site_server_ip }}:8082"
+    docker_agent_url: "http://{{ sentry_address | default(site_server_ip) }}:8082"
     # The Sentry Lens host (netview_stack.yml): its session secret keys the agents.
     docker_agent_lens_host: "{{ groups['monitoring'][0] }}"
     # The host as Prometheus names it (prometheus_stack.yml) - the page's name for it.
@@ -295,6 +299,25 @@
                 state: "{{ 'restarted' if agent_script is changed or agent_env is changed or agent_unit is changed else 'started' }}"
                 enabled: true
                 daemon_reload: true
+
+            # From the host itself: an agent that can't reach Sentry Lens leaves the
+            # host read-only on the Infrastructure page, silently - fail here instead.
+            - name: This host reaches Sentry Lens (docker_agent_url)
+              ansible.builtin.command: >-
+                curl -s -o /dev/null -m 10 -w '%{http_code}' {{ docker_agent_url }}/
+              register: agent_reach
+              changed_when: false
+              failed_when: false
+              check_mode: false
+
+            - name: Why it can't
+              ansible.builtin.fail:
+                msg: >-
+                  {{ inventory_hostname }} can't reach Sentry Lens at {{ docker_agent_url }}
+                  ({{ agent_reach.stdout or 'no answer' }}): set sentry_address for it in the
+                  inventory - the Sentry Lens host's address as this host reaches it (a
+                  Tailscale address for a host outside the LAN).
+              when: agent_reach.stdout not in ['200', '302', '303', '307', '401']
 
     - name: Open the port to the scraper (firewalld)
       ansible.posix.firewalld:
