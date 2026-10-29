@@ -203,7 +203,7 @@ def check_subnets(subnets):
         out.append(str(n))
     if not out:
         raise HTTPException(400, "at least one subnet, e.g. 192.168.1.0/24")
-    return out
+    return list(dict.fromkeys(out))  # each once (one added twice)
 
 
 def _json(c, k):

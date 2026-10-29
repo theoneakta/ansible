@@ -379,13 +379,17 @@ function subnetTable(c) {
       ${EVERY.filter(e => e !== c.interval_min).map(e => `<option value="${e}" ${m === e ? "selected" : ""}>every ${mins(e)}</option>`).join("")}
       ${EVERY.includes(m) || m === 0 || m === c.interval_min ? "" : `<option value="${m}" selected>every ${mins(m)}</option>`}
       <option value="0" ${m === 0 ? "selected" : ""}>on demand only</option></select>`;
-  return `<div class="tbl"><table class="small"><thead><tr><th>Subnet</th><th>Swept</th><th>Last sweep</th>${admin ? "<th></th>" : ""}</tr></thead><tbody>
+  const last = c.subnets.length < 2;
+  return `<div class="tbl"><table class="small"><thead><tr><th>Subnet</th><th>Swept</th><th>Last sweep</th>${isAdmin() ? "<th></th>" : ""}</tr></thead><tbody>
     ${c.subnets.map(s => { const m = c.schedule[s] ?? c.interval_min, l = st[s];
       return `<tr><td class="mono nw">${esc(s)}</td>
         <td>${admin ? pick(s, m) : m ? `every ${mins(m)}` : "on demand only"}</td>
         <td class="nw">${asked(s) ? `<span style="color:var(--accent2)" title="Asked for ${ago(now.t)}">waiting for the collector</span>` : l ? `<span title="${when(l.last)}">${ago(l.last)}</span>, ${l.hosts}` : "-"}</td>
-        ${admin ? `<td class="n"><button type="button" class="btn sweep1" data-s="${esc(s)}" ${asked(s) ? "disabled" : ""}>Sweep now</button></td>` : ""}</tr>`; }).join("")}
+        ${isAdmin() ? `<td class="n nw">${admin ? `<button type="button" class="btn sweep1" data-s="${esc(s)}" ${asked(s) ? "disabled" : ""}>Sweep now</button> ` : ""}<button type="button" class="btn rmsub" data-s="${esc(s)}" ${last ? `disabled title="A collector needs at least one subnet - add another first"` : `title="Stop sweeping ${esc(s)} (what was found there stays)"`}>Remove</button></td>` : ""}</tr>`; }).join("")}
     </tbody></table></div>
+    ${isAdmin() ? `<form class="addsub" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+      <input type="text" name="subnet" class="filter" style="width:12rem" placeholder="10.0.20.0/24" aria-label="Subnet to add" required>
+      <button class="btn">Add subnet</button><span class="small muted">a /16 at most - swept from its next contact</span></form>` : ""}
     ${isAdmin() && !c.can_schedule && c.version ? `<div class="small muted">Its own schedule for each subnet, and Sweep now: ${NEEDS_23.toLowerCase()}.</div>` : ""}`;
 }
 
@@ -449,8 +453,8 @@ function collectorsTab() {
           ${c.update_to ? `<dt>Update</dt><dd class="small" style="color:var(--accent2)">to v${esc(c.update_to)} - at its next contact${c.online ? " (within a minute; a Windows one within 5 more)" : ""}, then it restarts</dd>`
             : c.outdated && c.version && !c.can_update ? `<dt>Update</dt><dd class="small">v${esc(S.cols.version)} is out - this version can't update itself: run the line below on its machine once, from then on <b>Update</b> does it. ${reinstallBox()}</dd>`
             : c.updater ? `<dt>Updates</dt><dd class="small muted">${esc(c.updater)}</dd>` : ""}</dl>
-        ${isAdmin() ? `<form class="editf" style="display:flex;gap:.4rem;flex-wrap:wrap"><input type="text" name="subnets" class="filter" style="flex:1;min-width:10rem" value="${esc(c.subnets.join(", "))}" aria-label="Subnets">
-          <input type="number" name="interval" class="filter" style="width:5rem" value="${c.interval_min}" min="5" max="1440" aria-label="Default minutes" title="Every so many minutes, unless a subnet has its own schedule"><button class="btn">Save</button>
+        ${isAdmin() ? `<form class="editf" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><label class="small" style="display:flex;gap:.3rem;align-items:center">Default sweep: every
+          <input type="number" name="interval" class="filter" style="width:5rem" value="${c.interval_min}" min="5" max="1440" title="Every so many minutes, unless a subnet has its own schedule"> min</label><button class="btn">Save</button>
           <button type="button" class="btn primary sweepall" ${c.can_schedule ? "" : "disabled"} title="${c.can_schedule ? "Sweep all its subnets at its next contact (within a minute)" : NEEDS_23}">Sweep all now</button>
           ${c.update_to ? `<button type="button" class="btn update" data-update="0" title="Don't update it after all (if it hasn't yet)">Cancel update</button>`
             : c.outdated && c.version ? `<button type="button" class="btn primary update" data-update="1" ${c.can_update ? "" : "disabled"} title="${c.can_update ? `Update to v${esc(S.cols.version)} at its next contact - it downloads it from Sentry Lens, checks it and restarts` : "This version can't update itself - run its install line once more (see above)"}">Update to v${esc(S.cols.version)}</button>` : ""}
@@ -479,9 +483,23 @@ function collectorsTab() {
     const ef = card.querySelector(".editf"); if (!ef) return;
     const msg = card.querySelector(".msg"), id = card.dataset.c;
     ef.onsubmit = async e => { e.preventDefault();
-      try { await post(`/api/collectors/${id}`, {subnets: ef.subnets.value, interval_min: +ef.interval.value});
+      try { await post(`/api/collectors/${id}`, {interval_min: +ef.interval.value});
         await reloadCollectors(id, `<span class="ok">Saved - the collector picks it up within a minute.</span>`); }
       catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; } };
+    // Its subnets: one added, or one taken off (what was found there stays).
+    const setSubnets = async (subnets, note) => {
+      try { await post(`/api/collectors/${id}`, {subnets});
+        await reloadCollectors(id, `<span class="ok">${note}</span>`); }
+      catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+    };
+    const cur = () => (S.cols.collectors.find(x => x.id === id) || {subnets: []}).subnets;
+    const af = card.querySelector(".addsub");
+    if (af) af.onsubmit = e => { e.preventDefault();
+      const s = af.elements.namedItem("subnet").value.trim();
+      setSubnets([...cur(), s], `${esc(s)} added - the collector sweeps it from its next contact (within a minute).`); };
+    card.querySelectorAll(".rmsub").forEach(b => b.onclick = () => {
+      if (!confirm(`Stop sweeping ${b.dataset.s}? The devices found there stay in the inventory.`)) return;
+      setSubnets(cur().filter(s => s !== b.dataset.s), `${esc(b.dataset.s)} removed.`); });
     const sweepNow = async subnets => {
       try { await post(`/api/collectors/${id}`, {sweep_now: true, subnets});
         const c = S.cols.collectors.find(c => c.id === id);
