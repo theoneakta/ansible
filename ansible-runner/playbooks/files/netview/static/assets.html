@@ -411,9 +411,22 @@ function watchSweeps() {
   }, 15000);
 }
 
+// Updating an installed collector in place with the key it already has (in
+// its config) - for one too old to update itself (before 2.5.0).
+function reinstallBox() {
+  const linux = `sudo bash -c 'C=/etc/sentry-collector/collector.conf; U=$(sed -n "s/^SENTRY_URL=//p" $C); K=$(sed -n "s/^SENTRY_KEY=//p" $C); curl -fsSL "$U/collector/install.sh" | bash -s -- --url "$U" --key "$K"'`;
+  const win = `$c = Get-Content "$env:ProgramData\\SentryLens\\collector.conf"; $u = ($c -match '^SENTRY_URL=') -replace '^SENTRY_URL=',''; $k = ($c -match '^SENTRY_KEY=') -replace '^SENTRY_KEY=',''; & ([scriptblock]::Create((irm "$u/collector/install.ps1"))) -Url $u -Key $k`;
+  return `<details style="margin-top:.3rem"><summary style="cursor:pointer">The line</summary>
+    <div class="small muted" style="margin:.3rem 0 .15rem">Linux (as root - it reads the key from the collector's config, nothing to copy):</div><pre class="mono small" style="white-space:pre-wrap;word-break:break-all;margin:0">${esc(linux)}</pre>
+    <div class="small muted" style="margin:.4rem 0 .15rem">Windows (PowerShell as administrator):</div><pre class="mono small" style="white-space:pre-wrap;word-break:break-all;margin:0">${esc(win)}</pre>
+    <div class="small muted" style="margin-top:.3rem">Docker: <span class="mono">docker restart sentry-collector</span> (it fetches the collector at each start).</div></details>`;
+}
+
 function collectorsTab() {
   const cs = S.cols.collectors, refused = S.cols.refused || [];
+  const updatable = cs.filter(c => c.outdated && c.version && c.can_update && !c.update_to);
   document.getElementById("body").innerHTML = `
+    ${isAdmin() && updatable.length > 1 ? `<div class="filterbar" style="margin-bottom:.8rem"><button class="btn primary" id="updateAll">Update all ${updatable.length} to v${esc(S.cols.version)}</button><span id="updAllMsg" class="small"></span></div>` : ""}
     ${refused.length ? `<div class="card" style="margin-bottom:1.1rem;border-color:var(--fail)"><b>A collector is being turned away</b>
       <p class="small" style="margin:.4rem 0 0">${refused.map(r => `<span class="mono">${esc(r.address)}</span>${r.version ? ` (v${esc(r.version)})` : ""} - ${r.count} refused contact(s) since ${ago(r.first)}`).join("<br>")}</p>
       <p class="small muted" style="margin:.4rem 0 0">Its key was replaced, or its collector deleted. Replace the key of the collector it should be (below) and run the install line again on that machine.</p></div>` : ""}
@@ -426,20 +439,31 @@ function collectorsTab() {
       </form><div id="addmsg" class="small"></div><div id="newkey"></div></details>` : ""}
     ${cs.length ? `<div class="grid3">${cs.map(c => `<div class="ccard" data-c="${esc(c.id)}">
         <div class="top"><b>${esc(c.name)}</b>${c.online ? `<span class="st on"><i></i>online</span>` : `<span class="st off"><i></i>${c.last_seen ? "offline" : "never connected"}</span>`}
-          <span class="spacer" style="flex:1"></span>${c.version ? `<span class="tag">v${esc(c.version)}</span>` : ""}</div>
+          <span class="spacer" style="flex:1"></span>${c.version ? `<span class="tag">v${esc(c.version)}</span>` : ""}${c.outdated && c.version ? `<span class="tag" style="color:var(--accent2)" title="Sentry Lens hands out ${esc(S.cols.version)}">update available</span>` : ""}</div>
         ${subnetTable(c)}
         <dl class="kv"><dt>Default</dt><dd>every ${c.interval_min} min</dd>
           <dt>Last contact</dt><dd title="${when(c.last_seen)}">${ago(c.last_seen)}${c.address ? ` from <span class="mono">${esc(c.address)}</span>` : ""}</dd>
           <dt>Last sweep</dt><dd>${c.last_scan ? `${ago(c.last_scan)}, ${c.last_hosts} devices` : "not yet"}</dd>
           ${c.rotating ? `<dt>Key</dt><dd class="small" style="color:var(--accent2)">${c.can_rotate ? `rotating - it picks up its new key at its next contact${c.online ? " (within a minute)" : ""}` : "rotation waiting - this version can't keep a new key: run its install line again to update it"}</dd>`
-            : c.creds_ok ? "" : `<dt>Credentials</dt><dd class="err">can't receive any yet - ${c.can_rotate ? "rotate" : "replace"} its key</dd>`}</dl>
+            : c.creds_ok ? "" : `<dt>Credentials</dt><dd class="err">can't receive any yet - ${c.can_rotate ? "rotate" : "replace"} its key</dd>`}
+          ${c.update_to ? `<dt>Update</dt><dd class="small" style="color:var(--accent2)">to v${esc(c.update_to)} - at its next contact${c.online ? " (within a minute; a Windows one within 5 more)" : ""}, then it restarts</dd>`
+            : c.outdated && c.version && !c.can_update ? `<dt>Update</dt><dd class="small">v${esc(S.cols.version)} is out - this version can't update itself: run the line below on its machine once, from then on <b>Update</b> does it. ${reinstallBox()}</dd>`
+            : c.updater ? `<dt>Updates</dt><dd class="small muted">${esc(c.updater)}</dd>` : ""}</dl>
         ${isAdmin() ? `<form class="editf" style="display:flex;gap:.4rem;flex-wrap:wrap"><input type="text" name="subnets" class="filter" style="flex:1;min-width:10rem" value="${esc(c.subnets.join(", "))}" aria-label="Subnets">
           <input type="number" name="interval" class="filter" style="width:5rem" value="${c.interval_min}" min="5" max="1440" aria-label="Default minutes" title="Every so many minutes, unless a subnet has its own schedule"><button class="btn">Save</button>
           <button type="button" class="btn primary sweepall" ${c.can_schedule ? "" : "disabled"} title="${c.can_schedule ? "Sweep all its subnets at its next contact (within a minute)" : NEEDS_23}">Sweep all now</button>
+          ${c.update_to ? `<button type="button" class="btn update" data-update="0" title="Don't update it after all (if it hasn't yet)">Cancel update</button>`
+            : c.outdated && c.version ? `<button type="button" class="btn primary update" data-update="1" ${c.can_update ? "" : "disabled"} title="${c.can_update ? `Update to v${esc(S.cols.version)} at its next contact - it downloads it from Sentry Lens, checks it and restarts` : "This version can't update itself - run its install line once more (see above)"}">Update to v${esc(S.cols.version)}</button>` : ""}
           <button type="button" class="btn rotate" ${c.can_rotate ? "" : "disabled"} title="${c.can_rotate ? "A new key, delivered to the collector at its next contact - nothing to reinstall" : "Needs collector 2.1.0 or newer (it keeps the new key) - run its install line again to update it"}">Rotate key</button>
           <button type="button" class="btn regen" title="For a lost or leaked key: the old one stops working now, and the collector needs the new one installed">Replace key</button>
           <button type="button" class="btn danger del">Delete</button></form><div class="small msg"></div>` : ""}</div>`).join("")}</div>`
       : `<div class="empty">No collector yet.</div>`}`;
+  const ua = document.getElementById("updateAll");
+  if (ua) ua.onclick = async () => {
+    try { for (const c of updatable) await post(`/api/collectors/${c.id}`, {update: true});
+      S.cols = await api("/api/collectors"); collectorsTab(); }
+    catch (err) { document.getElementById("updAllMsg").innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+  };
   const f = document.getElementById("addf");
   if (f) f.onsubmit = async e => {
     e.preventDefault();
@@ -474,6 +498,14 @@ function collectorsTab() {
         await reloadCollectors(id, `<span class="ok">Schedule saved - the collector picks it up within a minute.</span>`); }
       catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
     });
+    const up = ef.querySelector(".update");
+    if (up) up.onclick = async () => {
+      try { await post(`/api/collectors/${id}`, {update: up.dataset.update === "1"});
+        await reloadCollectors(id, up.dataset.update === "1"
+          ? `<span class="ok">Update asked for - the collector updates at its next contact and shows its new version (refresh).</span>`
+          : `<span class="ok">Update cancelled.</span>`); }
+      catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+    };
     ef.querySelector(".rotate").onclick = async () => {
       try { await post(`/api/collectors/${id}`, {rotate_key: true});
         S.cols = await api("/api/collectors"); collectorsTab();

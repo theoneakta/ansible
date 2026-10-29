@@ -24,6 +24,7 @@ type Host struct {
 	Ports    []int   `json:"ports"`
 	RTT      float64 `json:"rtt_ms"`
 	Method   string  `json:"method"`
+	Services []Service `json:"services,omitempty"` // what its open ports say (services.go)
 }
 
 // nmap's 100 most common TCP ports.
@@ -252,7 +253,8 @@ func sweep(subnets []string) []*Host {
 	t := time.Now()
 	openPorts(hosts)
 	names(hosts)
-	log.Printf("ports and names: %s", time.Since(t).Round(time.Second))
+	services(hosts)
+	log.Printf("ports, names and services: %s", time.Since(t).Round(time.Second))
 	return hosts
 }
 

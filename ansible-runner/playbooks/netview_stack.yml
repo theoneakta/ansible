@@ -48,6 +48,9 @@
     netview_firewall: "{{ site_firewall }}"  # site.yml (its inventory name: its vault login)
     netview_dns: true
     netview_dns_retention_days: 30
+    # Suricata's alerts (the ids_* checks; IDS on in OPNsense first). The netview
+    # API user gets Services: Intrusion Detection - OPNsense has no read-only one.
+    netview_ids: true
     # Live page: the firewall interfaces shown, by device (as in
     # akvorado_stack.yml's ifindexes). external = towards the internet, so
     # download is what the firewall receives there. kind (wan / vpn / lan)
@@ -209,6 +212,7 @@
             OPN_USER: "{{ hostvars[netview_firewall].vault_win_user }}"
             OPN_PASS: "{{ hostvars[netview_firewall].vault_win_password }}"
             NETVIEW_NEED_KEY: "{{ '0' if env_file.stat.exists else '1' }}"
+            NETVIEW_IDS: "{{ '1' if netview_ids | bool else '0' }}"
           vars:
             ansible_connection: local
             ansible_become: false
@@ -364,6 +368,8 @@
                 # Our own lookups reach the firewall from this host's address.
                 COLLECTOR_IP: {{ ansible_host | default(inventory_hostname) }}
                 DNS_RETENTION_DAYS: "{{ netview_dns_retention_days }}"
+                # Suricata's alerts from the firewall (ids.py), with the same API user.
+                IDS_ENABLED: "{{ '1' if netview_dns | bool and netview_ids | bool else '' }}"
                 LIVE_INTERFACES: '{{ netview_live_interfaces | to_json }}'
                 LIVE_TOP_IFACE: {{ netview_live_top_iface }}
                 PUBLIC_URL: "{{ netview_public_url }}"

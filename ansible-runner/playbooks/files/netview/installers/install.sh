@@ -8,7 +8,8 @@
 # systemd service under its own unprivileged user (with only CAP_NET_RAW, for
 # ping where the system doesn't allow unprivileged ICMP). Its key goes in
 # /etc/sentry-collector/collector.conf, readable by root and that user only.
-# Running it again updates the collector in place.
+# Running it again updates the collector in place; so does Update on the
+# Collectors page, through the updater it installs (sentry-collector-update).
 #
 # Options:  --key slc_...   the collector's key (Sentry Lens > Assets > Collectors)
 #           --url URL       Sentry Lens's address (default: where this script came from)
@@ -38,10 +39,16 @@ BIN=/usr/local/bin/sentry-collector
 DIR=/etc/sentry-collector
 CONF="$DIR/collector.conf"
 UNIT=/etc/systemd/system/sentry-collector.service
+# The updater (Update on the Collectors page): the collector, unprivileged,
+# drops a file in its state folder; the .path unit starts the updater as root,
+# which fetches the collector from Sentry Lens itself, checks it, installs it.
+UPDATER=/usr/local/libexec/sentry-collector-update
+UPATH=/etc/systemd/system/sentry-collector-update.path
+USVC=/etc/systemd/system/sentry-collector-update.service
 
 if [ "$ACTION" = uninstall ]; then
-  systemctl disable --now sentry-collector 2>/dev/null || true
-  rm -f "$UNIT" "$BIN"
+  systemctl disable --now sentry-collector sentry-collector-update.path 2>/dev/null || true
+  rm -f "$UNIT" "$BIN" "$UPDATER" "$UPATH" "$USVC"
   rm -rf "$DIR" /var/lib/sentry-collector
   systemctl daemon-reload
   userdel sentry-collector 2>/dev/null || true
@@ -138,8 +145,67 @@ ProtectControlGroups=true
 WantedBy=multi-user.target
 EOF
 
+install -d -m 0755 "$(dirname "$UPDATER")"
+cat > "$UPDATER" <<'EOF'
+#!/bin/sh
+# Sentry Lens collector - updater, installed by install.sh and started by
+# sentry-collector-update.path when the collector asks (Update on the
+# Collectors page). Uses nothing from the request: it downloads the collector
+# from the Sentry Lens in collector.conf, checks it against SHA256SUMS,
+# installs it and restarts the service.
+set -eu
+CONF=/etc/sentry-collector/collector.conf
+REQ=/var/lib/sentry-collector/update.request
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"; rm -f "$REQ"' EXIT
+url="$(sed -n 's/^SENTRY_URL=//p' "$CONF")"
+insecure=""; [ "$(sed -n 's/^SENTRY_TLS_VERIFY=//p' "$CONF")" = 0 ] && insecure=1
+case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) exit 1 ;; esac
+file="sentry-collector-linux-$arch"
+if command -v curl >/dev/null; then
+  fetch() { curl -fsSL ${insecure:+-k} "$1" -o "$2"; }
+else
+  fetch() { wget -q ${insecure:+--no-check-certificate} "$1" -O "$2"; }
+fi
+fetch "$url/collector/download/$file" "$tmp/c"
+fetch "$url/collector/download/SHA256SUMS" "$tmp/sums"
+want="$(awk -v f="$file" '$2 == f || $2 == "*"f {print $1}' "$tmp/sums")"
+got="$(sha256sum "$tmp/c" | awk '{print $1}')"
+if [ -z "$want" ] || [ "$want" != "$got" ]; then
+  echo "the download doesn't match its checksum - not updated" >&2; exit 1
+fi
+chmod 0755 "$tmp/c"
+new="$("$tmp/c" version | awk '{print $2}')"
+install -m 0755 "$tmp/c" /usr/local/bin/sentry-collector
+command -v restorecon >/dev/null && restorecon /usr/local/bin/sentry-collector 2>/dev/null || true
+systemctl restart sentry-collector
+echo "updated to $new"
+EOF
+chmod 0755 "$UPDATER"
+cat > "$USVC" <<EOF
+# Sentry Lens collector - its updater (see $UPDATER)
+[Unit]
+Description=Sentry Lens collector update
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATER
+EOF
+cat > "$UPATH" <<EOF
+# Sentry Lens collector - starts its updater when the collector asks
+[Unit]
+Description=Sentry Lens collector update request
+
+[Path]
+PathExists=/var/lib/sentry-collector/update.request
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 systemctl enable sentry-collector >/dev/null 2>&1
+systemctl enable --now sentry-collector-update.path >/dev/null 2>&1
 systemctl restart sentry-collector
 sleep 3
 if systemctl is-active --quiet sentry-collector; then

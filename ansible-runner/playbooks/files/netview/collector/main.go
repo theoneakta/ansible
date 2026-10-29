@@ -14,6 +14,7 @@
 //	sentry-collector install --config FILE     Windows: register and start the service
 //	sentry-collector uninstall                 Windows: stop and remove the service
 //	sentry-collector scan SUBNET               one sweep, printed (a test)
+//	sentry-collector probe ADDRESS PORT        what one port says (a test)
 //	sentry-collector version
 //
 // Settings: SENTRY_URL, SENTRY_KEY, SENTRY_TLS_VERIFY from the environment,
@@ -23,6 +24,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,12 +32,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const Version = "2.3.0"
+const Version = "2.5.0"
 
 type Config struct {
 	URL       string
@@ -56,6 +59,7 @@ type Remote struct {
 	Credentials   string   `json:"credentials"`
 	CredentialCnt int      `json:"credential_count"`
 	NewKey        string   `json:"new_key"`
+	Update        string   `json:"update"` // the version to update to (Update on the page; update.go)
 	Profiles      []Profile `json:"snmp_profiles"` // what to read beyond the basics (snmp.go)
 	Schedule      []struct {
 		Subnet   string `json:"subnet"`
@@ -198,6 +202,14 @@ func main() {
 		hosts := sweep([]string{args[0]})
 		out, _ := json.MarshalIndent(hosts, "", "  ")
 		fmt.Println(string(out))
+	case "probe": // a test: what one port says
+		if len(args) < 2 {
+			fmt.Println("usage: sentry-collector probe ADDRESS PORT")
+			os.Exit(2)
+		}
+		port, _ := strconv.Atoi(args[1])
+		out, _ := json.MarshalIndent(probe(args[0], port), "", "  ")
+		fmt.Println(string(out))
 	case "snmp": // a test: what a device says with a v2c community
 		if len(args) < 2 {
 			fmt.Println("usage: sentry-collector snmp ADDRESS COMMUNITY")
@@ -227,7 +239,7 @@ func main() {
 		setupLog(cfg.LogFile)
 		loop(cfg, make(chan struct{}))
 	default:
-		fmt.Println("commands: run, install, uninstall, scan SUBNET, version")
+		fmt.Println("commands: run, install, uninstall, scan SUBNET, probe ADDRESS PORT, snmp ADDRESS COMMUNITY, version")
 		os.Exit(2)
 	}
 }
@@ -241,11 +253,13 @@ func loop(cfg Config, stop chan struct{}) {
 	lastSweep := map[string]time.Time{} // subnet -> its last sweep
 	var forcedDone string               // the last sweep asked for on the page, done
 	var lastRefused time.Time // a refused key is said once an hour, not every minute
+	var lastUpdate time.Time  // an update asked of the updater: again after 30 minutes if it didn't happen
+	how := updater(cfg)
 	var agentsMu sync.Mutex
 	agents := map[string]Credential{} // ip -> the credential it answered, from the last sweep
 	for {
 		var r Remote
-		if err := client.get("/api/collector/config?version="+Version, &r); err != nil {
+		if err := client.get("/api/collector/config?version="+Version+"&updater="+how, &r); err != nil {
 			if strings.HasPrefix(err.Error(), "HTTP 401") {
 				if time.Since(lastRefused) >= time.Hour {
 					log.Printf("Sentry Lens refuses this collector's key (%v): it was replaced, or the collector deleted - "+
@@ -265,6 +279,18 @@ func loop(cfg Config, stop chan struct{}) {
 				} else {
 					client.cfg.Key, cfg.Key = string(nk), string(nk)
 					log.Printf("key rotated")
+				}
+			}
+			if r.Update != "" && r.Update != Version && time.Since(lastUpdate) >= 30*time.Minute {
+				lastUpdate = time.Now()
+				switch err := requestUpdate(cfg, r.Update); {
+				case errors.Is(err, errRestart):
+					log.Printf("updating to %s: restarting (the container fetches it)", r.Update)
+					return
+				case err != nil:
+					log.Printf("can't update to %s: %v", r.Update, err)
+				default:
+					log.Printf("updating to %s: asked the updater", r.Update)
 				}
 			}
 			creds := decryptCredentials(used, r.Credentials)

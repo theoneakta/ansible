@@ -1,9 +1,18 @@
 """Sentry Lens security checks - ntopng's behavioural checks (see
 ntopng-security-checks.txt) rebuilt on what netview has: flow records
 (addresses, ports, bytes, packets, AS, country - no payload, no TCP flags, no
-MACs), the firewall's DNS log and the domain categories. So the ones that
-read packet contents (HTTP/TLS/SSH details, SQL injection, certificates...)
-or layer 2 (ARP, gateways) aren't here.
+MACs), the firewall's DNS log and the domain categories; and, beyond flows:
+
+  layer 2   the collectors' ARP sweeps and SNMP ARP tables (spoofing, gateways)
+  posture   what the devices' open ports said to a collector (2.4.0+): TLS
+            certificates and versions, SSH / web server versions, SMBv1
+  SNMP      the network devices' answers and interface counters
+  infra     Prometheus: servers, disks, services, containers
+  IDS       Suricata's alerts from the firewall (ids.py) - what needs packet
+            contents (exploits, SQL injection, malware traffic)
+
+What still can't be done: TCP-level checks (retransmissions, zero window -
+flows have no TCP flags) and industrial protocols.
 
   run      every RUN_EVERY, each enabled check looks at the last WINDOW of
            flows (LAG behind now - the firewall reports long connections once
@@ -41,11 +50,14 @@ from fastapi.responses import FileResponse
 import auth
 import categories
 import dns
+import ids
 
 CH_URL = os.environ.get("CLICKHOUSE_URL", "http://clickhouse:8123")
 WAN_EXPORTER = os.environ.get("WAN_EXPORTER", "opnsense")
 LAN_EXPORTERS = [e for e in os.environ.get("LAN_EXPORTERS", "pve5,pve6").split(",") if e]
 LAN_ROLE = os.environ.get("LAN_ROLE", "lan")
+# Internet-facing side of the firewall's flows (SentryLens: FLOW_MODE).
+TO_INTERNET = "OutIfBoundary = 'external'"
 FIREWALL = (re.sub(r"^https?://", "", os.environ.get("OPN_URL", "")).split(":")[0].split("/")[0]
             or "192.168.3.1")
 RUN_EVERY = int(os.environ.get("CHECKS_EVERY", "300"))
@@ -181,8 +193,9 @@ TYPES = {"int": _int, "ips": _nets, "ports": _ports, "countries": _countries, "c
 
 # ------------------------------------------------------------------ check registry
 CHECKS = {}
-GROUPS = ["Rogue services", "Threat intelligence", "Scans & floods", "DNS abuse", "Risky websites",
-          "Insecure & remote access", "Devices & networks", "Score"]
+GROUPS = ["Rogue services", "Threat intelligence", "Scans & floods", "DNS abuse", "Risky websites", "Layer 2",
+          "Insecure & remote access", "Service posture", "Devices & networks", "Network devices", "Infrastructure",
+          "Intrusion detection", "Score"]
 
 
 def check(cid, group, title, description, score, *, enabled=True, needs="flows", ntopng="", **params):
@@ -426,7 +439,7 @@ def port_scan(p, w, where):
         WHERE {TIME} AND Proto IN (6, 17) AND SrcNetRole = {{lan:String}} AND {where}
           AND NOT {in_nets(IP('SrcAddr'), 'ignore')}
         GROUP BY SrcAddr, DstAddr HAVING ports >= {{threshold:UInt32}}""",
-                 **w, threshold=p["threshold"], ignore=p["ignore"])
+                 **w, threshold=p["threshold"], ignore=p["ignore"] + collector_addresses())
     return [hit(r["host"], f"{r['host']}|{r['rip']}", f"probed {r['ports']} ports on {r['rip']} in 10 minutes",
                 remote=r["rip"], value=r["ports"]) for r in rows]
 
@@ -444,7 +457,7 @@ def host_sweep(p, w):
           AND NOT {in_nets(IP('SrcAddr'), 'ignore')} AND NOT {in_nets(IP('DstAddr'), 'multicast')}
           AND NOT endsWith({IP('DstAddr')}, '.255')
         GROUP BY SrcAddr, Proto, DstPort HAVING n >= {{threshold:UInt32}}""",
-                 **w, threshold=p["threshold"], ignore=p["ignore"], multicast=NOT_UNICAST)
+                 **w, threshold=p["threshold"], ignore=p["ignore"] + collector_addresses(), multicast=NOT_UNICAST)
     return [hit(r["host"], f"{r['host']}|{r['proto']}/{r['port']}",
                 f"probed {svc(r['proto'], r['port'], r['name'])} on {r['n']} LAN devices in 10 minutes",
                 value=r["n"]) for r in rows]
@@ -460,7 +473,7 @@ def flow_flood(p, w):
             SELECT {IP('SrcAddr')} AS host, toStartOfMinute(TimeReceived) AS m, count() AS n FROM flows
             WHERE {TIME} AND SrcNetRole = {{lan:String}} AND NOT {in_nets(IP('SrcAddr'), 'ignore')}
             GROUP BY host, m)
-        GROUP BY host HAVING peak >= {{threshold:UInt32}}""", **w, threshold=p["threshold"], ignore=p["ignore"])
+        GROUP BY host HAVING peak >= {{threshold:UInt32}}""", **w, threshold=p["threshold"], ignore=p["ignore"] + collector_addresses())
     return [hit(r["host"], r["host"], f"{r['peak']} flows in one minute", value=r["peak"]) for r in rows]
 
 
@@ -474,7 +487,7 @@ def icmp_flood(p, w):
             SELECT {IP('SrcAddr')} AS host, toStartOfMinute(TimeReceived) AS m, sum(Packets * SamplingRate) AS n
             FROM flows WHERE {TIME} AND Proto IN (1, 58) AND NOT {in_nets(IP('SrcAddr'), 'ignore')}
             GROUP BY host, m)
-        GROUP BY host HAVING peak >= {{threshold:UInt32}}""", **w, threshold=p["threshold"], ignore=p["ignore"])
+        GROUP BY host HAVING peak >= {{threshold:UInt32}}""", **w, threshold=p["threshold"], ignore=p["ignore"] + collector_addresses())
     return [hit(r["host"], r["host"], f"{r['peak']:.0f} ICMP packets in one minute", value=r["peak"]) for r in rows]
 
 
@@ -759,16 +772,548 @@ def new_device(p, w):
     return out
 
 
+@check("scan_victim", "Scans & floods", "Port scan target",
+       "A LAN device is probed on many ports (short flows, few packets) from the LAN or the internet - by one "
+       "scanner or several together.", 50, ntopng="Scan Victim / SYN Scan Victim",
+       threshold=("int", "Ports probed in 10 minutes", 50), ignore=("ips", "Devices to ignore", []),
+       scanners=("ips", "Scanners that are fine (monitoring; the collectors are always)", []))
+def scan_victim(p, w):
+    rows = query(f"""
+        SELECT {IP('DstAddr')} AS host, uniq(DstPort) AS ports, uniq(SrcAddr) AS sources,
+               any({IP('SrcAddr')}) AS rip
+        FROM flows
+        WHERE {TIME} AND Proto IN (6, 17) AND DstNetRole = {{lan:String}} AND SrcPort >= 1024 AND DstPort < 10000
+          AND Packets <= 3 AND NOT {in_nets(IP('DstAddr'), 'ignore')} AND NOT {in_nets(IP('SrcAddr'), 'scanners')}
+        GROUP BY DstAddr HAVING ports >= {{threshold:UInt32}}""",
+                 **w, threshold=p["threshold"], ignore=p["ignore"], scanners=p["scanners"] + collector_addresses())
+    return [hit(r["host"], r["host"], f"probed on {r['ports']} ports by {r['sources']} "
+                f"source{'s' if r['sources'] > 1 else ''} (e.g. {r['rip']}) in 10 minutes", remote=r["rip"],
+                value=r["ports"]) for r in rows]
+
+
+@check("flow_flood_victim", "Scans & floods", "Flow flood target",
+       "A device receives more connections per minute than the threshold - a flood aimed at it (DoS), or a "
+       "very busy server.", 50, ntopng="Flow Flood Victim / SYN Flood Victim",
+       threshold=("int", "Flows per minute", 6000), ignore=("ips", "Devices to ignore (busy servers)", []))
+def flow_flood_victim(p, w):
+    rows = query(f"""
+        SELECT host, max(n) AS peak, max(s) AS sources FROM (
+            SELECT {IP('DstAddr')} AS host, toStartOfMinute(TimeReceived) AS m, count() AS n, uniq(SrcAddr) AS s
+            FROM flows WHERE {TIME} AND DstNetRole = {{lan:String}} AND NOT {in_nets(IP('DstAddr'), 'ignore')}
+            GROUP BY host, m)
+        GROUP BY host HAVING peak >= {{threshold:UInt32}}""", **w, threshold=p["threshold"], ignore=p["ignore"])
+    return [hit(r["host"], r["host"], f"received {r['peak']} flows in one minute (from up to {r['sources']} "
+                "addresses)", value=r["peak"]) for r in rows]
+
+
+_beacon = {"t": 0}
+
+
+@check("beaconing", "Threat intelligence", "Beaconing",
+       "A device opens a new connection to the same internet address at a steady interval for hours - how "
+       "malware checks in with its command server. Looked at once an hour, over the last 6 hours. By default "
+       "only addresses the device never looked up in DNS (apps call home by name); a device with many such "
+       "addresses at once is a P2P client re-announcing to its peers (BitTorrent), not malware, and is left out.",
+       50, ntopng="Periodic Flow (ntopng Enterprise)",
+       min_beacons=("int", "Connections in 6 hours (at least)", 12),
+       jitter=("int", "Interval spread, % of the interval (at most)", 15),
+       min_interval=("int", "Interval, seconds (at least)", 120),
+       no_dns_only=("bool", "Only addresses it didn't look up in DNS", True),
+       max_per_device=("int", "More addresses than this on one device: P2P, left out", 5),
+       ignore_ports=("ports", "Ports to ignore (DNS, NTP)", [53, 123]),
+       ignore=("ips", "Devices or addresses to ignore", []))
+def beaconing(p, w):
+    if time.time() - _beacon["t"] < 3600:
+        return []
+    _beacon["t"] = time.time()
+    w = w | {"start": w["end"] - 6 * 3600}
+    # One connection = one local port; its first sighting is when it opened.
+    rows = query(f"""
+        WITH conns AS (
+            SELECT {IP('SrcAddr')} AS host, {IP('DstAddr')} AS rip, DstAddr AS raddr, SrcAddr AS laddr, Proto, DstPort,
+                   SrcPort, toUInt32(min(TimeReceived)) AS opened
+            FROM flows
+            WHERE {TIME} AND ExporterName = {{wan:String}} AND {TO_INTERNET} AND SrcNetRole = {{lan:String}}
+              AND Proto IN (6, 17) AND NOT {in_nets(IP('SrcAddr'), 'ignore')} AND NOT {in_nets(IP('DstAddr'), 'ignore')}
+              AND DstPort NOT IN {{ignore_ports:Array(UInt32)}}
+            GROUP BY SrcAddr, DstAddr, Proto, DstPort, SrcPort),
+        series AS (
+            SELECT host, rip, any(laddr) AS la, any(raddr) AS ra, Proto AS proto, DstPort AS port, count() AS n,
+                   arrayPopFront(arrayDifference(arraySort(groupArray(opened)))) AS gaps
+            FROM conns GROUP BY host, rip, Proto, DstPort HAVING n >= {{min_beacons:UInt32}})
+        SELECT host, rip, proto, port, n, arrayAvg(gaps) AS mean,
+               sqrt(arrayAvg(arrayMap(g -> pow(g - mean, 2), gaps))) AS spread
+        FROM series
+        LEFT JOIN (SELECT DISTINCT client, ip, 1 AS seen FROM netview.dns_ips WHERE t > now() - INTERVAL 1 DAY) AS d
+          ON d.client = series.la AND d.ip = series.ra
+        WHERE mean >= {{min_interval:UInt32}} AND spread <= mean * {{jitter:UInt32}} / 100
+          {'AND d.seen = 0' if p['no_dns_only'] and dns.status['enabled'] else ''}""",
+                 **w, min_beacons=p["min_beacons"], min_interval=p["min_interval"], jitter=p["jitter"],
+                 ignore=p["ignore"], ignore_ports=p["ignore_ports"])
+    per_device = {}
+    for r in rows:
+        per_device[r["host"]] = per_device.get(r["host"], 0) + 1
+    return [hit(r["host"], f"{r['host']}|{r['rip']}|{r['port']}",
+                f"connects to {r['rip']} {svc(r['proto'], r['port'])} every {r['mean'] / 60:.1f} min "
+                f"(±{r['spread']:.0f} s, {r['n']} times in 6 hours)", remote=r["rip"], value=r["n"])
+            for r in rows if per_device[r["host"]] <= p["max_per_device"]]
+
+
+_collectors = {"t": 0, "ips": []}
+
+
+def collector_addresses():
+    """Where the collectors run: their sweeps probe every port of every device."""
+    if time.time() - _collectors["t"] > 600:
+        try:
+            _collectors["ips"] = _nets([r["address"] for r in query(
+                "SELECT DISTINCT address FROM netview.collectors FINAL WHERE deleted = 0 AND address != ''")])
+        except (RuntimeError, ValueError, requests.RequestException):
+            pass
+        _collectors["t"] = time.time()
+    return _collectors["ips"]
+
+
+# Sentry Lens's own traffic - its host (COLLECTOR_IP, plus SELF_IPS) and the
+# collectors: sweeps, SNMP polls, DNS lookups, Prometheus scrapes, Suricata
+# seeing them. Never alerted on by the traffic checks, either side, and older
+# alerts of theirs are left out of the lists. The health and posture checks
+# (HEALTH) still look at those machines themselves.
+HEALTH = ("Layer 2", "Service posture", "Network devices", "Infrastructure")
+SELF_IPS = [a for a in [os.environ.get("COLLECTOR_IP", "")] + os.environ.get("SELF_IPS", "").replace(",", " ").split() if a]
+
+
+def own_nets():
+    out = []
+    for a in SELF_IPS:
+        try:
+            out += _nets([a])
+        except ValueError:
+            pass
+    return sorted(set(out + collector_addresses()))
+
+
+def mine(addr, own):
+    try:
+        a = ipaddress.ip_address(addr)
+    except ValueError:
+        return False  # a domain, a name
+    return any(a.version == n.version and a in n for n in own)
+
+
+AS_IP = "if(isIPv4String({0}) OR isIPv6String({0}), {0}, '0.0.0.0')".format
+# An alert row isn't one of Sentry Lens's own (SQL; with NOT_OWN_PARAMS()).
+NOT_OWN = (f"NOT (check_id IN {{own_checks:Array(String)}} AND ({in_nets(AS_IP('host'), 'own')}"
+           f" OR {in_nets(AS_IP('remote'), 'own')}))")
+
+
+def NOT_OWN_PARAMS():
+    return {"own": own_nets(), "own_checks": [i for i, c in CHECKS.items() if c["group"] not in HEALTH]}
+
+
+# ------------------------------------------------------------------ layer 2
+# What answers for an address: the collectors' ARP sweeps (asset_obs) and the
+# ARP tables SNMP read from routers and switches (snmp_arp).
+def l2_obs(hours, since_hours=0):
+    return f"""obs AS (
+        SELECT t, ip, mac FROM netview.asset_obs
+        WHERE mac != '' AND t >= now() - INTERVAL {int(hours)} HOUR AND t < now() - INTERVAL {int(since_hours)} HOUR
+        UNION ALL
+        SELECT t, ip, mac FROM netview.snmp_arp
+        WHERE mac != '' AND mac != '00:00:00:00:00:00' AND t >= now() - INTERVAL {int(hours)} HOUR
+          AND t < now() - INTERVAL {int(since_hours)} HOUR)"""
+
+
+@check("arp_conflict", "Layer 2", "ARP spoofing / duplicate address",
+       "Two or more MAC addresses answer for the same IP address within the hour - ARP spoofing (a device "
+       "putting itself in the middle), or two devices with the same static address. Needs a collector's ARP "
+       "sweep or SNMP ARP tables.", 70, needs="arp", ntopng="ARP Spoofing / IP-MAC Reassociation",
+       ignore=("ips", "Addresses to ignore (shared / failover addresses)", []))
+def arp_conflict(p, w):
+    rows = query(f"""WITH {l2_obs(1)}
+        SELECT ip, groupUniqArray(mac) AS macs FROM obs
+        WHERE NOT {in_nets('ip', 'ignore')} AND NOT {in_nets('ip', 'gw')}
+        GROUP BY ip HAVING length(macs) > 1""", ignore=p["ignore"], gw=gateways())
+    return [hit(r["ip"], f"{r['ip']}|{','.join(sorted(r['macs']))}",
+                f"answered by {len(r['macs'])} MAC addresses: {', '.join(sorted(r['macs']))}", value=len(r["macs"]))
+            for r in rows]
+
+
+@check("unexpected_gateway", "Layer 2", "Unexpected gateway",
+       "The gateway's address answers from a MAC address other than its usual one (the last 7 days) - a device "
+       "posing as the router to see everyone's traffic.", 90, needs="arp", ntopng="Unexpected Gateway",
+       gateways=("ips", "Gateways (empty: the firewall)", []))
+def unexpected_gateway(p, w):
+    rows = query(f"""WITH {l2_obs(24 * 7)},
+        usual AS (SELECT ip, topK(1)(mac)[1] AS mac FROM obs WHERE t < now() - INTERVAL 1 HOUR AND {in_nets('ip', 'gw')}
+                  GROUP BY ip)
+        SELECT o.ip AS ip, u.mac AS usual, groupUniqArray(o.mac) AS macs FROM obs AS o INNER JOIN usual AS u ON o.ip = u.ip
+        WHERE o.t >= now() - INTERVAL 1 HOUR AND o.mac != u.mac
+        GROUP BY o.ip, u.mac""", gw=p["gateways"] or gateways())
+    return [hit(r["ip"], f"{r['ip']}|{','.join(sorted(r['macs']))}",
+                f"gateway {r['ip']} answered from {', '.join(sorted(r['macs']))} - usually {r['usual']}",
+                value=len(r["macs"])) for r in rows]
+
+
+@check("ip_mac_change", "Layer 2", "IP-MAC reassociation",
+       "An address that belonged to one device the last 7 days now answers from another MAC address - an "
+       "address reused by DHCP, a replaced device, or someone taking it over.", 20, needs="arp",
+       ntopng="IP-MAC Reassociation", ignore=("ips", "Addresses to ignore (DHCP pools with short leases)", []))
+def ip_mac_change(p, w):
+    rows = query(f"""WITH {l2_obs(1)},
+        before AS (SELECT ip, argMax(mac, t) AS last_mac FROM netview.asset_obs
+                   WHERE mac != '' AND t >= now() - INTERVAL 7 DAY AND t < now() - INTERVAL 1 HOUR GROUP BY ip)
+        SELECT o.ip AS ip, any(b.last_mac) AS was, groupUniqArray(o.mac) AS macs
+        FROM obs AS o INNER JOIN before AS b ON o.ip = b.ip
+        WHERE NOT {in_nets('o.ip', 'ignore')} AND NOT {in_nets('o.ip', 'gw')}
+        GROUP BY o.ip HAVING length(macs) = 1 AND macs[1] != was""", ignore=p["ignore"], gw=gateways())
+    return [hit(r["ip"], f"{r['ip']}|{r['macs'][0]}", f"now {r['macs'][0]}, was {r['was']}") for r in rows]
+
+
+def gateways():
+    return effective("unexpected_gateway")["params"]["gateways"] or (_nets([FIREWALL]) if FIREWALL else [])
+
+
+# ------------------------------------------------------------------ service posture
+# What the devices' open ports said in their latest sweep (collector 2.4.0+:
+# services.go) - one row per address and port.
+LATEST_SERVICES = """svc AS (
+    SELECT s.* FROM netview.asset_services AS s
+    INNER JOIN (SELECT ip, max(t) AS last FROM netview.asset_services WHERE t > now() - INTERVAL 2 DAY GROUP BY ip) AS l
+    ON s.ip = l.ip AND s.t = l.last)"""
+
+
+def services(where, **params):
+    return query(f"WITH {LATEST_SERVICES} SELECT *, toUInt32(cert_not_after) AS na FROM svc "
+                 f"WHERE {where} AND NOT {in_nets('ip', 'ignore')}", **params)
+
+
+@check("tls_certificate", "Service posture", "TLS certificate expired / expiring",
+       "A device's TLS certificate (HTTPS, mail, LDAPS...) has expired or expires within the days given.", 50,
+       needs="services", ntopng="TLS Certificate Expired / About To Expire",
+       days=("int", "Days before it expires", 14), ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 24))
+def tls_certificate(p, w):
+    rows = services("kind = 'tls' AND toUInt32(cert_not_after) > 0 "
+                    "AND cert_not_after < now() + INTERVAL {days:UInt32} DAY", days=p["days"], ignore=p["ignore"])
+    out = []
+    for r in rows:
+        days = (r["na"] - time.time()) / 86400
+        when = f"expired {-days:.0f} days ago" if days < 0 else f"expires in {days:.0f} days"
+        out.append(hit(r["ip"], f"{r['ip']}|{r['port']}", f"TCP/{r['port']}: certificate {when} ({r['cert_subject']})",
+                       value=round(days)))
+    return out
+
+
+@check("tls_self_signed", "Service posture", "Self-signed TLS certificate",
+       "A device's TLS certificate is self-signed - browsers warn, and users learn to click through. Off by "
+       "default: most appliances (Proxmox, printers, switches) ship that way.", 10, enabled=False,
+       needs="services", ntopng="TLS Self-signed Certificate", ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 168))
+def tls_self_signed(p, w):
+    return [hit(r["ip"], f"{r['ip']}|{r['port']}", f"TCP/{r['port']}: self-signed certificate ({r['cert_subject']})")
+            for r in services("kind = 'tls' AND self_signed = 1", ignore=p["ignore"])]
+
+
+@check("tls_obsolete", "Service posture", "Obsolete TLS version",
+       "A device still accepts TLS 1.0 or 1.1 - retired versions with known weaknesses.", 30, needs="services",
+       ntopng="TLS Obsolete Version / Weak Cipher", ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 168))
+def tls_obsolete(p, w):
+    return [hit(r["ip"], f"{r['ip']}|{r['port']}",
+                f"TCP/{r['port']} accepts TLS {', '.join(v for v in r['tls'] if v in ('1.0', '1.1'))}")
+            for r in services("kind = 'tls' AND hasAny(tls, ['1.0', '1.1'])", ignore=p["ignore"])]
+
+
+def version(s):
+    """'7.4p1' -> (7, 4, 1): the numbers in it, for comparing."""
+    return tuple(int(x) for x in re.findall(r"\d+", s)[:4])
+
+
+def _versions(v):
+    out = [str(x).strip() for x in (v if isinstance(v, list) else str(v).replace(",", " ").split()) if str(x).strip()]
+    bad = [x for x in out if not re.fullmatch(r"[\w.-]+/\d[\w.]*", x)]
+    if bad:
+        raise ValueError(f"not product/version: {bad[0]}")
+    return out
+
+
+TYPES["versions"] = _versions
+
+
+def outdated(banner, minimums):
+    """The 'product/version' in a banner older than its minimum - e.g.
+    'Apache/2.2.15 (CentOS)' against Apache/2.4."""
+    for m in minimums:
+        product, least = m.split("/", 1)
+        found = re.search(re.escape(product) + r"[/_ -]v?(\d[\w.]*)", banner, re.I)
+        if found and version(found.group(1)) < version(least):
+            return f"{product} {found.group(1)} (older than {least})"
+    return ""
+
+
+@check("ssh_obsolete", "Service posture", "Obsolete SSH server",
+       "A device's SSH server speaks protocol 1, or is older than the minimum versions given (OpenSSH, "
+       "Dropbear) - known vulnerabilities.", 40, needs="services", ntopng="SSH Obsolete Server",
+       minimums=("versions", "Minimum versions", ["OpenSSH/8.0", "dropbear/2020.79"]),
+       ignore=("ips", "Devices to ignore", []), repeat_hours=("int", "Alert again after (hours)", 168))
+def ssh_obsolete(p, w):
+    out = []
+    for r in services("kind = 'ssh'", ignore=p["ignore"]):
+        old = "SSH protocol 1" if re.match(r"SSH-1\.", r["banner"]) else outdated(r["banner"], p["minimums"])
+        if old:
+            out.append(hit(r["ip"], f"{r['ip']}|{r['port']}", f"TCP/{r['port']}: {old} - {r['banner']}"))
+    return out
+
+
+@check("http_obsolete", "Service posture", "Obsolete web server",
+       "A device's web server announces a version older than the minimums given (its Server header).", 30,
+       needs="services", ntopng="HTTP Obsolete Server",
+       minimums=("versions", "Minimum versions",
+                 ["Apache/2.4.50", "nginx/1.20", "Microsoft-IIS/10.0", "lighttpd/1.4.60", "OpenSSL/1.1.1"]),
+       ignore=("ips", "Devices to ignore", []), repeat_hours=("int", "Alert again after (hours)", 168))
+def http_obsolete(p, w):
+    out = []
+    for r in services("kind IN ('http', 'tls') AND banner != ''", ignore=p["ignore"]):
+        old = outdated(r["banner"], p["minimums"])
+        if old:
+            out.append(hit(r["ip"], f"{r['ip']}|{r['port']}", f"TCP/{r['port']}: {old} - {r['banner']}"))
+    return out
+
+
+@check("smb_v1", "Service posture", "SMBv1 enabled",
+       "A device accepts SMB version 1 - the protocol WannaCry and NotPetya spread through.", 60, needs="services",
+       ntopng="SMB Insecure Version", ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 168))
+def smb_v1(p, w):
+    return [hit(r["ip"], r["ip"], "accepts SMBv1 on TCP/445")
+            for r in services("kind = 'smb' AND smb1 = 1", ignore=p["ignore"])]
+
+
+@check("cleartext_service", "Service posture", "Clear-text service on the LAN",
+       "A device offers a login over a clear-text protocol (Telnet, FTP, rexec, rlogin) - passwords readable "
+       "by anyone on the network. From the collectors' port scans.", 40, needs="arp",
+       ntopng="Clear-Text Credentials / Unsafe Protocol",
+       ports=("ports", "TCP ports", [21, 23, 512, 513]), ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 168))
+def cleartext_service(p, w):
+    rows = query(f"""
+        SELECT ip, arrayFilter(x -> has({{ports:Array(UInt16)}}, x), ports) AS open, hostname
+        FROM netview.assets FINAL
+        WHERE last_seen > now() - INTERVAL 2 DAY AND length(open) > 0 AND NOT {in_nets('ip', 'ignore')}""",
+                 ports=p["ports"], ignore=p["ignore"])
+    return [hit(r["ip"], f"{r['ip']}|{','.join(map(str, r['open']))}",
+                "offers " + ", ".join(svc(6, x, {21: "ftp", 23: "telnet", 512: "rexec", 513: "rlogin"}.get(x, ""))
+                                      for x in r["open"])) for r in rows]
+
+
+# ------------------------------------------------------------------ network devices (SNMP)
+DEVICES = """dev AS (SELECT key, ip, if(sys_name != '', sys_name, ip) AS name, collector FROM netview.snmp_devices FINAL)"""
+
+
+@check("snmp_unreachable", "Network devices", "Network device not answering",
+       "A switch, router or access point that answered SNMP stops answering while its collector is still "
+       "running - down, rebooting or cut off.", 70, needs="snmp", ntopng="SNMP Device Unreachable (ntopng Enterprise)",
+       minutes=("int", "Silent for (minutes)", 20), ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 6))
+def snmp_unreachable(p, w):
+    rows = query(f"""WITH {DEVICES},
+        last AS (SELECT key, toUInt32(max(t)) AS last FROM netview.snmp_counters WHERE t > now() - INTERVAL 1 DAY GROUP BY key),
+        alive AS (SELECT id FROM netview.collectors FINAL WHERE deleted = 0 AND last_seen > now() - INTERVAL 10 MINUTE)
+        SELECT dev.ip AS ip, dev.name AS name, last.last AS last FROM dev INNER JOIN last ON dev.key = last.key
+        WHERE last.last < toUInt32(now()) - {{minutes:UInt32}} * 60 AND dev.collector IN (SELECT id FROM alive)
+          AND NOT {in_nets('dev.ip', 'ignore')}""", minutes=p["minutes"], ignore=p["ignore"])
+    return [hit(r["ip"], r["ip"], f"{r['name']} hasn't answered SNMP for {(time.time() - r['last']) / 60:.0f} minutes")
+            for r in rows]
+
+
+# Each interface's readings over the hours, oldest first.
+READINGS = """SELECT c.key AS key, c.if_index AS if_index, any(dev.ip) AS ip, any(dev.name) AS name,
+       if(any(i.name) != '', any(i.name), any(i.descr)) AS port, any(i.type) AS type, any(i.alias) AS alias, any(i.admin) AS admin,
+       arrayMap(x -> x.2, arraySort(groupArray((c.t, c.oper)))) AS opers,
+       arrayMap(x -> x.2, arraySort(groupArray((c.t, c.in_errors + c.out_errors)))) AS errors
+    FROM netview.snmp_counters AS c
+    INNER JOIN dev ON dev.key = c.key
+    LEFT JOIN (SELECT key, if_index, name, descr, type, alias, admin FROM netview.snmp_interfaces FINAL) AS i
+      ON i.key = c.key AND i.if_index = c.if_index
+    WHERE c.t > now() - INTERVAL {hours:UInt32} HOUR AND NOT """ + in_nets("dev.ip", "ignore") + """
+    GROUP BY c.key, c.if_index"""
+
+
+def port_name(r):
+    return f"{r['name']} {r['port'] or 'interface ' + str(r['if_index'])}" + (f" ({r['alias']})" if r["alias"] else "")
+
+
+@check("snmp_if_down", "Network devices", "Network port went down",
+       "A switch or router port that was up in the last day is down now (and not shut down on purpose). "
+       "By default only ports with a description - uplinks, servers, access points; desktops sleep.", 50,
+       needs="snmp", ntopng="SNMP Interface Status Change (ntopng Enterprise)",
+       described_only=("bool", "Only ports with a description", True), ignore=("ips", "Devices to ignore", []),
+       repeat_hours=("int", "Alert again after (hours)", 6))
+def snmp_if_down(p, w):
+    rows = query(f"WITH {DEVICES} {READINGS}", hours=24, ignore=p["ignore"])
+    return [hit(r["ip"], f"{r['ip']}|{r['if_index']}", f"{port_name(r)} is down", value=r["if_index"])
+            for r in rows if r["opers"] and r["opers"][-1] in (2, 7) and 1 in r["opers"] and r["admin"] != 2
+            and (r["alias"] or not p["described_only"])]
+
+
+@check("snmp_if_flap", "Network devices", "Network port flapping",
+       "A switch or router port goes up and down again and again within the hour - a bad cable, a failing "
+       "transceiver or a loop.", 50, needs="snmp", ntopng="SNMP Interface Flapping (ntopng Enterprise)",
+       threshold=("int", "Changes in one hour", 4), ignore=("ips", "Devices to ignore", []))
+def snmp_if_flap(p, w):
+    rows = query(f"WITH {DEVICES} {READINGS}", hours=1, ignore=p["ignore"])
+    out = []
+    for r in rows:
+        n = sum(a != b for a, b in zip(r["opers"], r["opers"][1:]))
+        if n >= p["threshold"]:
+            out.append(hit(r["ip"], f"{r['ip']}|{r['if_index']}", f"{port_name(r)} changed state {n} times in an hour",
+                           value=n))
+    return out
+
+
+RADIO = re.compile(r"(ath|wifi|wlan|radio|ra|rai)\d", re.I)  # access points' radios, often typed ethernet
+
+
+@check("snmp_if_errors", "Network devices", "Network port errors",
+       "A switch or router port counts more errors (in + out) than the threshold in 30 minutes - a bad cable, "
+       "a duplex mismatch or interference. Wi-Fi radios are left out (they count errors all the time).", 40,
+       needs="snmp", ntopng="SNMP Interface Errors (ntopng Enterprise)",
+       threshold=("int", "Errors in 30 minutes", 100), ignore=("ips", "Devices to ignore", []))
+def snmp_if_errors(p, w):
+    rows = query(f"WITH {DEVICES} {READINGS.replace('{hours:UInt32} HOUR', '30 MINUTE')}", ignore=p["ignore"])
+    out = []
+    for r in rows:
+        if r["type"] in (1, 71) or RADIO.match(r["port"] or ""):  # radios count errors all the time
+            continue
+        n = sum(b - a for a, b in zip(r["errors"], r["errors"][1:]) if b >= a)  # a reset (reboot): skipped
+        if n >= p["threshold"]:
+            out.append(hit(r["ip"], f"{r['ip']}|{r['if_index']}", f"{port_name(r)}: {n} errors in 30 minutes", value=n))
+    return out
+
+
+# ------------------------------------------------------------------ infrastructure (Prometheus)
+PROM_URL = os.environ.get("PROM_URL", "").rstrip("/")
+FS = 'fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|nsfs|autofs|fuse.*|efivarfs|tracefs"'  # as infra.py
+
+
+def prom(q):
+    r = requests.get(f"{PROM_URL}/api/v1/query", params={"query": q}, timeout=30)
+    body = r.json()
+    if body.get("status") != "success":
+        raise RuntimeError(f"Prometheus: {body.get('error', '')[:200]}")
+    return body["data"]["result"]
+
+
+def node_hosts():
+    """host label -> its address (the node target's)."""
+    return {r["metric"]["host"]: r["metric"].get("instance", "").rsplit(":", 1)[0]
+            for r in prom('up{job="node"}') if r["metric"].get("host")}
+
+
+@check("infra_host_down", "Infrastructure", "Server down",
+       "A monitored server stopped answering Prometheus (node_exporter) - down, or its exporter is.", 80,
+       needs="prometheus", repeat_hours=("int", "Alert again after (hours)", 6))
+def infra_host_down(p, w):
+    return [hit(r["metric"].get("instance", "").rsplit(":", 1)[0], r["metric"].get("host", ""),
+                f"{r['metric'].get('host', '')} isn't answering Prometheus")
+            for r in prom('up{job="node"} == 0')]
+
+
+@check("infra_disk_full", "Infrastructure", "Disk almost full",
+       "A server's filesystem is fuller than the threshold.", 60, needs="prometheus",
+       threshold=("int", "% used", 90))
+def infra_disk_full(p, w):
+    ips = node_hosts()
+    rows = prom(f'100 * (1 - node_filesystem_avail_bytes{{{FS}}} / node_filesystem_size_bytes{{{FS}}}) >= {int(p["threshold"])}')
+    return [hit(ips.get(m.get("host", ""), m.get("host", "")), f"{m.get('host', '')}|{m.get('mountpoint', '')}",
+                f"{m.get('host', '')} {m.get('mountpoint', '')} is {float(r['value'][1]):.0f}% full",
+                value=float(r["value"][1])) for r in rows for m in [r["metric"]]]
+
+
+@check("infra_service_failed", "Infrastructure", "Service failed",
+       "A systemd service on a server is in the failed state.", 50, needs="prometheus")
+def infra_service_failed(p, w):
+    ips = node_hosts()
+    return [hit(ips.get(m.get("host", ""), m.get("host", "")), f"{m.get('host', '')}|{m.get('name', '')}",
+                f"{m.get('name', '')} failed on {m.get('host', '')}")
+            for r in prom('node_systemd_unit_state{state="failed"} == 1') for m in [r["metric"]]]
+
+
+@check("infra_container", "Infrastructure", "Container unhealthy / crash-looping",
+       "A Docker container reports unhealthy, was killed for running out of memory, or restarted more than "
+       "the threshold within the hour.", 50, needs="prometheus",
+       restarts=("int", "Restarts in one hour", 3), repeat_hours=("int", "Alert again after (hours)", 6))
+def infra_container(p, w):
+    ips = node_hosts()
+    out = []
+
+    def add(m, what, value=0):
+        h = m.get("host", "")
+        out.append(hit(ips.get(h, h), f"{h}|{m.get('container', '')}|{what.split()[0]}",
+                       f"container {m.get('container', '')} on {h} {what}", value=value))
+    for r in prom('docker_container_info{job="node",health="unhealthy"}'):
+        add(r["metric"], "is unhealthy")
+    for r in prom('docker_container_oom_killed{job="node"} == 1'):
+        add(r["metric"], "was killed: out of memory")
+    for r in prom(f'increase(docker_container_restart_count{{job="node"}}[1h]) >= {int(p["restarts"])}'):
+        add(r["metric"], f"restarted {float(r['value'][1]):.0f} times in an hour", float(r["value"][1]))
+    return out
+
+
+# ------------------------------------------------------------------ intrusion detection (Suricata)
+def ids_hits(w, low, high):
+    rows = query(f"""
+        SELECT if({in_nets('src', 'private')}, src, dst) AS host, if({in_nets('src', 'private')}, dst, src) AS rip,
+               sid, any(signature) AS sig, any(category) AS cat, count() AS n,
+               countIf(action IN ('blocked', 'drop')) AS blocked, any(dst_port) AS port, any(proto) AS proto
+        FROM netview.ids_alerts
+        WHERE {TIME.replace('TimeReceived', 't')} AND severity BETWEEN {{low:UInt8}} AND {{high:UInt8}}
+        GROUP BY host, rip, sid""", **w, low=low, high=high, private=PRIVATE)
+    return [hit(r["host"], f"{r['host']}|{r['sid']}",
+                f"{r['sig']} ({r['cat'] or 'no category'}) with {r['rip']} {r['proto']}/{r['port']} - "
+                f"{r['n']} time{'s' if r['n'] > 1 else ''}" + (", blocked" if r["blocked"] else ""),
+                remote=r["rip"], value=r["n"]) for r in rows]
+
+
+@check("ids_high", "Intrusion detection", "IDS alert (high)",
+       "Suricata on the firewall matched a severity 1 signature - exploits, malware command traffic, attacks "
+       "on a service (SQL injection, XSS...).", 85, needs="ids", ntopng="Suricata / IDS alerts")
+def ids_high(p, w):
+    return ids_hits(w, 1, 1)
+
+
+@check("ids_medium", "Intrusion detection", "IDS alert (medium)",
+       "Suricata on the firewall matched a severity 2 signature - suspicious traffic, policy violations, "
+       "known-bad software.", 50, needs="ids")
+def ids_medium(p, w):
+    return ids_hits(w, 2, 2)
+
+
+@check("ids_low", "Intrusion detection", "IDS alert (low)",
+       "Suricata on the firewall matched a severity 3 or lower signature - mostly informational. Off by "
+       "default.", 15, enabled=False, needs="ids")
+def ids_low(p, w):
+    return ids_hits(w, 3, 255)
+
+
+# Health, not security: a full disk doesn't make a device dangerous.
+NOT_SECURITY = ("Infrastructure", "Network devices")
+
+
 @check("dangerous_host", "Score", "Dangerous device",
-       "A device's alerts add up to the threshold within an hour - several things wrong at once.", 100,
+       "A device's alerts add up to the threshold within an hour - several things wrong at once. The "
+       "Infrastructure and Network devices checks (health, not security) don't count.", 100,
        needs="alerts", ntopng="Dangerous Host",
        threshold=("int", "Score in one hour", 150), repeat_hours=("int", "Alert again after (hours)", 1))
 def dangerous_host(p, w):
     rows = query(f"""
         SELECT host, sum(score) AS total, uniq(check_id) AS checks, groupUniqArray(check_id) AS ids
-        FROM netview.alerts WHERE t > now() - INTERVAL 1 HOUR AND check_id != 'dangerous_host'
-          AND NOT {in_nets('host', 'ign')}
-        GROUP BY host HAVING total >= {{threshold:UInt32}}""", threshold=p["threshold"], ign=nets_of("ignore"))
+        FROM netview.alerts WHERE t > now() - INTERVAL 1 HOUR AND check_id NOT IN {{not_security:Array(String)}}
+          AND NOT {in_nets('host', 'ign')} AND {NOT_OWN}
+        GROUP BY host HAVING total >= {{threshold:UInt32}}""", threshold=p["threshold"], ign=nets_of("ignore"),
+                 not_security=[i for i, c in CHECKS.items() if c["group"] in NOT_SECURITY or i == "dangerous_host"],
+                 **NOT_OWN_PARAMS())
     return [hit(r["host"], r["host"], f"score {r['total']} in the last hour from {r['checks']} checks: "
                 + ", ".join(CHECKS[i]["title"] for i in r["ids"] if i in CHECKS), value=r["total"]) for r in rows]
 
@@ -933,7 +1478,36 @@ def available(c):
         return "needs the DNS collector"
     if c["needs"] == "feeds" and not status["feeds_loaded"]:
         return "threat lists not loaded yet"
+    if c["needs"] == "prometheus" and not PROM_URL:
+        return "needs Prometheus (monitoring.yml)"
+    if c["needs"] == "ids" and not ids.status["enabled"]:
+        return "needs Suricata on the firewall and sl_ids: true (the sentrylens playbook)"
+    if c["needs"] in NEEDS_DATA and not has_data(c["needs"]):
+        return NEEDS_DATA[c["needs"]][1]
     return ""
+
+
+# Checks fed by the collectors: nothing to look at until a collector sends it.
+NEEDS_DATA = {
+    "arp": ("SELECT (SELECT count() FROM netview.asset_obs WHERE mac != '' AND t > now() - INTERVAL 1 DAY)"
+            " + (SELECT count() FROM netview.snmp_arp WHERE t > now() - INTERVAL 1 DAY) AS n",
+            "needs a collector (Assets > Collectors) on the network"),
+    "services": ("SELECT count() AS n FROM netview.asset_services WHERE t > now() - INTERVAL 2 DAY",
+                 "needs a collector 2.4.0 or newer (Assets > Collectors)"),
+    "snmp": ("SELECT count() AS n FROM netview.snmp_devices", "needs network devices read over SNMP (Assets > SNMP)"),
+}
+_has = {}  # needs -> (checked at, has data)
+
+
+def has_data(needs):
+    t, ok = _has.get(needs, (0, False))
+    if time.time() - t > 600:
+        try:
+            ok = query(NEEDS_DATA[needs][0])[0]["n"] > 0
+        except (RuntimeError, requests.RequestException, IndexError):
+            ok = False  # its tables aren't there yet
+        _has[needs] = (time.time(), ok)
+    return ok
 
 
 def run_once():
@@ -953,6 +1527,9 @@ def run_once():
         except Exception as e:  # one check failing doesn't stop the others
             errors[cid] = str(e)[:300]
             continue
+        if c["group"] not in HEALTH:
+            own = [ipaddress.ip_network(n) for n in own_nets()]
+            hits = [h for h in hits if not (mine(h["host"], own) or mine(h["remote"], own))]
         repeat = s["params"].get("repeat_hours", 6) * 3600
         rows = []
         for h in hits:
@@ -1041,7 +1618,7 @@ def list_checks():
             "feeds": [{"id": f, "label": lbl, "count": status["feeds"].get(f, 0)} for f, (lbl, _, _) in FEEDS.items()],
             "categories": [{"key": k, "label": lbl, "group": g} for k, (lbl, g) in categories.CATS.items()],
             "checks": [_check_json(cid, saved, counts) for cid in CHECKS],
-            "lists": {kind: entries(kind, saved) for kind in LISTS},
+            "lists": {kind: entries(kind, saved) for kind in LISTS}, "own": own_nets(),
             "status": {k: v for k, v in status.items() if k != "errors"} | {"every": RUN_EVERY, "window": WINDOW}}
 
 
@@ -1177,9 +1754,10 @@ def list_alerts(range: str = "24h", check_id: str = "", host: str = "", min_scor
         except ValueError:
             raise HTTPException(400, "not an IP address")
     p = {"since": int(time.time()) - RANGES[range], "check": check_id, "host": host, "min": max(0, min_score),
-         "ign": nets_of("ignore")}
+         "ign": nets_of("ignore")} | NOT_OWN_PARAMS()
     where = ("t >= toDateTime({since:UInt32}) AND score >= {min:UInt32}"
-             " AND ({check:String} = '' OR check_id = {check:String}) AND ({host:String} = '' OR host = {host:String})")
+             " AND ({check:String} = '' OR check_id = {check:String}) AND ({host:String} = '' OR host = {host:String})"
+             " AND " + NOT_OWN)
     ign = in_nets("host", "ign")
     rows = query(f"""SELECT toUInt32(t) AS t, check_id, score, host, remote, detail, value, {ign} AS ignored
         FROM netview.alerts WHERE {where} {"" if ignored else f"AND NOT {ign}"}

@@ -392,7 +392,8 @@ function countryDetail(d) {
 // ---------------------------------------------------------------- checks
 const asText = v => Array.isArray(v) ? v.join(", ") : v;
 const HINT = {ips: "Addresses or ranges, comma-separated (192.168.3.4, 10.0.0.0/8)", ports: "Ports, comma-separated",
-              countries: "Two-letter country codes, comma-separated", categories: "Category keys, comma-separated", feeds: "List ids, comma-separated"};
+              countries: "Two-letter country codes, comma-separated", categories: "Category keys, comma-separated", feeds: "List ids, comma-separated",
+              versions: "Product/minimum version, comma-separated (nginx/1.20, OpenSSH/8.0)"};
 function paramInput(c, p, dis) {
   const id = `p-${c.id}-${p.key}`;
   let input;
@@ -419,7 +420,8 @@ function checksTab() {
         : `<div class="muted small">Empty.</div>`}</div>
       ${isAdmin() ? `<form class="addrow" data-addlist="${kind}"><input type="text" name="net" placeholder="192.168.3.4 or 10.0.0.0/8" aria-label="Address or range" required>
         <input type="text" name="note" placeholder="Note (optional)" aria-label="Note"><button class="btn">Add</button></form><div class="small" data-listmsg="${kind}"></div>` : ""}</div>`;
-  const intro = `<div class="filterbar" style="align-items:stretch">${listCard("ignore")}${listCard("blacklist")}</div>
+  const own = (c.own || []).length ? `<div class="muted small">Sentry Lens's own addresses (its server and collectors: sweeps, SNMP polls, DNS lookups) - never alerted on by the traffic checks: ${c.own.map(n => `<code>${esc(n)}</code>`).join(", ")}</div>` : "";
+  const intro = `<div class="filterbar" style="align-items:stretch">${listCard("ignore")}${listCard("blacklist")}</div>${own}
     <div class="filterbar">${isAdmin() ? `<button class="btn primary" id="runNow" title="Run every enabled check now, not in the next 5 minutes">Run checks now</button><span id="runMsg" class="small"></span>`
       : `<span class="muted small">Only admins change checks and lists.</span>`}</div>`;
   const groups = c.groups.map(g => {

@@ -11,6 +11,9 @@ ever the one in use.
 Settings come from the environment (the playbook passes them, no_log):
     OPN_URL, OPN_USER, OPN_PASS        firewall web UI + root login
     NETVIEW_NEED_KEY                   1 to (re)create the API key
+    NETVIEW_IDS                        1: also Services: Intrusion Detection (ids.py reads
+                                       Suricata's alerts - OPNsense has no read-only
+                                       privilege for them, so it can change IDS settings too)
 """
 import json
 import os
@@ -23,6 +26,8 @@ API_USER = "netview"
 # Status: DNS Overview = api/unbound/overview* (dns.py),
 # Reporting: Traffic = api/diagnostics/traffic/* (live.py) - both read-only.
 API_PRIVS = ["page-status-dnsoverview", "page-status-trafficgraph"]
+if os.environ.get("NETVIEW_IDS") == "1":
+    API_PRIVS.append("page-services-ids")  # api/ids/service/queryAlerts (ids.py)
 
 
 def main():

@@ -73,6 +73,16 @@ DDL = [
     "ALTER TABLE netview.collectors ADD COLUMN IF NOT EXISTS schedule String DEFAULT ''",
     "ALTER TABLE netview.collectors ADD COLUMN IF NOT EXISTS subnet_state String DEFAULT ''",
     "ALTER TABLE netview.collectors ADD COLUMN IF NOT EXISTS sweep_now String DEFAULT ''",
+    # How it can update itself (2.5.0+: systemd, task, restart - see UPDATERS), and the
+    # version an admin asked it to update to (Update on the page), until it runs it.
+    "ALTER TABLE netview.collectors ADD COLUMN IF NOT EXISTS updater String DEFAULT ''",
+    "ALTER TABLE netview.collectors ADD COLUMN IF NOT EXISTS update_to String DEFAULT ''",
+    # What the devices' open ports said in a sweep (collector 2.4.0+, services.go) - the posture checks'.
+    """CREATE TABLE IF NOT EXISTS netview.asset_services (
+        t DateTime, collector String, ip String, mac String, port UInt16, kind LowCardinality(String),
+        banner String, tls Array(String), cert_subject String, cert_issuer String, cert_not_after DateTime,
+        self_signed UInt8, smb1 UInt8
+    ) ENGINE = MergeTree PARTITION BY toYYYYMMDD(t) ORDER BY (ip, port, t) TTL t + INTERVAL 30 DAY""",
 ]
 _ready = [False]
 
@@ -237,7 +247,29 @@ def public(c):
         "created": _ts(c["created"]), "last_seen": _ts(c["last_seen"]), "last_scan": _ts(c["last_scan"]), "online": bool(online),
         "creds_ok": bool(c.get("key_enc")), "rotating": bool(c.get("pending_hash")),
         "can_rotate": can_rotate(c.get("version", "")), "can_schedule": can_rotate(c.get("version", ""), SCHEDULE_FROM),
-        "schedule": schedule(c), "subnet_state": _json(c, "subnet_state"), "sweep_now": sweep_now(c)}
+        "schedule": schedule(c), "subnet_state": _json(c, "subnet_state"), "sweep_now": sweep_now(c),
+        "updater": UPDATERS.get(c.get("updater", ""), ""), "can_update": c.get("updater", "") in UPDATERS,
+        "outdated": older(c.get("version", ""), latest()), "update_to": c.get("update_to", "")}
+
+
+# How a collector updates itself (it runs unprivileged and can't replace its
+# own program): it asks what installed it, which downloads the new one from
+# Sentry Lens, checks it against SHA256SUMS and restarts it.
+UPDATERS = {"systemd": "Linux service (its updater unit)", "task": "Windows service (its updater task)",
+            "restart": "Docker (fetches the collector at each start)"}
+
+
+def latest():
+    import dist  # here: a module of the app
+    return dist.version()
+
+
+def older(version, than):
+    """version is older than `than` (both x.y.z; an unknown one counts as older)."""
+    try:
+        return bool(than) and tuple(int(x) for x in version.split(".")[:3]) < tuple(int(x) for x in than.split(".")[:3])
+    except ValueError:
+        return bool(than)
 
 
 # Collectors before 2.1.0 switch to a rotated key without keeping it (Linux
@@ -323,6 +355,16 @@ async def change_collector(request: Request, cid: str):
         key = "slc_" + secrets.token_urlsafe(32)
         save_collector(c | {"pending_hash": _hash(key), "pending_enc": auth._fernet.encrypt(key.encode()).decode()})
         return {"ok": True, "rotating": True}
+    if "update" in b:
+        # Updated at its next contact: it asks its updater for the version Sentry
+        # Lens hands out (collector 2.5.0+; an older one needs its install line once).
+        if b["update"] and c.get("updater", "") not in UPDATERS:
+            raise HTTPException(400, "this collector can't update itself yet (before 2.5.0): run its install line "
+                                     "once more - from then on, Update does it")
+        if b["update"] and not older(c.get("version", ""), latest()):
+            raise HTTPException(400, f"it already runs {latest()}")
+        save_collector(c | {"update_to": latest() if b["update"] else ""})
+        return {"ok": True, "update_to": latest() if b["update"] else ""}
     if b.get("regenerate_key"):
         # Replacement (a lost or leaked key): the old one stops working now; the
         # collector needs the new one - its install line, run again.
@@ -390,12 +432,15 @@ def _collector(request):
 
 
 @router.get("/api/collector/config")
-def collector_config(request: Request, version: str = ""):
-    """What a collector sweeps, and how often - also its heartbeat, and how a
-    rotated key reaches it (encrypted with the key it used to ask)."""
+def collector_config(request: Request, version: str = "", updater: str = ""):
+    """What a collector sweeps, and how often - also its heartbeat, how a
+    rotated key reaches it (encrypted with the key it used to ask), and an
+    update asked for (2.5.0+: it says how it can update itself, updater)."""
     c = _collector(request)
-    c |= {"last_seen": time.time(), "version": version[:40],
+    c |= {"last_seen": time.time(), "version": version[:40], "updater": updater if updater in UPDATERS else "",
           "address": (request.headers.get("x-forwarded-for") or (request.client.host if request.client else ""))[:60]}
+    if c.get("update_to") and not older(version, c["update_to"]):
+        c["update_to"] = ""  # done
     save_collector(c)
     import snmp  # here: it imports this module
     creds, n = snmp.for_collector(c)
@@ -407,6 +452,8 @@ def collector_config(request: Request, version: str = ""):
     if now_:
         out["sweep_now"] = {"id": now_["id"], "subnets": now_.get("subnets", [])}
     out["snmp_profiles"] = snmp.PROFILES  # what to read beyond the basics (snmp.py)
+    if c.get("update_to") and c["updater"]:
+        out["update"] = c["update_to"]
     if c.get("pending_enc") and can_rotate(version):  # an older one would lose it (ROTATE_FROM)
         new = auth._fernet.decrypt(c["pending_enc"].encode())
         out["new_key"] = snmp.collector_fernet(_key(request)).encrypt(new).decode()
@@ -419,7 +466,8 @@ MAC = re.compile(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}")
 @router.post("/api/collector/results")
 async def collector_results(request: Request):
     """One sweep: {scan, started, finished, hosts: [{ip, mac, vendor, hostname,
-    netbios, ports, rtt_ms, method}]} - kept as sightings, merged into assets."""
+    netbios, ports, rtt_ms, method, services}]} - kept as sightings, merged into
+    assets; what the ports said (2.4.0+) into asset_services."""
     c = _collector(request)
     b = await request.json()
     hosts = b.get("hosts") or []
@@ -427,7 +475,7 @@ async def collector_results(request: Request):
         raise HTTPException(400, "hosts: a list")
     now = int(time.time())
     scan = str(b.get("scan", ""))[:40]
-    obs = []
+    obs, svcs = [], []
     for h in hosts:
         try:
             ip = str(ipaddress.ip_address(str(h.get("ip", ""))))
@@ -440,7 +488,9 @@ async def collector_results(request: Request):
                     "vendor": (str(h.get("vendor") or "") or vendor_for(mac))[:80], "hostname": str(h.get("hostname") or "")[:200],
                     "netbios": str(h.get("netbios") or "")[:60], "ports": ports,
                     "rtt_ms": float(h.get("rtt_ms") or 0), "method": str(h.get("method") or "")[:20]})
+        svcs += services_of(h.get("services"), now, c["id"], ip, mac)
     insert("asset_obs", obs)
+    insert("asset_services", svcs)
     merge(obs, c["id"], now)
     # Which subnets this sweep covered (2.3.0+; before: all of them) - and the sweep asked for, done.
     swept = [s for s in (b.get("subnets") or c["subnets"]) if s in c["subnets"]]
@@ -454,6 +504,32 @@ async def collector_results(request: Request):
         c["sweep_now"] = ""
     save_collector(c)
     return {"ok": True, "hosts": len(obs)}
+
+
+SERVICE_KINDS = {"tls", "ssh", "http", "smb", "ftp", "telnet"}
+TLS_VERSIONS = {"1.0", "1.1", "1.2", "1.3"}
+
+
+def services_of(raw, now, cid, ip, mac):
+    """A host's services as the collector sent them, checked and trimmed."""
+    out = []
+    for s in (raw if isinstance(raw, list) else [])[:50]:
+        if not isinstance(s, dict) or s.get("kind") not in SERVICE_KINDS:
+            continue
+        try:
+            port, not_after = int(s.get("port", 0)), int(s.get("cert_not_after") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 0 < port < 65536:
+            continue
+        out.append({"t": now, "collector": cid, "ip": ip, "mac": mac, "port": port, "kind": s["kind"],
+                    "banner": str(s.get("banner") or "")[:200],
+                    "tls": [v for v in (s.get("tls") or []) if v in TLS_VERSIONS],
+                    "cert_subject": str(s.get("cert_subject") or "")[:300],
+                    "cert_issuer": str(s.get("cert_issuer") or "")[:300],
+                    "cert_not_after": min(max(not_after, 0), 4294967295),
+                    "self_signed": int(bool(s.get("self_signed"))), "smb1": int(bool(s.get("smb1")))})
+    return out
 
 
 def merge(obs, cid, now, passive=False):

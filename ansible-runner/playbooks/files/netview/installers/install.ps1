@@ -8,7 +8,9 @@
 # service under LocalService (no administrator rights: Windows' own ARP and
 # ping calls need none, no Npcap). Its key goes in
 # ProgramData\SentryLens\collector.conf, readable by SYSTEM, administrators
-# and the service only. Running it again updates the collector in place.
+# and the service only. Running it again updates the collector in place; so
+# does Update on the Collectors page, through the "SentryLens collector
+# update" task it installs (update.ps1, run as SYSTEM).
 #
 # Options: -Key slc_...   the collector's key (Sentry Lens > Assets > Collectors)
 #          -Url URL       Sentry Lens's address (default: where this script came from)
@@ -32,7 +34,10 @@ $data = Join-Path $env:ProgramData "SentryLens"
 $exe = Join-Path $dir "sentry-collector.exe"
 $conf = Join-Path $data "collector.conf"
 
+$task = "SentryLens collector update"
+
 if ($Uninstall) {
+    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
     if (Test-Path $exe) { & $exe uninstall }
     Remove-Item -Recurse -Force $dir, $data -ErrorAction SilentlyContinue
     Write-Host "Sentry Lens collector removed."
@@ -87,6 +92,54 @@ $verify = if ($Insecure) { "0" } else { "1" }
 Set-Content -Path $conf -Encoding ASCII -Value "SENTRY_URL=$Url`r`nSENTRY_KEY=$Key`r`nSENTRY_TLS_VERIFY=$verify"
 # Only SYSTEM, administrators and the service (LocalService: it also writes its log there).
 icacls $data /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" | Out-Null
+
+# The updater (Update on the Collectors page): the service, unprivileged, drops
+# a file in ProgramData\SentryLens; this task (SYSTEM, every 5 minutes) then
+# fetches the collector from Sentry Lens itself, checks it, replaces it.
+$updater = Join-Path $dir "update.ps1"
+Set-Content -Path $updater -Encoding UTF8 -Value @'
+# Sentry Lens collector - updater, installed by install.ps1 and run by the
+# "SentryLens collector update" task (SYSTEM). Does something only when the
+# collector asked (Update on the Collectors page) - and uses nothing from the
+# request: it downloads the collector from the Sentry Lens in collector.conf,
+# checks it against SHA256SUMS, replaces it and restarts the service.
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+$data = Join-Path $env:ProgramData "SentryLens"
+$req = Join-Path $data "update.request"
+if (-not (Test-Path $req)) { return }
+Remove-Item -Force $req
+$log = Join-Path $data "collector.log"
+function Say($m) { Add-Content -Path $log -Value ("{0} update: {1}" -f (Get-Date -Format "yyyy/MM/dd HH:mm:ss"), $m) }
+$exe = Join-Path $PSScriptRoot "sentry-collector.exe"
+$tmp = Join-Path $PSScriptRoot "sentry-collector.new"
+try {
+    $conf = @{}
+    Get-Content (Join-Path $data "collector.conf") | ForEach-Object {
+        if ($_ -match '^\s*([A-Z_]+)\s*=\s*(.*)$') { $conf[$Matches[1]] = $Matches[2].Trim() } }
+    $url = $conf["SENTRY_URL"].TrimEnd("/")
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    if ($conf["SENTRY_TLS_VERIFY"] -eq "0") { [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } }
+    $file = "sentry-collector-windows-amd64.exe"
+    Invoke-WebRequest -UseBasicParsing -Uri "$url/collector/download/$file" -OutFile $tmp
+    $sums = [Text.Encoding]::ASCII.GetString((Invoke-WebRequest -UseBasicParsing -Uri "$url/collector/download/SHA256SUMS").RawContentStream.ToArray())
+    $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($file) + "\s*$" } | Select-Object -First 1) -split "\s+" | Select-Object -First 1
+    if (-not $want -or $want.ToLower() -ne (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()) {
+        throw "the download doesn't match its checksum" }
+    Stop-Service SentryLensCollector
+    Move-Item -Force $tmp $exe
+    Start-Service SentryLensCollector
+    Say "updated to $((& $exe version) -replace 'sentry-collector ', '')"
+} catch {
+    Say "failed: $($_.Exception.Message)"
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    Start-Service SentryLensCollector -ErrorAction SilentlyContinue
+}
+'@
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$updater`""
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 
 & $exe install --config $conf
 Start-Sleep -Seconds 3

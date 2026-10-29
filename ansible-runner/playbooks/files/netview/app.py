@@ -46,6 +46,7 @@ import creds
 import dist
 import dns
 import dockerops
+import ids
 import infra
 import kuma
 import live
@@ -68,6 +69,7 @@ STACK = 7  # series in a breakdown chart before the rest folds into "other"
 @asynccontextmanager
 async def lifespan(_app):
     dns.start()
+    ids.start()
     live.start()
     categories.start()
     checks.start(name_of)
