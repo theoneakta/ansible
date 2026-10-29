@@ -31,6 +31,8 @@
     # Docker hosts running cAdvisor (cadvisor.yml, port 9338) - the containers.
     prometheus_cadvisor_hosts: "{{ site_docker_hosts }}"
     prometheus_cadvisor_port: 9338
+    # flowd's metrics (flowd_stack.yml), by container name on akvorado_default.
+    prometheus_flowd_targets: ["flowd-flowd-1:8080"]
     # Display names (node_exporter also reports each host's own name).
     prometheus_names: "{{ site_names | default({}) }}"
     # A role per host, for grouping in Sentry Lens.
@@ -118,6 +120,12 @@
               file_sd_configs: [{files: ["/etc/prometheus/node_targets.json"]}]
             - job_name: cadvisor
               file_sd_configs: [{files: ["/etc/prometheus/cadvisor_targets.json"]}]
+          {% if prometheus_flowd_targets | length %}
+            # flowd (flowd_stack.yml), on the same Docker network: datagrams, decode
+            # errors, rows written and waiting, forwarding.
+            - job_name: flowd
+              static_configs: [{targets: {{ prometheus_flowd_targets | to_json }}}]
+          {% endif %}
       register: prom_config
 
     - name: node_exporter targets (re-read by Prometheus by itself)

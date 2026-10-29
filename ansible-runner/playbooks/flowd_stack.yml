@@ -1,0 +1,240 @@
+---
+# flowd - Sentry Lens's own flow collector (files/flowd, from the SentryLens
+# repo's flowd/), on the Akvorado host, in FRONT of Akvorado for the trial:
+#   exporters -> UDP 2055/4739/6343 -> flowd -> ClickHouse flowd.flows
+#                                        \-> every datagram, unchanged and with the
+#                                            exporter's own address -> akvorado-inlet
+# so both collectors store the same traffic, to compare. Akvorado's inlet
+# gives up the host ports (akvorado_stack.yml: akvorado_flows_via_flowd).
+#
+# Run (the order matters - flowd takes the ports Akvorado gives up):
+#   ansible-playbook playbooks/flowd_stack.yml -e flowd_start=false   # build only
+#   ansible-playbook playbooks/akvorado_stack.yml                     # inlet off the host ports
+#   ansible-playbook playbooks/flowd_stack.yml                        # start
+# Undo: flowd_state=absent here, then akvorado_flows_via_flowd: false and akvorado_stack.yml.
+
+- name: flowd
+  hosts: "{{ akvorado_host | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    flowd_dir: /opt/flowd
+    flowd_start: true
+    flowd_state: present
+    # The same site settings as akvorado_stack.yml, so both enrich alike.
+    akvorado_exporter_names: "{{ site_names | default({}) }}"
+    akvorado_exporters: "{{ groups['linux'] | default([]) + site_hypervisors | default([]) }}"
+    flowd_settings:
+      listen: {netflow: ":2055", ipfix: ":4739", sflow: ":6343", metrics: ":8080"}
+      clickhouse: {url: "http://clickhouse:8123", database: flowd, table: flows, manage_schema: true, ttl_days: 7}
+      default_sampling_rate: 1   # softflowd exports every flow and doesn't say so
+      drop_unknown_exporters: true
+      geoip: {country: /geoip/country.mmdb, asn: /geoip/asn.mmdb}
+      networks: "{{ site_networks }}"
+      # The trial: every datagram also to Akvorado's inlet, with the exporter's address.
+      forward: {host: akvorado-akvorado-inlet-1, preserve_source: true}
+
+  tasks:
+    - name: Remove flowd
+      when: flowd_state == 'absent'
+      block:
+        - name: Stop it
+          ansible.builtin.command: docker compose down
+          args:
+            chdir: "{{ flowd_dir }}"
+            removes: "{{ flowd_dir }}/docker-compose.yml"
+        - name: The hourly comparison
+          ansible.builtin.systemd_service:
+            name: flowd-compare.timer
+            enabled: false
+            state: stopped
+          failed_when: false
+        - name: Its folder and units
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["{{ flowd_dir }}", /etc/systemd/system/flowd-compare.service, /etc/systemd/system/flowd-compare.timer]
+        - name: Done
+          ansible.builtin.meta: end_play
+
+    - name: Folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: ["{{ flowd_dir }}", "{{ flowd_dir }}/src"]
+
+    - name: Source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/flowd/{{ item }}"
+        dest: "{{ flowd_dir }}/src/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [Dockerfile, go.mod, go.sum, main.go, decode.go, enrich.go, sink.go, pcap.go, forward.go]
+      register: flowd_src
+
+    - name: Settings (exporters, interfaces, networks - as Akvorado's outlet.yaml)
+      ansible.builtin.copy:
+        dest: "{{ flowd_dir }}/flowd.json"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% set ex = {} %}
+          {% for ip in akvorado_exporters %}
+          {%   set _ = ex.update({ip: {'name': akvorado_exporter_names[ip] | default(ip),
+                 'default': {'name': 'softflowd', 'description': 'Traffic seen by softflowd', 'speed': 1000}}}) %}
+          {% endfor %}
+          {% if site_firewall | default('') %}
+          {%   set ifs = {} %}
+          {%   for intf in site_firewall_interfaces | dict2items %}
+          {%     set _ = ifs.update({intf.value.ifindex | string: {'name': intf.key, 'description': intf.value.description,
+                   'speed': intf.value.speed | default(1000)}}) %}
+          {%   endfor %}
+          {%   set _ = ex.update({site_firewall: {'name': site_firewall_name,
+                 'default': {'name': 'other', 'description': 'Unknown interface', 'speed': 1000}, 'interfaces': ifs}}) %}
+          {% endif %}
+          {{ flowd_settings | combine({'exporters': ex}) | to_nice_json }}
+      register: flowd_conf
+
+    - name: Compose file
+      ansible.builtin.copy:
+        dest: "{{ flowd_dir }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (flowd_stack.yml) - changes are overwritten.
+          name: flowd
+          services:
+            flowd:
+              build: ./src
+              image: flowd:local
+              restart: unless-stopped
+              # Root in the container with one capability only: NET_RAW, to pass the
+              # datagrams on with the exporters' addresses (the trial's forwarding).
+              user: "0:0"
+              cap_drop: [ALL]
+              cap_add: [NET_RAW]
+              read_only: true
+              security_opt: ["no-new-privileges:true"]
+              ports:
+                - "2055:2055/udp"
+                - "4739:4739/udp"
+                - "6343:6343/udp"
+              volumes:
+                - ./flowd.json:/etc/flowd/flowd.json:ro
+                - geoip:/geoip:ro
+              networks: [akvorado]
+              logging:
+                driver: json-file
+                options: {max-size: 10m, max-file: "3"}
+          networks:
+            akvorado: {external: true, name: akvorado_default}
+          volumes:
+            # Akvorado's ipinfo files, kept fresh by its geoip container.
+            geoip: {external: true, name: akvorado_akvorado-geoip}
+      register: flowd_compose
+
+    - name: Build
+      ansible.builtin.command: docker compose build
+      args:
+        chdir: "{{ flowd_dir }}"
+      when: flowd_src is changed
+      changed_when: true
+
+    - name: Start
+      ansible.builtin.command: docker compose up -d --force-recreate
+      args:
+        chdir: "{{ flowd_dir }}"
+      when: flowd_start | bool and (flowd_src is changed or flowd_conf is changed or flowd_compose is changed)
+      changed_when: true
+
+    - name: Make sure it runs
+      ansible.builtin.command: docker compose up -d
+      args:
+        chdir: "{{ flowd_dir }}"
+      when: flowd_start | bool
+      register: flowd_up
+      changed_when: "'Started' in flowd_up.stderr or 'Created' in flowd_up.stderr"
+
+    # ------------------------------------------------ the trial's comparison
+    # Every hour, the hour before: flows, bytes, packets per exporter in
+    # Akvorado's table and flowd's, and the minutes whose counts differ -
+    # kept in flowd.compare for the whole trial.
+    - name: Comparison script
+      ansible.builtin.copy:
+        dest: "{{ flowd_dir }}/compare.sh"
+        owner: root
+        group: root
+        mode: "0750"
+        content: |
+          #!/bin/sh
+          # Managed by ansible-runner (flowd_stack.yml): flowd vs Akvorado, the last full hour.
+          set -eu
+          H=$(( $(date +%s) / 3600 * 3600 - 3600 ))
+          W="TimeReceived >= toDateTime($H) AND TimeReceived < toDateTime($H + 3600)"
+          CH="docker exec akvorado-clickhouse-1 clickhouse-client"
+          $CH -q "CREATE TABLE IF NOT EXISTS flowd.compare (
+              hour DateTime, exporter String, akv_flows UInt64, flowd_flows UInt64, akv_bytes UInt64, flowd_bytes UInt64,
+              akv_packets UInt64, flowd_packets UInt64, minutes_differ UInt32, checked DateTime
+            ) ENGINE = ReplacingMergeTree(checked) ORDER BY (hour, exporter)"
+          $CH -q "INSERT INTO flowd.compare
+            SELECT toDateTime($H), e, a_n, f_n, a_b, f_b, a_p, f_p, d, now() FROM
+              (SELECT ExporterName e, count() a_n, sum(Bytes) a_b, sum(Packets) a_p FROM default.flows WHERE $W GROUP BY e) a
+              FULL JOIN (SELECT ExporterName e, count() f_n, sum(Bytes) f_b, sum(Packets) f_p FROM flowd.flows WHERE $W GROUP BY e) f USING e
+              LEFT JOIN (SELECT e, countIf(an != fn) d FROM
+                  (SELECT toStartOfMinute(TimeReceived) m, ExporterName e, count() an FROM default.flows WHERE $W GROUP BY m, e) x
+                  FULL JOIN (SELECT toStartOfMinute(TimeReceived) m, ExporterName e, count() fn FROM flowd.flows WHERE $W GROUP BY m, e) y
+                  USING (m, e) GROUP BY e) m USING e"
+
+    - name: Comparison every hour
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - name: flowd-compare.service
+          content: |
+            # Managed by ansible-runner (flowd_stack.yml)
+            [Unit]
+            Description=flowd vs Akvorado, the last hour
+            [Service]
+            Type=oneshot
+            ExecStart={{ flowd_dir }}/compare.sh
+        - name: flowd-compare.timer
+          content: |
+            # Managed by ansible-runner (flowd_stack.yml)
+            [Unit]
+            Description=flowd vs Akvorado, every hour
+            [Timer]
+            OnCalendar=*-*-* *:05:00
+            Persistent=true
+            [Install]
+            WantedBy=timers.target
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Start the hourly comparison
+      ansible.builtin.systemd_service:
+        name: flowd-compare.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Its log
+      ansible.builtin.command: docker compose logs --tail 12 flowd
+      args:
+        chdir: "{{ flowd_dir }}"
+      when: flowd_start | bool
+      register: flowd_log
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ flowd_log.stdout_lines | default(['built - start it with flowd_start=true']) }}"

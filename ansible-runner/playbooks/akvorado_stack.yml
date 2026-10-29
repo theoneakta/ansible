@@ -63,6 +63,10 @@
     clickhouse_ram_ratio: 0.4
     akvorado_kafka_heap: 512m
 
+    # flowd (flowd_stack.yml) in front: it takes UDP 2055/4739/6343 and passes
+    # every datagram on to the inlet, which then only listens inside Docker.
+    akvorado_flows_via_flowd: true
+
   pre_tasks:
     # Same login handling as linux_software.yml.
     - name: Use the group default login for hosts without their own
@@ -324,7 +328,11 @@
             redis: {logging: *logging}
             geoip: {logging: *logging}
             akvorado-orchestrator: {logging: *logging}
-            akvorado-inlet: {logging: *logging}
+            akvorado-inlet:
+              logging: *logging
+          {% if akvorado_flows_via_flowd | bool %}
+              ports: !reset []
+          {% endif %}
             akvorado-outlet: {logging: *logging}
       register: local_compose
 
