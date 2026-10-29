@@ -346,7 +346,8 @@ async function countriesTab() {
         <span class="${leaks.length ? "err" : "ok"}">${leaks.length ? `Got through from ${leaks.map(r => esc(ccName(r.cc))).join(", ")}` : "Nothing got through from the block list"} in this window</span>
       </div>
       <p class="muted small" style="margin-top:0">Got through = a conversation where anything came back from the country's side. Blocked / no answer = the device tried and nothing came back: the firewall rejected it (countries on the block list) or the other side didn't answer.
-      ${d.capped ? " Flows are kept 7 days: this shows the last 7." : ""} Click a country for its devices and addresses.</p>
+      ${d.capped ? " Flows are kept 7 days: this shows the last 7." : ""} Click a country for its devices and addresses.
+      Countries: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP</a> (CC BY 4.0).</p>
       ${rows.length ? `<div class="tbl"><table>
       <thead><tr><th>Country</th><th>Status</th><th class="n">Got through</th><th class="n">Flows</th><th class="n">Addresses</th><th class="n">Devices</th>
         <th class="n">Blocked / no answer</th><th class="n">Addresses</th><th class="n">Devices</th><th>Last</th><th></th></tr></thead><tbody>

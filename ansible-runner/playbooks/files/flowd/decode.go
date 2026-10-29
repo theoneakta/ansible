@@ -83,6 +83,46 @@ type exporterState struct {
 	mu        sync.Mutex
 	templates netflow.NetFlowTemplateSystem
 	prod      producer.ProducerInterface
+	next      map[seqKey]uint32 // the sequence number expected next
+}
+
+// seqKey: one sequence - per version and source ID / observation domain.
+type seqKey struct {
+	ver    uint16
+	domain uint32
+}
+
+// checkSeq: v9 numbers its export packets, IPFIX the data records sent before
+// each message - a jump counts what never reached flowd (lost on the network,
+// or by the kernel before flowd read it): lost_datagrams (v9), lost_records
+// (IPFIX). A step back or a huge jump is the exporter restarting: not counted.
+// records < 0: an IPFIX message flowd couldn't decode - the count starts over.
+func (st *exporterState) checkSeq(stats *Stats, exp netip.Addr, ver uint16, domain, seq uint32, records int) {
+	k := seqKey{ver, domain}
+	if next, ok := st.next[k]; ok && seq != next {
+		if gap := seq - next; gap < 100_000 { // a step back wraps around: huge
+			stats.add(exp, map[uint16]string{9: "lost_datagrams", 10: "lost_records"}[ver], int(gap))
+		}
+	}
+	switch {
+	case ver == 9:
+		st.next[k] = seq + 1
+	case records >= 0:
+		st.next[k] = seq + uint32(records)
+	default:
+		delete(st.next, k)
+	}
+}
+
+// dataRecords: the flow records in a v9 / IPFIX message (not templates or options).
+func dataRecords(sets []any) int {
+	n := 0
+	for _, s := range sets {
+		if ds, ok := s.(netflow.DataFlowSet); ok {
+			n += len(ds.Records)
+		}
+	}
+	return n
 }
 
 func newDecoder(enr *Enricher, stats *Stats) *Decoder {
@@ -103,7 +143,7 @@ func (d *Decoder) exporterState(a netip.Addr) (*exporterState, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &exporterState{templates: netflow.CreateTemplateSystem(), prod: p}
+	s := &exporterState{templates: netflow.CreateTemplateSystem(), prod: p, next: map[seqKey]uint32{}}
 	d.state[a] = s
 	return s, nil
 }
@@ -131,18 +171,36 @@ func (d *Decoder) Decode(kind string, payload []byte, src netip.AddrPort, t time
 		if len(payload) < 2 {
 			return nil, errors.New("short datagram")
 		}
-		switch binary.BigEndian.Uint16(payload) {
+		ver := binary.BigEndian.Uint16(payload)
+		switch ver {
 		case 9, 10:
+			// The header's sequence number and source ID / domain, read here so
+			// that a datagram goflow2 can't decode still counts.
+			var seq, domain uint32
+			if ver == 9 && len(payload) >= 20 {
+				seq, domain = binary.BigEndian.Uint32(payload[12:16]), binary.BigEndian.Uint32(payload[16:20])
+			} else if ver == 10 && len(payload) >= 16 {
+				seq, domain = binary.BigEndian.Uint32(payload[8:12]), binary.BigEndian.Uint32(payload[12:16])
+			} else {
+				return nil, errors.New("short datagram")
+			}
 			var v9 netflow.NFv9Packet
 			var ipfix netflow.IPFIXPacket
 			if err := netflow.DecodeMessageVersion(buf, st.templates, &v9, &ipfix); err != nil {
+				st.checkSeq(d.stats, from, ver, domain, seq, -1)
 				return nil, err
 			}
-			if binary.BigEndian.Uint16(payload) == 9 {
-				oneCounter(v9.FlowSets)
+			sets := ipfix.FlowSets
+			if ver == 9 {
+				sets = v9.FlowSets
+			}
+			n := dataRecords(sets)
+			st.checkSeq(d.stats, from, ver, domain, seq, n)
+			d.stats.add(from, "records", n)
+			oneCounter(sets)
+			if ver == 9 {
 				msg = &v9
 			} else {
-				oneCounter(ipfix.FlowSets)
 				msg = &ipfix
 			}
 		default: // v5 included: IPv4 only, fixed fields - every exporter in use does v9 or IPFIX

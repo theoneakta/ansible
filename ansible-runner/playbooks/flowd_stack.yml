@@ -5,6 +5,12 @@
 # It replaced Akvorado (akvorado_retire.yml): the same columns in the same
 # table, so Sentry Lens reads it unchanged. ClickHouse: clickhouse_stack.yml.
 #
+# Countries and AS numbers: DB-IP's free "Lite" files (CC BY 4.0 - credit:
+# "IP Geolocation by DB-IP", https://db-ip.com), fetched weekly by a timer
+# into the flowd-geoip volume - no account needed; flowd reloads them itself.
+# The kernel's UDP receive buffer cap is raised (sysctl) so flowd gets the 8 MB
+# it asks for - with the default (~200 KB) bursts overflow it.
+#
 # Run:  ./run.sh flowd_stack.yml
 # Remove: ./run.sh flowd_stack.yml -e flowd_state=absent
 
@@ -14,6 +20,8 @@
   gather_facts: false
   vars:
     flowd_dir: /opt/flowd
+    flowd_geoip_volume: flowd-geoip
+    flowd_rmem_max: 16777216   # bytes: the kernel doubles what's asked (8 MB) - this lets it
     flowd_start: true
     flowd_state: present
     # Exporter names and the softflowd exporters: the site's (inventory/group_vars/all/site.yml).
@@ -50,10 +58,21 @@
           args:
             chdir: "{{ flowd_dir }}"
             removes: "{{ flowd_dir }}/docker-compose.yml"
-        - name: Its folder
+        - name: The GeoIP timer
+          ansible.builtin.systemd_service:
+            name: flowd-geoip.timer
+            enabled: false
+            state: stopped
+          failed_when: false
+        - name: Its folder, units and settings
           ansible.builtin.file:
-            path: "{{ flowd_dir }}"
+            path: "{{ item }}"
             state: absent
+          loop: ["{{ flowd_dir }}", /etc/systemd/system/flowd-geoip.service, /etc/systemd/system/flowd-geoip.timer,
+                 /etc/sysctl.d/90-flowd.conf]
+        - name: The GeoIP volume
+          ansible.builtin.command: docker volume rm -f {{ flowd_geoip_volume }}
+          changed_when: true
         - name: Done
           ansible.builtin.meta: end_play
 
@@ -100,6 +119,119 @@
           {{ flowd_settings | combine({'exporters': ex}) | to_nice_json }}
       register: flowd_conf
 
+    # Not per network namespace: the host's cap is the container's too.
+    - name: UDP receive buffers flowd can have
+      ansible.posix.sysctl:
+        name: net.core.rmem_max
+        value: "{{ flowd_rmem_max }}"
+        sysctl_file: /etc/sysctl.d/90-flowd.conf
+        state: present
+        reload: true
+      register: flowd_sysctl
+
+    - name: GeoIP volume
+      ansible.builtin.shell: >-
+        docker volume inspect {{ flowd_geoip_volume }} >/dev/null 2>&1 && echo present ||
+        docker volume create {{ flowd_geoip_volume }}
+      register: geo_vol
+      changed_when: geo_vol.stdout != 'present'
+
+    - name: GeoIP fetcher (DB-IP Lite, monthly releases)
+      ansible.builtin.copy:
+        dest: "{{ flowd_dir }}/geoip.sh"
+        owner: root
+        group: root
+        mode: "0750"
+        content: |
+          #!/bin/sh
+          # Managed by ansible-runner (flowd_stack.yml): DB-IP's free country and ASN
+          # files (CC BY 4.0, "IP Geolocation by DB-IP") into flowd's GeoIP volume,
+          # and the AS names into ClickHouse.
+          # This month's, or last month's early in the month; a file is only
+          # replaced by a complete, newer one - flowd reloads it by itself.
+          set -eu
+          D=$(docker volume inspect -f '{% raw %}{{.Mountpoint}}{% endraw %}' {{ flowd_geoip_volume }})
+          for kind in country asn; do
+            for m in $(date -u +%Y-%m) $(date -u -d '-1 month' +%Y-%m); do
+              [ "$(cat "$D/.$kind.release" 2>/dev/null)" = "$m" ] && { echo "$kind: $m already"; break; }
+              if curl -fsS --max-time 600 -o "$D/.$kind.gz" "https://download.db-ip.com/free/dbip-$kind-lite-$m.mmdb.gz" \
+                 && gunzip -c "$D/.$kind.gz" > "$D/.$kind.mmdb" && [ "$(stat -c %s "$D/.$kind.mmdb")" -gt 1000000 ]; then
+                chmod 0644 "$D/.$kind.mmdb"
+                mv -f "$D/.$kind.mmdb" "$D/$kind.mmdb"
+                echo "$m" > "$D/.$kind.release"
+                echo "$kind: $m"
+                rm -f "$D/.$kind.gz"
+                break
+              fi
+              rm -f "$D/.$kind.gz" "$D/.$kind.mmdb"
+            done
+          done
+          # The AS names, from the same release's CSV, into ClickHouse: DB-IP's, and the
+          # ones already there for ASNs it doesn't list - swapped in at once.
+          m=$(cat "$D/.asn.release" 2>/dev/null || true)
+          if [ -n "$m" ] && [ "$(cat "$D/.asns.release" 2>/dev/null)" != "$m" ]; then
+            if curl -fsS --max-time 600 "https://download.db-ip.com/free/dbip-asn-lite-$m.csv.gz" | gunzip -c \
+               | awk -F, '{ n = $0; sub(/^[^,]*,[^,]*,[^,]*,/, "", n); gsub(/^"|"$/, "", n); print $3 "\t" n }' \
+               | sort -u -t "$(printf '\t')" -k1,1n | awk -F '\t' '!seen[$1]++' > "$D/.asns.tsv" \
+               && [ "$(wc -l < "$D/.asns.tsv")" -gt 10000 ]; then
+              CH="docker exec -i clickhouse clickhouse-client"
+              $CH -q "DROP TABLE IF EXISTS default.lookup_asns_new"
+              $CH -q "CREATE TABLE default.lookup_asns_new AS default.lookup_asns"
+              $CH -q "INSERT INTO default.lookup_asns_new FORMAT TSV" < "$D/.asns.tsv"
+              $CH -q "INSERT INTO default.lookup_asns_new SELECT asn, name FROM default.lookup_asns
+                      WHERE asn NOT IN (SELECT asn FROM default.lookup_asns_new)"
+              $CH -q "EXCHANGE TABLES default.lookup_asns AND default.lookup_asns_new"
+              $CH -q "DROP TABLE default.lookup_asns_new"
+              $CH -q "SYSTEM RELOAD DICTIONARY default.asns"
+              echo "$m" > "$D/.asns.release"
+              echo "AS names: $m ($(wc -l < "$D/.asns.tsv") from DB-IP)"
+            fi
+            rm -f "$D/.asns.tsv"
+          fi
+
+    - name: GeoIP every week
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - name: flowd-geoip.service
+          content: |
+            # Managed by ansible-runner (flowd_stack.yml)
+            [Unit]
+            Description=flowd: DB-IP Lite country and ASN files
+            After=network-online.target docker.service
+            [Service]
+            Type=oneshot
+            ExecStart={{ flowd_dir }}/geoip.sh
+        - name: flowd-geoip.timer
+          content: |
+            # Managed by ansible-runner (flowd_stack.yml)
+            [Unit]
+            Description=flowd: DB-IP Lite files, weekly
+            [Timer]
+            OnCalendar=Mon *-*-* 04:30:00
+            RandomizedDelaySec=1h
+            Persistent=true
+            [Install]
+            WantedBy=timers.target
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Start the weekly GeoIP update
+      ansible.builtin.systemd_service:
+        name: flowd-geoip.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: GeoIP files now (when missing or out of date)
+      ansible.builtin.command: "{{ flowd_dir }}/geoip.sh"
+      register: geo_fetch
+      changed_when: "'already' not in geo_fetch.stdout"
+
     - name: Compose file
       ansible.builtin.copy:
         dest: "{{ flowd_dir }}/docker-compose.yml"
@@ -132,8 +264,8 @@
           networks:
             sentrylens: {external: true, name: sentrylens}
           volumes:
-            # The ipinfo files (clickhouse_stack.yml keeps them fresh when given a token).
-            geoip: {external: true, name: akvorado_akvorado-geoip}
+            # DB-IP Lite files (geoip.sh, weekly).
+            geoip: {external: true, name: {{ flowd_geoip_volume }}}
       register: flowd_compose
 
     - name: Build
@@ -147,7 +279,7 @@
       ansible.builtin.command: docker compose up -d --force-recreate
       args:
         chdir: "{{ flowd_dir }}"
-      when: flowd_start | bool and (flowd_src is changed or flowd_conf is changed or flowd_compose is changed)
+      when: flowd_start | bool and (flowd_src is changed or flowd_conf is changed or flowd_compose is changed or flowd_sysctl is changed)
       changed_when: true
 
     - name: Make sure it runs

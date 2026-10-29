@@ -261,8 +261,8 @@
           ansible.builtin.command: "{{ ch }} -q 'DROP DATABASE IF EXISTS flowd'"
           changed_when: true
 
-        - name: Its volumes (not ClickHouse's or the GeoIP files - still used)
-          ansible.builtin.command: docker volume rm -f akvorado_akvorado-kafka akvorado_akvorado-console-db akvorado_akvorado-run
+        - name: Its volumes (not ClickHouse's - still used)
+          ansible.builtin.command: docker volume rm -f akvorado_akvorado-kafka akvorado_akvorado-console-db akvorado_akvorado-run akvorado_akvorado-geoip
           changed_when: true
 
         - name: Its folder

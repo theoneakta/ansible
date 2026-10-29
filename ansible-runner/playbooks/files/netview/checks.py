@@ -218,7 +218,7 @@ def hit(host, key, detail, remote="", value=0):
 IP = "replaceRegexpOne(IPv6NumToString({}), '^::ffff:', '')".format
 TIME = "TimeReceived BETWEEN toDateTime({start:UInt32}) AND toDateTime({end:UInt32})"
 DNS_TIME = "t BETWEEN toDateTime({dstart:UInt32}) AND toDateTime({end:UInt32})"
-# IPv4 only: the LAN's own IPv6 (ULA, fd..) isn't one of Akvorado's networks.
+# IPv4 only: the LAN's own IPv6 (ULA, fd..) isn't one of the site's networks.
 PRIVATE = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"]
 NOT_UNICAST = ["224.0.0.0/4", "255.255.255.255/32", "ff00::/8"]
 
@@ -1679,7 +1679,7 @@ async def change_check(request: Request, cid: str):
 
 
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-FLOWS_KEPT = 7 * 86400  # raw flows' TTL (akvorado_resolutions) - the countries view can't go further back
+FLOWS_KEPT = int(os.environ.get("FLOWS_DAYS", "7")) * 86400  # flows kept (sl_flows_days) - the countries view can't go further back
 
 # Internet conversations (device <-> address) read from the device's side,
 # with whether anything came back: the firewall's NetFlow sees a LAN packet

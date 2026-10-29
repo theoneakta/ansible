@@ -62,7 +62,7 @@ STATIC = pathlib.Path(__file__).parent / "static"
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
 STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200]  # chart buckets; flows come per minute
 MAX_POINTS = 200
-KEEP = 7 * 86400  # raw flows' TTL (akvorado_resolutions)
+KEEP = int(os.environ.get("FLOWS_DAYS", "7")) * 86400  # how long flowd's flows are kept (sl_flows_days)
 STACK = 7  # series in a breakdown chart before the rest folds into "other"
 
 

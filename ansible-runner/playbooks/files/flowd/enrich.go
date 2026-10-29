@@ -18,7 +18,7 @@ import (
 // Enrichment - what a flow record doesn't say: the exporter's and its
 // interfaces' names (static, like Akvorado's "static" metadata provider),
 // whether an interface faces the internet, the networks' names and roles,
-// and each address's country and AS (GeoIP files, ipinfo or MaxMind).
+// and each address's country and AS (GeoIP files: DB-IP Lite, MaxMind or ipinfo).
 
 type Iface struct {
 	Name        string `json:"name"`
@@ -166,9 +166,9 @@ func (e *Enricher) network(a netip.Addr) Network {
 }
 
 // ------------------------------------------------------------------ GeoIP
-// The country and AS of an address, from mmdb files: ipinfo's (country,
-// asn - what Akvorado's geoip container fetches) or MaxMind's (GeoLite2).
-// Reopened when a file changes (the updater replaces them every few days).
+// The country and AS of an address, from mmdb files: DB-IP Lite's or
+// MaxMind's (GeoLite2) - the same layout - or ipinfo's (country, asn).
+// Reopened when a file changes (flowd_stack.yml's timer replaces them weekly).
 
 type geoDBs struct {
 	mu                  sync.RWMutex

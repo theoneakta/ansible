@@ -5,10 +5,8 @@
 # "clickhouse" - flowd, Sentry Lens and Prometheus join that network.
 #   flowd -> ClickHouse <- Sentry Lens :8082
 #
-# Its data stays in the volume Akvorado made (akvorado_akvorado-clickhouse),
-# and the GeoIP files flowd reads in akvorado_akvorado-geoip - only the names
-# are left from Akvorado. With ipinfo_token set (a free ipinfo.io account),
-# a small container keeps those files fresh; without it they stay as they are.
+# Its data stays in the volume Akvorado made (akvorado_akvorado-clickhouse) -
+# only the name is left from Akvorado. GeoIP: flowd_stack.yml (DB-IP Lite).
 #
 # Run:  ./run.sh clickhouse_stack.yml                  (the monitoring host)
 #
@@ -27,8 +25,6 @@
     clickhouse_network: sentrylens
     clickhouse_subnet: 247.16.15.0/24   # IPv4 only: IPv6 is off on these hosts
     clickhouse_volume: akvorado_akvorado-clickhouse
-    geoip_volume: akvorado_akvorado-geoip
-    ipinfo_token: ""
 
   pre_tasks:
     # Same login handling as linux_software.yml.
@@ -156,35 +152,12 @@
               networks:
                 sentrylens: {aliases: [clickhouse]}
               logging: *logging
-          {% if ipinfo_token %}
-            geoip:
-              image: quay.io/akvorado/ipinfo-geoipupdate:latest
-              restart: unless-stopped
-              env_file: [./geoip.env]
-              volumes: [geoip:/data]
-              network_mode: bridge
-              logging: *logging
-          {% endif %}
           networks:
             sentrylens: {external: true, name: {{ clickhouse_network }}}
           volumes:
             # Made by the Akvorado stack - the data, kept.
             data: {external: true, name: {{ clickhouse_volume }}}
-            geoip: {external: true, name: {{ geoip_volume }}}
       register: clickhouse_compose
-
-    - name: ipinfo token (root only)
-      ansible.builtin.copy:
-        dest: "{{ clickhouse_dir }}/geoip.env"
-        owner: root
-        group: root
-        mode: "0600"
-        content: |
-          IPINFO_TOKEN={{ ipinfo_token }}
-          IPINFO_DATABASES=country asn
-          UPDATE_FREQUENCY=48h
-      no_log: true
-      when: ipinfo_token | length > 0
 
     - name: Start
       ansible.builtin.command: docker compose up -d --wait --pull missing --remove-orphans
@@ -203,7 +176,7 @@
     # ------------------------------------------------ host accounts (CIS 7.1.12)
     - name: Find volume files with no host owner
       ansible.builtin.shell: >-
-        find /var/lib/docker/volumes/{{ clickhouse_volume }} /var/lib/docker/volumes/{{ geoip_volume }}
+        find /var/lib/docker/volumes/{{ clickhouse_volume }}
         -xdev \( -nouser -o -nogroup \) -printf '%U %G\n' 2>/dev/null | sort -u
       register: unowned_ids
       changed_when: false
@@ -237,4 +210,3 @@
       ansible.builtin.debug:
         msg:
           - "ClickHouse {{ ch_version.stdout }} on the {{ clickhouse_network }} network (as clickhouse)"
-          - "{{ 'GeoIP files kept fresh by ipinfo' if ipinfo_token else 'GeoIP files kept as they are (set ipinfo_token to update them)' }}"
