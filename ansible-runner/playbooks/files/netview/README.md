@@ -1,15 +1,16 @@
 # Sentry Lens
 
-Traffic views for a home or small-office network, on top of [Akvorado](https://github.com/akvorado/akvorado)
-(NetFlow/IPFIX into ClickHouse): devices by name, what each one talks to, websites and their
-categories, internet vs LAN traffic, live throughput and flows, with drill-down from any chart.
+Traffic views for a home or small-office network, on top of flowd, its own flow
+collector (IPFIX, NetFlow v9 and sFlow into ClickHouse): devices by name, what each one talks to,
+websites and their categories, internet vs LAN traffic, live throughput and flows, with drill-down from any chart.
 
-Deployed by `playbooks/netview_stack.yml` as one container next to the Akvorado stack (it reads
-Akvorado's ClickHouse and keeps its own small `netview` database there).
+Deployed by `playbooks/netview_stack.yml` as one container next to ClickHouse (it reads
+the flows flowd stores there and keeps its own small `netview` database).
 
 ## Deploy
 
-1. Akvorado: `./run.sh akvorado_stack.yml` (collector host, flow exporters - see that playbook).
+1. ClickHouse and flowd: `./run.sh clickhouse_stack.yml`, then `./run.sh flowd_stack.yml` (collector
+   host, flow exporters - see that playbook).
 2. Sentry Lens: `./run.sh netview_stack.yml`, after setting at least `netview_public_url` (the
    address people will use - also the base of every sign-in redirect URL).
 3. Open the address. A fresh install shows **first-run setup**: create the administrator with the

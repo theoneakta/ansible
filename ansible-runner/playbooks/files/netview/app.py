@@ -1,11 +1,11 @@
-"""Sentry Lens (netview) - our own traffic views over Akvorado's ClickHouse.
+"""Sentry Lens (netview) - our own traffic views over the flows in ClickHouse.
 
-Akvorado collects and stores the flows (OPNsense + softflowd -> ClickHouse);
-this only reads them, with views Akvorado's console doesn't have: device names
-instead of IPs, drill-down from any number to who and what is behind it,
-websites, and what's new today.
+flowd collects and stores the flows (OPNsense + softflowd -> ClickHouse,
+flowd_stack.yml); this only reads them, with device names instead of IPs,
+drill-down from any number to who and what is behind it, websites, and what's
+new today.
 
-Which exporter answers what (see akvorado_stack.yml):
+Which exporter answers what (see flowd_stack.yml):
   internet traffic   the firewall only (WAN_EXPORTER) - it exports its LAN
                      interface, so each internet flow is counted once; the
                      side towards an external interface is the remote one.

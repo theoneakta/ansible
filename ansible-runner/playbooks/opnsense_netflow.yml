@@ -1,6 +1,6 @@
 ---
-# NetFlow export on the OPNsense firewall (Reporting > NetFlow) to Akvorado
-# (akvorado_stack.yml): the one place that sees every LAN device's traffic
+# NetFlow export on the OPNsense firewall (Reporting > NetFlow) to flowd
+# (flowd_stack.yml): the one place that sees every LAN device's traffic
 # to the internet, the VPN tunnels and Tailscale - Windows PCs, the NAS,
 # phones... included, nothing installed on them.
 #
@@ -13,8 +13,8 @@
 # the tailnet's traffic with the firewall itself, which never touches the
 # LAN; a LAN <-> tailnet flow is then reported by both interfaces, and
 # netview counts it once.
-# Akvorado names the firewall's interfaces from akvorado_stack.yml's
-# akvorado_static_exporters (by ifindex: ifconfig order, netstat -i "Link#").
+# flowd names the firewall's interfaces from site_firewall_interfaces
+# (by ifindex: ifconfig order, netstat -i "Link#").
 #
 # Through the OPNsense API (the root web login,
 # playbooks/files/opnsense_netflow_api.py). Re-running it is a no-op.

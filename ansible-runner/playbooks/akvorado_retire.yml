@@ -1,0 +1,284 @@
+---
+# Retire Akvorado: flowd (flowd_stack.yml) becomes the flow collector, and
+# ClickHouse keeps running on its own (clickhouse_stack.yml).
+#   before: exporters -> flowd -> akvorado-inlet -> Kafka -> outlet -> ClickHouse default.flows
+#                           \-> flowd.flows (the trial)
+#   after:  exporters -> flowd -> ClickHouse default.flows <- Sentry Lens
+#
+# 1. Akvorado's name lookups (AS names, protocols, ports) are copied into
+#    tables of their own, and its views feeding the summary tables dropped.
+# 2. Akvorado's containers stop and go (docker compose down - volumes kept);
+#    flowd, Sentry Lens and Prometheus move to the "sentrylens" network.
+# 3. ClickHouse starts again on its own, with the same data.
+# 4. flowd's table becomes default.flows (Akvorado's is kept as
+#    default.flows_akvorado), and its earlier days are copied in: Sentry Lens
+#    keeps its 7 days of history.
+# 5. flowd, Sentry Lens and Prometheus are redeployed on the new network.
+#
+# Flows are lost for the few seconds flowd is stopped while its table is renamed.
+# Run:  ./run.sh akvorado_retire.yml
+#
+# Then, once happy, the leftovers (Akvorado's old flows and summary tables,
+# its Kafka/console volumes, /opt/akvorado) - for good:
+#       ./run.sh akvorado_retire.yml -e akvorado_purge=true
+
+- name: Hand over from Akvorado
+  hosts: "{{ akvorado_host | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    akvorado_dir: /opt/akvorado
+    old_ch: docker exec akvorado-clickhouse-1 clickhouse-client
+    # Akvorado's dictionaries -> tables of their own (the columns of each).
+    lookups:
+      asns: "asn UInt32, name String"
+      protocols: "proto UInt8, name String, description String"
+      tcp: "port UInt16, name String"
+      udp: "port UInt16, name String"
+      icmp: "proto UInt8, type UInt8, code UInt8, name String"
+
+  pre_tasks:
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      check_mode: false
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+
+    - name: Is Akvorado's ClickHouse running?
+      ansible.builtin.command: docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' akvorado-clickhouse-1
+      register: old_running
+      changed_when: false
+      failed_when: false
+
+    - name: Is flowd running?
+      ansible.builtin.command: docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' flowd-flowd-1
+      register: flowd_running
+      changed_when: false
+      failed_when: flowd_running.stdout != 'true'
+
+  tasks:
+    - name: Hand over
+      when: old_running.stdout == 'true'
+      block:
+        - name: Name lookups into tables of their own
+          ansible.builtin.command:
+            argv: [docker, exec, akvorado-clickhouse-1, clickhouse-client, --multiquery, -q, "{{ sql }}"]
+          vars:
+            sql: |
+              CREATE TABLE IF NOT EXISTS default.lookup_{{ item.key }} ({{ item.value }})
+                ENGINE = MergeTree ORDER BY tuple();
+              INSERT INTO default.lookup_{{ item.key }}
+                SELECT * FROM default.{{ item.key }} WHERE (SELECT count() FROM default.lookup_{{ item.key }}) = 0;
+          loop: "{{ lookups | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          changed_when: true
+
+        - name: Akvorado's views (they feed its summary tables from default.flows)
+          ansible.builtin.command: >-
+            {{ old_ch }} -q "SELECT name FROM system.tables WHERE database = 'default' AND engine = 'MaterializedView'"
+          register: views
+          changed_when: false
+
+        - name: Drop them
+          ansible.builtin.command: "{{ old_ch }} -q 'DROP VIEW IF EXISTS default.`{{ item }}`'"
+          loop: "{{ views.stdout_lines }}"
+          changed_when: true
+
+    - name: The sentrylens network
+      ansible.builtin.shell: >-
+        docker network inspect sentrylens >/dev/null 2>&1 && echo present ||
+        docker network create --subnet 247.16.15.0/24 sentrylens
+      register: net
+      changed_when: net.stdout != 'present'
+
+    # Their playbooks put them there for good below; this keeps them going meanwhile
+    # (flowd holds its rows while ClickHouse restarts).
+    - name: flowd, Sentry Lens and Prometheus onto it
+      ansible.builtin.shell: |
+        set -u
+        for c in flowd-flowd-1:flowd netview-netview-1:netview prometheus-prometheus-1:prometheus; do
+          n=${c%%:*}; a=${c#*:}
+          docker inspect "$n" >/dev/null 2>&1 || continue
+          docker network connect --alias "$a" sentrylens "$n" 2>/dev/null && echo "$n joined"
+          docker network disconnect -f akvorado_default "$n" 2>/dev/null && echo "$n left akvorado_default"
+        done
+        exit 0
+      register: moved
+      changed_when: moved.stdout | length > 0
+
+    - name: Stop and remove Akvorado (volumes kept)
+      ansible.builtin.command: docker compose down --remove-orphans
+      args:
+        chdir: "{{ akvorado_dir }}"
+        removes: "{{ akvorado_dir }}/.env"
+      when: old_running.stdout == 'true' or akvorado_purge | default(false) | bool
+
+    - name: Check firewalld
+      ansible.builtin.command: systemctl is-active firewalld
+      register: firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Close Akvorado's console port
+      ansible.posix.firewalld:
+        port: 8081/tcp
+        permanent: true
+        immediate: true
+        state: disabled
+      when: firewalld_state.stdout == 'active'
+
+- name: ClickHouse on its own
+  ansible.builtin.import_playbook: clickhouse_stack.yml
+
+- name: flowd's table becomes the flows table
+  hosts: "{{ akvorado_host | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    ch: docker exec clickhouse clickhouse-client
+    lookups:
+      asns: {key: asn, layout: HASHED()}
+      protocols: {key: proto, layout: HASHED()}
+      tcp: {key: port, layout: HASHED()}
+      udp: {key: port, layout: HASHED()}
+      icmp: {key: "proto, type, code", layout: COMPLEX_KEY_HASHED()}
+  tasks:
+    - name: Where things stand
+      ansible.builtin.command: >-
+        {{ ch }} -q "SELECT
+          (SELECT count() FROM system.tables WHERE database = 'flowd' AND name = 'flows'),
+          (SELECT count() FROM system.tables WHERE database = 'default' AND name = 'flows_akvorado')
+          FORMAT TSV"
+      register: state
+      changed_when: false
+
+    - name: Rename (flowd stopped for it - it writes what it holds first)
+      when: state.stdout.split() == ['1', '0']
+      block:
+        - name: Stop flowd
+          ansible.builtin.command: docker compose stop
+          args:
+            chdir: /opt/flowd
+          changed_when: true
+
+        - name: Swap the tables
+          ansible.builtin.command: >-
+            {{ ch }} -q "RENAME TABLE default.flows TO default.flows_akvorado, flowd.flows TO default.flows"
+          changed_when: true
+
+    - name: The lookups read their own tables
+      ansible.builtin.command:
+        argv: [docker, exec, clickhouse, clickhouse-client, -q, "{{ sql }}"]
+      vars:
+        sql: >-
+          CREATE OR REPLACE DICTIONARY default.{{ item.key }}
+          ({{ lookup_cols[item.key] }})
+          PRIMARY KEY {{ item.value.key }}
+          SOURCE(CLICKHOUSE(DB 'default' TABLE 'lookup_{{ item.key }}'))
+          LIFETIME(MIN 0 MAX 3600) LAYOUT({{ item.value.layout }})
+        lookup_cols:
+          asns: "asn UInt32 INJECTIVE, name String"
+          protocols: "proto UInt8 INJECTIVE, name String, description String"
+          tcp: "port UInt16 INJECTIVE, name String"
+          udp: "port UInt16 INJECTIVE, name String"
+          icmp: "proto UInt8, type UInt8, code UInt8, name String"
+      loop: "{{ lookups | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      changed_when: true
+
+- name: flowd
+  ansible.builtin.import_playbook: flowd_stack.yml
+
+- name: Sentry Lens
+  ansible.builtin.import_playbook: netview_stack.yml
+
+- name: Prometheus
+  ansible.builtin.import_playbook: prometheus_stack.yml
+
+- name: History, and the leftovers
+  hosts: "{{ akvorado_host | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    ch: docker exec clickhouse clickhouse-client
+  tasks:
+    # Akvorado's rows from before flowd's first one, 6 hours at a time (ClickHouse
+    # has little memory) - once: skipped when they're already in.
+    - name: Copy the earlier days into the flows table
+      ansible.builtin.shell: |
+        set -eu
+        CH="{{ ch }}"
+        [ "$($CH -q "EXISTS TABLE default.flows_akvorado")" = 1 ] || exit 0
+        START=$($CH -q "SELECT toUInt32(min(TimeReceived)) FROM default.flows")
+        OLD=$($CH -q "SELECT toUInt32(min(TimeReceived)) FROM default.flows_akvorado")
+        [ "$OLD" -lt "$START" ] || exit 0
+        COLS=$($CH -q "SELECT arrayStringConcat(groupArray(name), ', ') FROM (SELECT name FROM system.columns
+          WHERE database = 'default' AND table = 'flows' AND default_kind NOT IN ('ALIAS', 'MATERIALIZED', 'EPHEMERAL')
+          AND name IN (SELECT name FROM system.columns WHERE database = 'default' AND table = 'flows_akvorado')
+          ORDER BY position)")
+        T=$OLD; N=0
+        while [ "$T" -lt "$START" ]; do
+          E=$(( T + 21600 )); [ "$E" -lt "$START" ] || E=$START
+          $CH -q "INSERT INTO default.flows ($COLS) SELECT $COLS FROM default.flows_akvorado
+            WHERE TimeReceived >= toDateTime($T) AND TimeReceived < toDateTime($E)
+            SETTINGS max_threads = 2, max_insert_threads = 1"
+          T=$E; N=$(( N + 1 ))
+        done
+        echo "copied $(date -u -d @$OLD +%F' '%R) to $(date -u -d @$START +%F' '%R) UTC in $N steps"
+      register: history
+      changed_when: history.stdout | length > 0
+
+    - name: Purge Akvorado's leftovers (akvorado_purge=true)
+      when: akvorado_purge | default(false) | bool
+      block:
+        - name: Its tables
+          ansible.builtin.command: >-
+            {{ ch }} -q "SELECT name FROM system.tables WHERE database = 'default'
+              AND (name = 'flows_akvorado' OR name = 'exporters' OR name LIKE 'flows\_%')"
+          register: old_tables
+          changed_when: false
+
+        - name: Drop them
+          ansible.builtin.command: "{{ ch }} -q 'DROP TABLE IF EXISTS default.`{{ item }}`'"
+          loop: "{{ old_tables.stdout_lines }}"
+          changed_when: true
+
+        - name: The trial's database (flowd.compare)
+          ansible.builtin.command: "{{ ch }} -q 'DROP DATABASE IF EXISTS flowd'"
+          changed_when: true
+
+        - name: Its volumes (not ClickHouse's or the GeoIP files - still used)
+          ansible.builtin.command: docker volume rm -f akvorado_akvorado-kafka akvorado_akvorado-console-db akvorado_akvorado-run
+          changed_when: true
+
+        - name: Its folder
+          ansible.builtin.file:
+            path: /opt/akvorado
+            state: absent
+
+    - name: Where the flows are now
+      ansible.builtin.command: >-
+        {{ ch }} -q "SELECT min(TimeReceived), max(TimeReceived), count() FROM default.flows FORMAT TSV"
+      register: flows
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "Flows (default.flows, written by flowd): {{ flows.stdout }}"
+          - "{{ history.stdout | default('') or 'History: already in' }}"
+          - "{{ 'Akvorado purged' if akvorado_purge | default(false) | bool else 'Akvorado gone; its old data kept - purge with -e akvorado_purge=true' }}"

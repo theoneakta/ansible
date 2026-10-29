@@ -1,7 +1,7 @@
 ---
-# Prometheus on the collector, next to Akvorado and Sentry Lens: scrapes the
+# Prometheus on the collector, next to ClickHouse and Sentry Lens: scrapes the
 # node_exporters (node_exporter.yml) and keeps the metrics prometheus_retention;
-# Sentry Lens's Infrastructure section reads them over the Akvorado Docker
+# Sentry Lens's Infrastructure section reads them over the sentrylens Docker
 # network (http://prometheus:9090) - nothing is published on the LAN (the UI
 # and API on 127.0.0.1:9090 only, for a look over SSH).
 #
@@ -12,7 +12,7 @@
 # host is a re-run of this playbook. CIS-friendly: read-only container, an
 # unprivileged UID, the data in one root-owned folder handed to that UID.
 #
-# Prerequisite: akvorado_stack.yml on the same host (its Docker network).
+# Prerequisite: clickhouse_stack.yml on the same host (its Docker network).
 # Run:  ./run.sh prometheus_stack.yml                  (192.168.3.150)
 
 - name: Prometheus
@@ -31,7 +31,7 @@
     # Docker hosts running cAdvisor (cadvisor.yml, port 9338) - the containers.
     prometheus_cadvisor_hosts: "{{ site_docker_hosts }}"
     prometheus_cadvisor_port: 9338
-    # flowd's metrics (flowd_stack.yml), by container name on akvorado_default.
+    # flowd's metrics (flowd_stack.yml), by container name on the sentrylens network.
     prometheus_flowd_targets: ["flowd-flowd-1:8080"]
     # Display names (node_exporter also reports each host's own name).
     prometheus_names: "{{ site_names | default({}) }}"
@@ -39,7 +39,7 @@
     prometheus_roles: "{{ dict(site_hypervisors | product(['hypervisor'])) }}"
 
   pre_tasks:
-    # Same login handling as akvorado_stack.yml.
+    # Same login handling as linux_software.yml.
     - name: Use the group default login for hosts without their own
       ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
       when: vault_win_user is not defined
@@ -62,17 +62,17 @@
       ansible.builtin.setup:
         gather_subset: [min, selinux]
 
-    - name: Check the Akvorado network is there
-      ansible.builtin.command: docker network inspect akvorado_default --format '{% raw %}{{.Name}}{% endraw %}'
+    - name: Check the sentrylens network is there
+      ansible.builtin.command: docker network inspect sentrylens --format '{% raw %}{{.Name}}{% endraw %}'
       check_mode: false
       changed_when: false
-      register: akv_net
+      register: sl_net
       failed_when: false
 
     - name: Stop if it isn't
       ansible.builtin.assert:
-        that: akv_net.rc == 0
-        fail_msg: "No akvorado_default Docker network - run akvorado_stack.yml on this host first."
+        that: sl_net.rc == 0
+        fail_msg: "No sentrylens Docker network - run clickhouse_stack.yml on this host first."
         quiet: true
 
   tasks:
@@ -179,14 +179,14 @@
               volumes:
                 - ./config:/etc/prometheus:ro
                 - ./data:/prometheus
-              networks: [akvorado]
+              networks: [sentrylens]
               logging:
                 driver: json-file
                 options: {max-size: 10m, max-file: "3"}
           networks:
-            akvorado:
+            sentrylens:
               external: true
-              name: akvorado_default
+              name: sentrylens
       register: prom_compose
 
     - name: Start (or update)

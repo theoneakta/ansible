@@ -31,7 +31,7 @@
     node_exporter_scraper: "{{ sentry_address | default(site_server_ip) }}"
 
   pre_tasks:
-    # Same login handling as linux_software.yml / akvorado_stack.yml.
+    # Same login handling as linux_software.yml.
     - name: Use the group default login for hosts without their own
       ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
       when: vault_win_user is not defined and 'ssh' not in group_names

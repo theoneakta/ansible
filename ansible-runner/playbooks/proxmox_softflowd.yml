@@ -1,7 +1,7 @@
 ---
 # softflowd on the Proxmox nodes: NetFlow for everything crossing each node's
 # LAN bridge - every VM on the node (VM-to-VM included) and its LAN traffic -
-# to Akvorado (akvorado_stack.yml), without installing anything in the VMs.
+# to flowd (flowd_stack.yml), without installing anything in the VMs.
 # The firewall (opnsense_netflow.yml) covers what is routed; this covers the
 # LAN-to-LAN traffic that never reaches it.
 #
