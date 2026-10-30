@@ -272,6 +272,19 @@
       register: session_file
       no_log: true
 
+    # The key the traffic sensor (sensor_stack.yml) posts its flows with - made once, kept.
+    - name: Sensor key (made once)
+      ansible.builtin.copy:
+        dest: "{{ netview_dir }}/sensor.env"
+        content: |
+          # Managed by ansible-runner (netview_stack.yml) - made once, kept; sensor_stack.yml reads it.
+          SENSOR_KEY={{ lookup('ansible.builtin.password', '/dev/null', length=48, chars=['ascii_letters', 'digits']) }}
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
     - name: Sign-in methods from the deployment (secrets - root only)
       ansible.builtin.copy:
         dest: "{{ netview_dir }}/auth.env"
@@ -359,7 +372,7 @@
               read_only: true
               ports:
                 - {{ netview_port }}:8000/tcp
-              env_file: [.env, session.env, auth.env, kuma.env, vault.env]
+              env_file: [.env, session.env, auth.env, kuma.env, vault.env, sensor.env]
               environment:
                 CLICKHOUSE_URL: http://clickhouse:8123
                 WAN_EXPORTER: {{ netview_wan_exporter }}

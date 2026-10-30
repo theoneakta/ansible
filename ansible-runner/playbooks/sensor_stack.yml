@@ -1,0 +1,233 @@
+---
+# The traffic sensor on the monitoring server: nfstream (nDPI) names each
+# flow's application from the traffic mirrored to it, and posts the flows to
+# Sentry Lens (Assets > Applications, and each device's detail).
+#
+#   each hypervisor's bridge --GRE (proxmox_mirror.yml)--> slm-<node> on this host --> sensor --> Sentry Lens
+#
+# Nothing is installed on the hypervisors or in the VMs: they copy what enters
+# their bridge into a GRE tunnel (tc, proxmox_mirror.yml); here each tunnel is
+# a plain interface the sensor listens on. A NIC on a switch's mirror port
+# works the same: sensor_extra_ifaces.
+# Its key: netview_stack.yml makes it ({{ netview_dir }}/sensor.env) - run that first.
+#
+# Run:  ./run.sh sensor_stack.yml
+#       ./run.sh sensor_stack.yml -e sensor_state=absent
+
+- name: Traffic sensor
+  hosts: "{{ sensor_host | default('monitoring') }}"
+  become: true
+  gather_facts: false
+  vars:
+    sensor_state: present
+    sensor_dir: /opt/sensor
+    netview_dir: /opt/netview
+    sensor_local: "{{ site_server_ip }}"
+    # The nodes that mirror to it (proxmox_mirror.yml): a tunnel for each.
+    sensor_sources: "{{ site_hypervisors }}"
+    sensor_extra_ifaces: []
+    sensor_url: "http://127.0.0.1:8082"
+    # One interface per source: slm-<last part of its address>.
+    sensor_tunnels: "{{ sensor_addrs | map('regex_replace', '^.*[.:]', 'slm-') | list }}"
+
+  tasks:
+    - name: The nodes' addresses
+      ansible.builtin.set_fact:
+        sensor_addrs: "{{ sensor_sources | map('extract', hostvars) | map(attribute='ansible_host', default='') | zip(sensor_sources) | map('select') | map('first') | list }}"
+
+    - name: Remove the sensor
+      when: sensor_state == 'absent'
+      block:
+        - name: Stop it
+          ansible.builtin.command: docker compose down --rmi local
+          args:
+            chdir: "{{ sensor_dir }}"
+            removes: "{{ sensor_dir }}/docker-compose.yml"
+        - name: Its tunnels
+          ansible.builtin.systemd_service:
+            name: sentrylens-gre.service
+            state: stopped
+            enabled: false
+          failed_when: false
+        - name: Its files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["{{ sensor_dir }}", /etc/systemd/system/sentrylens-gre.service, /usr/local/sbin/sentrylens-gre]
+        - name: Done
+          ansible.builtin.meta: end_host
+
+    - name: Its key (from Sentry Lens's deployment)
+      ansible.builtin.slurp:
+        src: "{{ netview_dir }}/sensor.env"
+      register: sensor_key_file
+      no_log: true
+
+    - name: Folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop: ["{{ sensor_dir }}", "{{ sensor_dir }}/src"]
+
+    # ---------------------------------------------------------------- the tunnels
+    - name: The tunnels' script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/sentrylens-gre
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Managed by ansible-runner (sensor_stack.yml): one GRE (gretap) interface per
+          # hypervisor that mirrors its bridge here - no address, the sensor only listens.
+          #   sentrylens-gre start | stop
+          set -u
+          TUNNELS="{% for s in sensor_addrs %}{{ sensor_tunnels[loop.index0] }}={{ s }} {% endfor %}"
+          for t in $TUNNELS; do
+            dev=${t%%=*}; remote=${t#*=}
+            case "${1:-start}" in
+              start)
+                [ -e "/sys/class/net/$dev" ] || ip link add "$dev" type gretap local {{ sensor_local }} remote "$remote" nopmtudisc
+                ip link set "$dev" mtu 1500 up ;;
+              stop) ip link del "$dev" 2>/dev/null ;;
+            esac
+          done
+          exit 0
+      register: gre_script
+
+    - name: Its unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/sentrylens-gre.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (sensor_stack.yml).
+          [Unit]
+          Description=Sentry Lens sensor: GRE tunnels the hypervisors mirror into
+          After=network-online.target
+          Wants=network-online.target
+          Before=docker.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/sbin/sentrylens-gre start
+          ExecStop=/usr/local/sbin/sentrylens-gre stop
+
+          [Install]
+          WantedBy=multi-user.target
+      register: gre_unit
+
+    - name: The tunnels up
+      ansible.builtin.systemd_service:
+        name: sentrylens-gre.service
+        enabled: true
+        state: "{{ 'restarted' if gre_script is changed or gre_unit is changed else 'started' }}"
+        daemon_reload: "{{ gre_unit is changed }}"
+
+    - name: Check firewalld
+      ansible.builtin.command: systemctl is-active firewalld
+      register: firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Let the mirrored traffic in (GRE, from those nodes only)
+      ansible.posix.firewalld:
+        rich_rule: "rule family=ipv4 source address={{ item }}/32 protocol value=gre accept"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ sensor_addrs }}"
+      when: firewalld_state.stdout == 'active'
+
+    # ---------------------------------------------------------------- the sensor
+    - name: Source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/sensor/{{ item }}"
+        dest: "{{ sensor_dir }}/src/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [Dockerfile, sensor.py]
+      register: sensor_src
+
+    - name: Settings (key - root only)
+      ansible.builtin.copy:
+        dest: "{{ sensor_dir }}/sensor.env"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # Managed by ansible-runner (sensor_stack.yml).
+          SENTRY_URL={{ sensor_url }}
+          {{ (sensor_key_file.content | b64decode) | regex_findall('(?m)^SENSOR_KEY=.*$') | first }}
+          SENSOR_IFACES={{ (sensor_tunnels + sensor_extra_ifaces) | join(',') }}
+          SENSOR_NAME={{ inventory_hostname }}
+      register: sensor_env
+      no_log: true
+
+    - name: Compose file
+      ansible.builtin.copy:
+        dest: "{{ sensor_dir }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by ansible-runner (sensor_stack.yml) - changes are overwritten.
+          name: sensor
+          services:
+            sensor:
+              build: ./src
+              image: sentrylens-sensor:local
+              restart: unless-stopped
+              init: true
+              # The host's interfaces (the tunnels); capture and promiscuous mode only.
+              network_mode: host
+              cap_drop: [ALL]
+              cap_add: [NET_RAW, NET_ADMIN]
+              read_only: true
+              tmpfs: [/tmp]
+              security_opt: ["no-new-privileges:true"]
+              env_file: [sensor.env]
+              mem_limit: 1g
+              cpus: 1.5
+              logging:
+                driver: json-file
+                options: {max-size: 10m, max-file: "3"}
+      register: sensor_compose
+
+    - name: Build
+      ansible.builtin.command: docker compose build
+      args:
+        chdir: "{{ sensor_dir }}"
+      when: sensor_src is changed
+      changed_when: true
+
+    - name: Start
+      ansible.builtin.command: docker compose up -d --force-recreate
+      args:
+        chdir: "{{ sensor_dir }}"
+      when: sensor_src is changed or sensor_env is changed or sensor_compose is changed
+      changed_when: true
+
+    - name: Make sure it runs
+      ansible.builtin.command: docker compose up -d
+      args:
+        chdir: "{{ sensor_dir }}"
+      register: sensor_up
+      changed_when: "'Started' in sensor_up.stderr or 'Created' in sensor_up.stderr"
+
+    - name: Its log
+      ansible.builtin.command: docker compose logs --tail 12 sensor
+      args:
+        chdir: "{{ sensor_dir }}"
+      register: sensor_log
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ sensor_log.stdout_lines + ['Tunnels: ' ~ (sensor_tunnels | join(', ')) ~ ' - mirror into them with proxmox_mirror.yml'] }}"

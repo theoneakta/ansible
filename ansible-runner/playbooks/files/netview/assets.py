@@ -452,6 +452,9 @@ def collector_config(request: Request, version: str = "", updater: str = ""):
     if now_:
         out["sweep_now"] = {"id": now_["id"], "subnets": now_.get("subnets", [])}
     out["snmp_profiles"] = snmp.PROFILES  # what to read beyond the basics (snmp.py)
+    if can_rotate(version, (2, 6, 0)):
+        import inventory  # here: it imports this module
+        out["forget_pins"] = inventory.forget_for(c["id"])  # Trust the new key (inventory.py)
     if c.get("update_to") and c["updater"]:
         out["update"] = c["update_to"]
     if c.get("pending_enc") and can_rotate(version):  # an older one would lose it (ROTATE_FROM)

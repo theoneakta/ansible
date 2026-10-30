@@ -87,6 +87,12 @@ type Credential struct {
 	AuthPass  string   `json:"auth_pass"`
 	PrivProto string   `json:"priv_proto"`
 	PrivPass  string   `json:"priv_pass"`
+	// SSH, WinRM, Proxmox (2.6.0+: inventory.go); User is their login too
+	Password   string `json:"password"`
+	PrivateKey string `json:"private_key"`
+	Secret     string `json:"secret"`
+	Port       int    `json:"port"`
+	HTTPS      bool   `json:"https"`
 }
 
 // fernetOpen opens a Fernet token Sentry Lens encrypted for this collector,
@@ -121,7 +127,7 @@ func fernetOpen(key, token string) ([]byte, error) {
 	return pt[:len(pt)-pad], nil
 }
 
-// decryptCredentials: the SNMP credentials Sentry Lens sent.
+// decryptCredentials: the credentials Sentry Lens sent (SNMP, and the read-only logins).
 func decryptCredentials(key, token string) []Credential {
 	if token == "" {
 		return nil

@@ -51,6 +51,8 @@ import infra
 import kuma
 import live
 import snmp
+import inventory
+import sensor
 
 CH_URL = os.environ.get("CLICKHOUSE_URL", "http://clickhouse:8123")
 NAMES_FILE = pathlib.Path(os.environ.get("NAMES_FILE", "/data/names.json"))
@@ -111,6 +113,8 @@ app.include_router(kuma.router)  # applications (Uptime Kuma): /apps, /api/apps
 app.include_router(infra.router)  # infrastructure (Prometheus): /infra, /api/infra
 app.include_router(assets.router)  # assets found by the collectors: /assets, /api/assets, /api/collector(s)
 app.include_router(snmp.router)  # SNMP readings and credentials: /api/snmp, /api/credentials, /api/collector/snmp|counters
+app.include_router(inventory.router)  # what the machines say over SSH / WinRM / Proxmox: /api/inventory, /api/collector/inventory
+app.include_router(sensor.router)  # the traffic sensor's flows, with their application (nDPI): /api/sensor/flows, /api/appflows
 app.include_router(dist.router)  # the collector's installers and binaries: /collector/...
 app.include_router(dockerops.router)  # Docker actions: /api/infra/docker-actions, /api/docker-agent/... (docker-agent on each host)
 

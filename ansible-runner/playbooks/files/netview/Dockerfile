@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir \
         "python-socketio[client]==5.*"
 
 WORKDIR /app
-COPY app.py auth.py dns.py live.py categories.py checks.py kuma.py infra.py assets.py snmp.py dist.py dockerops.py creds.py vault.py ids.py /app/
+COPY app.py auth.py dns.py live.py categories.py checks.py kuma.py infra.py assets.py snmp.py dist.py dockerops.py creds.py vault.py ids.py inventory.py sensor.py /app/
 COPY static /app/static
 COPY installers /app/installers
 COPY --from=collector /dist /app/collector-dist

@@ -1,10 +1,12 @@
 // Sentry Lens collector: sweeps its subnets, reads the devices that answer
-// SNMP, and posts what it finds to Sentry Lens - outgoing connections only.
+// SNMP, signs in to the machines it has a read-only login for (SSH, WinRM,
+// Proxmox), and posts what it finds to Sentry Lens - outgoing connections only.
 //
 //	every minute  GET  /api/collector/config     its subnets and their schedule, credentials (a heartbeat too)
 //	every sweep   POST /api/collector/results    the devices found
 //	              POST /api/collector/snmp       what the SNMP devices said
 //	every 5 min   POST /api/collector/counters   their interface counters
+//	hourly        POST /api/collector/inventory  what the machines with a read-only login say (inventory.go)
 //
 // One program for Linux, Windows and Docker, no dependencies: discovery with
 // what each OS offers (ARP through the kernel, ping, TCP), ports by TCP
@@ -35,10 +37,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const Version = "2.5.0"
+const Version = "2.6.0"
 
 type Config struct {
 	URL       string
@@ -59,6 +62,7 @@ type Remote struct {
 	Credentials   string   `json:"credentials"`
 	CredentialCnt int      `json:"credential_count"`
 	NewKey        string   `json:"new_key"`
+	ForgetPins    []string `json:"forget_pins"` // pins let go: Trust the new key (pins.go)
 	Update        string   `json:"update"` // the version to update to (Update on the page; update.go)
 	Profiles      []Profile `json:"snmp_profiles"` // what to read beyond the basics (snmp.go)
 	Schedule      []struct {
@@ -257,6 +261,10 @@ func loop(cfg Config, stop chan struct{}) {
 	how := updater(cfg)
 	var agentsMu sync.Mutex
 	agents := map[string]Credential{} // ip -> the credential it answered, from the last sweep
+	pins := loadPins(cfg.StateDir)
+	lastInventory := map[string]time.Time{} // "ip kind" -> when it was last read (inventory.go)
+	var inventoryMu sync.Mutex              // guards lastInventory
+	var inventoryRunning atomic.Bool        // one round at a time, beside the minute loop
 	for {
 		var r Remote
 		if err := client.get("/api/collector/config?version="+Version+"&updater="+how, &r); err != nil {
@@ -294,6 +302,18 @@ func loop(cfg Config, stop chan struct{}) {
 				}
 			}
 			creds := decryptCredentials(used, r.Credentials)
+			if len(r.ForgetPins) > 0 {
+				pins.forget(r.ForgetPins)
+				for _, id := range r.ForgetPins { // read again at the next sweep: "ssh 10.0.0.5:22" -> "10.0.0.5 ssh"
+					if kind, addr, ok := strings.Cut(id, " "); ok {
+						if host, _, err := net.SplitHostPort(addr); err == nil {
+							inventoryMu.Lock()
+							delete(lastInventory, host+" "+kind)
+							inventoryMu.Unlock()
+						}
+					}
+				}
+			}
 			if r.Profiles != nil {
 				setProfiles(r.Profiles)
 			}
@@ -348,6 +368,41 @@ func loop(cfg Config, stop chan struct{}) {
 					}
 					agents = next
 					agentsMu.Unlock()
+				}
+				// The machines it has a read-only login for, beside the minute loop (a round can take minutes).
+				if len(creds) > 0 && len(hosts) > 0 && inventoryRunning.CompareAndSwap(false, true) {
+					go func(hosts []*Host, creds []Credential) {
+						defer inventoryRunning.Store(false)
+						started := time.Now()
+						inventoryMu.Lock()
+						last := make(map[string]time.Time, len(lastInventory))
+						for k, v := range lastInventory {
+							last[k] = v
+						}
+						inventoryMu.Unlock()
+						readings := inventoryAll(hosts, creds, pins, last)
+						inventoryMu.Lock()
+						for k, v := range last {
+							if !v.Before(started) { // tried in this round (a pin let go meanwhile stays let go)
+								lastInventory[k] = v
+							}
+						}
+						inventoryMu.Unlock()
+						if len(readings) == 0 {
+							return
+						}
+						if err := client.post("/api/collector/inventory", map[string]any{"readings": readings}, nil); err != nil {
+							log.Printf("couldn't send the inventory: %v", err)
+						} else {
+							ok := 0
+							for _, r := range readings {
+								if r.OK {
+									ok++
+								}
+							}
+							log.Printf("inventory: %d of %d machines read (%s)", ok, len(readings), time.Since(started).Round(time.Second))
+						}
+					}(hosts, creds)
 				}
 			}
 			every := time.Duration(max(r.CountersMin, 1)) * time.Minute

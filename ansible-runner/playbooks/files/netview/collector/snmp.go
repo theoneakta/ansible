@@ -73,6 +73,9 @@ func snmpProbe(ips []string, creds []Credential) map[string]Credential {
 	var mu sync.Mutex
 	parallel(ips, 32, func(ip string) {
 		for _, c := range creds {
+			if c.Kind != "snmp_v2c" && c.Kind != "snmp_v3" {
+				continue // an SSH, WinRM or Proxmox login (inventory.go)
+			}
 			if !inScope(ip, c) {
 				continue
 			}

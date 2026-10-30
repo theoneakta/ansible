@@ -200,7 +200,7 @@
     <div class="kpis" id="kpis"></div>
   </div>
   <div class="card">
-    <div class="tabs" id="tabs"><button data-t="devices">Devices</button><button data-t="snmp">Network devices</button><button data-t="collectors">Collectors</button><button data-t="creds" id="tabCreds" hidden>Credentials</button></div>
+    <div class="tabs" id="tabs"><button data-t="devices">Devices</button><button data-t="snmp">Network devices</button><button data-t="systems">Systems</button><button data-t="collectors">Collectors</button><button data-t="creds" id="tabCreds" hidden>Credentials</button></div>
     <div id="body"></div>
   </div>
 </main>
@@ -254,7 +254,7 @@ function render() {
   document.getElementById("kpis").innerHTML = [[a.length, "devices"], [a.filter(x => x.online).length, "online"], [a.filter(x => x.new).length, "new in 24 h"],
     [`${cs.filter(c => c.online).length}/${cs.length}`, "collectors online"]].map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === S.tab));
-  ({devices, snmp: snmpTab, collectors: collectorsTab, creds: credsTab})[S.tab]();
+  ({devices, snmp: snmpTab, systems: systemsTab, collectors: collectorsTab, creds: credsTab})[S.tab]();
 }
 
 // ---------------- devices
@@ -303,6 +303,7 @@ function devices() {
   document.querySelectorAll("[data-vendor]").forEach(b => b.onclick = () => { S.vendor = S.vendor === b.dataset.vendor ? "" : b.dataset.vendor; devices(); });
   const rv = document.getElementById("rmVendor"); if (rv) rv.onclick = () => { S.vendor = ""; devices(); };
   wire();
+  if (S.openAsset) { const tr = document.querySelector(`tr[data-key="${CSS.escape(S.openAsset)}"]`); S.openAsset = ""; if (tr) { tr.click(); tr.scrollIntoView({block: "center"}); } }
 }
 function table(rows) {
   if (!rows.length) return `<div class="empty">No device matches.</div>`;
@@ -348,7 +349,8 @@ async function detail(key, box) {
       <section><h4>Latest sightings</h4><div class="tbl" style="max-height:15rem;overflow-y:auto"><table><thead><tr><th>When</th><th>Address</th><th>By</th><th class="n">Reply</th></tr></thead><tbody>
         ${d.history.slice(0, 40).map(h => `<tr><td class="nw">${when(h.t)}</td><td class="mono">${esc(h.ip)}</td><td class="small">${esc(h.collector)} (${esc(h.method)})</td><td class="n">${h.rtt_ms ? `${h.rtt_ms} ms` : "-"}</td></tr>`).join("")}
       </tbody></table></div></section>
-    </div>`;
+    </div><div class="sysbox" style="margin-top:1rem"></div>`;
+  systemsOf(key, box.querySelector(".sysbox"), false);
   api(`/api/snmp/where/${encodeURIComponent(key)}`).then(w => {
     const el = box.querySelector("#whereBox"); if (!el) return;
     el.innerHTML = (w.connected ? `Connected to <b>${esc(w.connected.device)}</b>, port <b>${esc(w.connected.port)}</b>${w.connected.alias ? ` (${esc(w.connected.alias)})` : ""}` : "")
@@ -364,6 +366,109 @@ async function detail(key, box) {
     catch (err) { box.querySelector("#tagmsg").innerHTML = `<span class="err">${esc(err.message)}</span>`; }
   };
   box.addEventListener("click", e => e.stopPropagation());
+}
+
+// ---------------- systems: what the machines say over SSH / WinRM / the Proxmox API (inventory.py)
+const VIA = {ssh: "SSH", winrm: "WinRM", proxmox: "Proxmox API"};
+const pct = (u, t) => t ? Math.round(100 * u / t) : 0;
+const meter = (label, used, total, title) => { const p = pct(used, total);
+  return `<div style="display:grid;grid-template-columns:minmax(5rem,10rem) 1fr 9rem;gap:.6rem;align-items:center;margin:.3rem 0"><span class="small" title="${esc(title || label)}">${esc(String(label).slice(0, 32))}</span>
+    <span style="height:.7rem;background:var(--surface2);border-radius:4px;overflow:hidden"><i style="display:block;height:100%;width:${p}%;background:${p > 90 ? "var(--fail)" : css("--s1")}"></i></span>
+    <span class="n small">${bytesOf(used)} / ${bytesOf(total)}</span></div>`; };
+function updatesCell(r) {
+  if (r.kind === "proxmox") return `<span class="muted small">${r.running_n ?? 0} of ${r.guests_n ?? 0} guests running</span>`;
+  if (!r.updates_known) return r.last_hotfix ? `<span class="small muted" title="Windows Update can't be asked without administrator rights">last update ${ago(r.last_hotfix)}</span>` : `<span class="muted small">-</span>`;
+  return (r.updates_n ? `<b>${r.updates_n}</b> pending${r.security_n ? ` <span class="sev high">${r.security_n} security</span>` : ""}` : `<span class="ok">up to date</span>`)
+    + (r.reboot ? ` <span class="sev medium">reboot</span>` : "");
+}
+function readState(r) {
+  return r.ok ? `<span class="st on"><i></i>read</span>` : `<span class="st off" title="${esc(r.error)}"><i style="background:var(--fail)"></i>${r.trust ? "key changed" : "failed"}</span>`;
+}
+async function systemsTab() {
+  const body = document.getElementById("body");
+  let d;
+  try { d = await api("/api/inventory"); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  if (!d.hosts.length) {
+    body.innerHTML = `<div class="empty">No machine read yet. The collectors (2.6.0 or newer) sign in with the SSH, WinRM and Proxmox logins ${isAdmin() ? `on the <a href="#" id="toCreds">Credentials</a> tab` : "an admin adds"} - read-only accounts - at their next sweep, then every hour.${d.logins ? ` ${d.logins} login(s) ready.` : ""}</div>`;
+    const t = document.getElementById("toCreds"); if (t) t.onclick = e => { e.preventDefault(); setTab("creds"); };
+    return;
+  }
+  body.innerHTML = `<p class="muted small" style="margin-top:0">The machines the collectors sign in to with read-only accounts - Linux over SSH, Windows by WMI over WinRM, Proxmox by its API - every hour. Click one for its disks, addresses, listening ports, updates and software.</p>
+    <div class="tbl"><table><thead><tr><th>State</th><th>Machine</th><th>Via</th><th>System</th><th>CPU / memory</th><th>Fullest disk</th><th class="n">Software</th><th>Updates</th><th>Read</th></tr></thead><tbody>
+    ${d.hosts.map(r => `<tr class="click" data-sys="${esc(r.key)}"><td>${readState(r)}</td>
+      <td><b>${esc(r.name || r.hostname || r.ip)}</b><div class="small muted mono">${esc(r.ip)}</div></td><td class="small">${VIA[r.kind]}</td>
+      <td>${esc(r.os || "-")}<div class="small muted">${esc(r.kind === "winrm" ? (r.build ? `build ${r.build}` : "") : r.kernel || "")}${r.virt ? ` · ${esc(r.virt)}` : ""}</div></td>
+      <td class="small">${r.cores ? `${r.cores} cores` : ""}${r.mem_total ? `<div class="muted">${bytesOf(r.mem_total - (r.mem_avail || 0))} / ${bytesOf(r.mem_total)}</div>` : ""}</td>
+      <td class="nw">${r.disk_max ? `<span class="${r.disk_max > 90 ? "err" : ""}">${Math.round(r.disk_max)} %</span>` : "-"}</td>
+      <td class="n">${r.packages_n ?? "-"}</td><td>${updatesCell(r)}</td>
+      <td class="nw" title="${esc(r.collector)}, ${r.took_s} s">${ago(r.ok ? r.t : r.last_ok)}${r.ok ? "" : `<div class="small err">${esc(r.error.slice(0, 60))}</div>`}</td></tr>`).join("")}
+    </tbody></table></div>`;
+  body.querySelectorAll("tr[data-sys]").forEach(tr => tr.onclick = () => {
+    const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains("exp");
+    body.querySelectorAll("tr.exp").forEach(x => x.remove()); body.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel"));
+    if (open) return;
+    tr.classList.add("sel");
+    const exp = document.createElement("tr"); exp.className = "exp";
+    exp.innerHTML = `<td colspan="${tr.cells.length}"><div class="expbox">Loading...</div></td>`;
+    tr.after(exp);
+    const box = exp.querySelector(".expbox");
+    box.addEventListener("click", e => e.stopPropagation());
+    systemsOf(tr.dataset.sys, box, true);
+  });
+}
+// What the machine said, into box (the asset's detail, or the Systems tab).
+async function systemsOf(key, box, standalone) {
+  let d;
+  try { d = await api(`/api/inventory/asset/${encodeURIComponent(key)}`); } catch (e) { box.innerHTML = standalone ? `<span class="err">${esc(e.message)}</span>` : ""; return; }
+  const g = d.guest;
+  const guest = g ? `<div class="small" style="margin:.2rem 0 .6rem">Proxmox ${g.type === "lxc" ? "container" : "VM"} <b>${esc(g.vmid)} ${esc(g.name)}</b> on node <b>${esc(g.node)}</b> (${esc(g.host_name || g.host)}) - ${esc(g.status)}, ${g.cores} cores, ${bytesOf(g.mem_total)} memory, ${bytesOf(g.disk_total)} disk</div>` : "";
+  if (!d.readings.length) { box.innerHTML = standalone ? `<div class="muted small">Not read yet.</div>${guest}` : guest; return; }
+  box.innerHTML = guest + d.readings.map(r => readingHtml(r)).join("");
+  box.querySelectorAll("[data-trust]").forEach(b => b.onclick = async () => {
+    const [ip, kind] = b.dataset.trust.split(" ");
+    if (!confirm(`Trust the key ${ip} shows now? Do it only if the machine was reinstalled (or its SSH keys / certificate replaced) - otherwise something else answers in its place.`)) return;
+    try { const res = await post("/api/inventory/trust", {ip, kind}); b.replaceWith(Object.assign(document.createElement("span"), {className: "ok", textContent: res.note})); }
+    catch (e) { b.insertAdjacentHTML("afterend", ` <span class="err">${esc(e.message)}</span>`); }
+  });
+  box.querySelectorAll("tr[data-goto]").forEach(tr => tr.onclick = () => { S.openAsset = tr.dataset.goto; setTab("devices"); });
+  box.querySelectorAll("input[data-pkgs]").forEach(inp => inp.oninput = () => {
+    const q = inp.value.toLowerCase();
+    inp.nextElementSibling.querySelectorAll("tr").forEach(tr => tr.hidden = q && !tr.textContent.toLowerCase().includes(q));
+  });
+}
+function readingHtml(r) {
+  const s = r.summary || {}, out = [];
+  const head = `<div class="small" style="margin:.2rem 0 .7rem"><b>${VIA[r.kind]}</b> · ${esc(r.collector)} · ${r.ok ? `read ${ago(r.t)} (${r.took_s} s)` : `<span class="err">${esc(r.error)}</span> · tried ${ago(r.t)}${r.last_ok ? `, shown: the reading of ${when(r.last_ok)}` : ""}`}
+    ${r.trust && isAdmin() ? ` <button class="btn" data-trust="${esc(r.ip)} ${esc(r.kind)}">Trust the new key</button>` : ""}</div>`;
+  if (!Object.keys(s).length) return head;
+  out.push(`<section><h4>System</h4>${kv([["Name", esc(s.hostname)], ["System", esc(s.os)], ["Version", esc([s.version, s.build && `build ${s.build}`].filter(Boolean).join(", "))],
+    ["Kernel", esc(s.kernel)], ["Architecture", esc(s.arch)], ["Cluster", esc(s.cluster)], ["Domain", esc(s.domain)], ["Virtual", esc(s.virt)],
+    ["Hardware", esc([s.vendor, s.model].filter(Boolean).join(" "))], ["Serial", esc(s.serial)], ["CPU", esc(s.cpu)], ["Cores", s.cores || null],
+    ["Up for", s.uptime_s ? dur(s.uptime_s) : null], ["Installed", s.installed ? when(s.installed) : null]])}
+    ${s.mem_total ? `<div style="margin-top:.5rem">${meter("Memory", s.mem_total - (s.mem_avail || 0), s.mem_total)}${s.swap_total ? meter("Swap", s.swap_total - s.swap_free, s.swap_total) : ""}</div>` : ""}</section>`);
+  if ((s.disks || []).length) out.push(`<section><h4>Disks</h4>${s.disks.slice(0, 16).map(x => meter(x.mount, x.used, x.size, `${x.mount} ${x.fs} ${x.dev}`)).join("")}</section>`);
+  if ((s.addrs || []).length || (s.listening || []).length) out.push(`<section><h4>Addresses</h4>${(s.addrs || []).slice(0, 20).map(a => `<div class="small"><span class="mono">${esc(a.addr)}</span> <span class="muted">${esc(a.if)}</span></div>`).join("")}
+    ${(s.listening || []).length ? `<h4 style="margin-top:.9rem">Listening</h4>${[...new Set(s.listening.filter(l => !/^(127\.|::1$)/.test(l.addr)).map(l => l.port))].slice(0, 60).map(port).join("")}
+      ${s.listening.some(l => /^(127\.|::1$)/.test(l.addr)) ? `<div class="small muted" style="margin-top:.3rem">and ${new Set(s.listening.filter(l => /^(127\.|::1$)/.test(l.addr)).map(l => l.port)).size} on this machine only</div>` : ""}` : ""}</section>`);
+  if (s.updates_known) out.push(`<section><h4>Updates</h4>${s.updates_n ? `<div class="small" style="margin-bottom:.4rem">${s.updates_n} pending${s.security_n ? `, <b>${s.security_n} security</b>` : ""}${s.reboot ? ` - <b>a reboot is pending</b>` : ""}</div>
+      <div class="tbl" style="max-height:14rem;overflow-y:auto"><table><tbody>${s.updates.slice().sort((a, b) => b.security - a.security).map(u => `<tr><td>${esc(u.name)}${u.security ? ` <span class="sev high">security</span>` : ""}</td><td class="small mono">${esc(u.version)}</td></tr>`).join("")}</tbody></table></div>`
+    : `<span class="ok">Up to date</span>${s.reboot ? ` - <b>a reboot is pending</b>` : ""}`}</section>`);
+  if ((s.hotfixes || []).length) out.push(`<section><h4>Updates installed</h4><div class="tbl" style="max-height:14rem;overflow-y:auto"><table><tbody>${s.hotfixes.slice(0, 30).map(h => `<tr><td class="mono">${esc(h.id)}</td><td class="small">${esc(h.what)}</td><td class="nw small">${h.t ? new Date(h.t * 1000).toLocaleDateString() : ""}</td></tr>`).join("")}</tbody></table></div>
+    <div class="small muted" style="margin-top:.3rem">Pending ones: Windows Update answers administrators only.</div></section>`);
+  if ((r.packages || []).length) out.push(`<section><h4>${r.kind === "winrm" ? "Programs" : "Packages"} (${r.packages.length})</h4><input type="search" class="filter" data-pkgs style="width:100%;margin-bottom:.4rem" placeholder="Filter">
+    <div class="tbl" style="max-height:14rem;overflow-y:auto"><table><tbody>${r.packages.map(([n, v]) => `<tr><td>${esc(n)}</td><td class="small mono">${esc(v)}</td></tr>`).join("")}</tbody></table></div></section>`);
+  let html = head + `<div class="expgrid">${out.join("")}</div>`;
+  if ((s.nodes || []).length > 1 || (s.guests || []).length) html += `<h4 style="margin-top:1rem">Nodes</h4><div class="tbl"><table><thead><tr><th>Node</th><th>State</th><th>Version</th><th class="n">CPU</th><th>Memory</th><th>Up for</th></tr></thead><tbody>
+    ${s.nodes.map(n => `<tr><td><b>${esc(n.name)}</b></td><td>${esc(n.status)}</td><td class="small">${esc(n.pve)}</td><td class="n">${Math.round(100 * n.cpu)} % of ${n.cores}</td><td class="small">${bytesOf(n.mem)} / ${bytesOf(n.mem_total)}</td><td class="nw">${dur(n.uptime_s)}</td></tr>`).join("")}</tbody></table></div>
+    <h4 style="margin-top:1rem">Guests (${s.guests_n}, ${s.running_n} running)</h4><div class="tbl"><table><thead><tr><th>ID</th><th>Name</th><th>Kind</th><th>Node</th><th>State</th><th class="n">CPU</th><th>Memory</th><th>Disk</th><th>MAC / addresses</th></tr></thead><tbody>
+    ${s.guests.map(g => { const a = S.data && S.data.assets.find(x => g.macs.includes(x.mac));
+      return `<tr${a ? ` class="click" data-goto="${esc(a.key)}"` : ""}><td class="n">${g.vmid}</td><td><b>${esc(g.name)}</b>${g.tags.map(t => ` <span class="tag">${esc(t)}</span>`).join("")}${g.template ? ` <span class="tag">template</span>` : ""}</td>
+      <td class="small">${g.type === "lxc" ? "container" : "VM"}${g.os ? ` · ${esc(g.os)}` : ""}</td><td>${esc(g.node)}</td>
+      <td>${g.status === "running" ? `<span class="st on"><i></i>running</span>` : `<span class="st off"><i></i>${esc(g.status)}</span>`}</td>
+      <td class="n">${g.status === "running" ? `${Math.round(100 * g.cpu)} %` : ""} <span class="muted small">/ ${g.cores}</span></td>
+      <td class="small">${g.status === "running" ? bytesOf(g.mem) + " / " : ""}${bytesOf(g.mem_total)}</td><td class="small">${bytesOf(g.disk_total)}</td>
+      <td class="small mono">${g.macs.map(esc).join("<br>")}${(a ? [a.ip] : g.ips).length ? `<div>${esc((g.ips.length ? g.ips : [a.ip]).join(", "))}${a ? ` · ${esc(a.name || "")}` : ""}</div>` : ""}</td></tr>`; }).join("")}</tbody></table></div>`;
+  return `<div style="margin-bottom:1rem">${html}</div>`;
 }
 
 // ---------------- collectors
