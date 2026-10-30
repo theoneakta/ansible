@@ -1,0 +1,52 @@
+# The live install's settings for the SentryLens repo's deploy/ (its
+# group_vars/all/site.yml) - from the runner's inventory/group_vars/all/site.yml.
+# The names below are the ones this install already uses, so the playbooks adopt it.
+sl_public_url: https://netview.aktasolutions.com
+sl_app_port: 8082
+sl_app_dir: /opt/netview
+sl_app_service: netview
+sl_clickhouse_volume: akvorado_akvorado-clickhouse
+sl_geoip_volume: flowd-geoip
+
+sl_networks:
+  192.168.3.0/24: {name: lan, role: lan}
+  100.64.0.0/10: {name: tailscale, role: vpn}
+
+sl_names:
+  192.168.3.1: opnsense
+  192.168.3.4: torrent
+  192.168.3.5: lububntu
+  192.168.3.6: docker-apps-domo
+  192.168.3.7: docker-apps
+  192.168.3.8: docker-apps2
+  192.168.3.150: rocky10
+  192.168.3.154: linux-154
+  192.168.3.188: truenas
+  192.168.3.236: pve5
+  192.168.3.237: pve6
+  100.70.125.118: vps
+
+sl_firewall_interfaces:
+  ix0: {ifindex: 5, label: Internet, kind: wan, key: wan, description: "Transit: ISP"}
+  wg0: {ifindex: 13, label: VPN (PIA), kind: vpn, key: opt2, internet: true, description: "VPN: PIA"}
+  ix1: {ifindex: 6, label: LAN, kind: lan, key: lan, netflow: true, description: LAN}
+  tailscale0: {ifindex: 14, label: Tailscale, kind: vpn, key: opt1, internet: false, netflow: true, tunnel_port: 41641, description: Tailscale}
+
+sl_dns: true
+sl_dns_retention_days: 30
+sl_ids: true
+sl_flows_days: 7
+sl_auth_methods: [builtin, cloudflare]
+sl_admin_emails: [michel@aktasolutions.com]   # as vaultwarden.yml / readonly_accounts.yml ran with (2026-10-28)
+sl_session_days: 7
+sl_auth_providers: []
+sl_cloudflare:
+  enabled: true
+  zone: aktasolutions.com
+  team: aktasolutions.cloudflareaccess.com
+  aud: 8375c22f885da275b33199b69162b781b7eaef18c61320c90c94383955584ed6
+  emails: []
+  public_paths: [static]
+sl_kuma_url: https://kuma.aktasolutions.com
+sl_prometheus: true
+sl_vaultwarden: true

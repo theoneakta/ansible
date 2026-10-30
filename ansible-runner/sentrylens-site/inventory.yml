@@ -1,0 +1,62 @@
+# The live install, for the SentryLens repo's deploy/ playbooks (deploy/inventory.yml
+# of the copy on the runner - sentrylens-site/README.md). Host names are the
+# runner's own (its inventory is loaded too): their logins come from its vault.
+all:
+  children:
+    collector:
+      hosts:
+        192.168.3.150: {display_name: rocky10}
+    firewall:
+      hosts:
+        192.168.3.1: {display_name: opnsense, firewall_type: opnsense}
+    # softflowd's exporters (flowd accepts only these); exporters.yml is NOT run
+    # from here yet - softflowd stays on proxmox_softflowd.yml / linux_software.yml.
+    flow_exporters:
+      hosts:
+        192.168.3.150: {display_name: rocky10}
+        192.168.3.154: {display_name: linux-154}
+        192.168.3.4: {display_name: torrent}
+        192.168.3.5: {display_name: lububntu}
+        192.168.3.6: {display_name: docker-apps-domo}
+        192.168.3.7: {display_name: docker-apps}
+        192.168.3.8: {display_name: docker-apps2}
+        192.168.3.236: {display_name: pve5, lan_view: true}
+        192.168.3.237: {display_name: pve6, lan_view: true}
+    # node_exporter (the Infrastructure page's hosts): what prometheus_stack.yml scraped.
+    monitored:
+      hosts:
+        192.168.3.5: {display_name: lububntu}
+        192.168.3.4: {display_name: torrent}
+        192.168.3.150: {display_name: rocky10}
+        192.168.3.154: {display_name: linux-154}
+        192.168.3.6: {display_name: docker-apps-domo}
+        192.168.3.7: {display_name: docker-apps}
+        192.168.3.8: {display_name: docker-apps2}
+        192.168.3.236: {display_name: pve5, lan_view: true}
+        192.168.3.237: {display_name: pve6, lan_view: true}
+        100.70.125.118: {display_name: vps, sentry_address: 100.88.42.44}
+    mirror_nodes:
+      hosts:
+        192.168.3.236:
+        192.168.3.237:
+    # Read-only accounts for the asset collectors' inventory (readonly_accounts.yml),
+    # made once with the runner's logins, then kept in Sentry Lens's vault.
+    readonly_linux:
+      hosts:
+        192.168.3.150: {display_name: rocky10}
+        192.168.3.4: {display_name: torrent}
+        192.168.3.5: {display_name: lububntu}
+        192.168.3.6: {display_name: docker-apps-domo}
+        192.168.3.7: {display_name: docker-apps}
+        192.168.3.8: {display_name: docker-apps2}
+        192.168.3.154: {display_name: linux-154}
+    readonly_proxmox:
+      hosts:
+        192.168.3.236: {display_name: pve5}
+        192.168.3.237: {display_name: pve6}
+    readonly_windows:
+      hosts:
+        192.168.3.15: {display_name: alienware-r16}
+        192.168.3.17: {display_name: xps}
+        192.168.3.103: {display_name: win-103}
+        192.168.3.181: {display_name: win-181}
