@@ -41,7 +41,7 @@ import (
 	"time"
 )
 
-const Version = "2.6.0"
+const Version = "2.6.1"
 
 type Config struct {
 	URL       string

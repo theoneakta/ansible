@@ -43,6 +43,7 @@ import checks  # ClickHouse helpers
 
 OBS_DAYS = 90
 MAX_HOSTS = 70000  # one sweep: a /16 at most
+TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 ONLINE_GRACE = 2.5  # a collector or device is "online" if seen within this many intervals
 COUNTERS_MIN = 5  # how often collectors poll their SNMP devices' interface counters
 router = APIRouter()
@@ -198,8 +199,9 @@ def check_subnets(subnets):
             n = ipaddress.ip_network(str(s).strip(), strict=False)
         except ValueError:
             raise HTTPException(400, f"not a subnet: {s}")
-        if n.version == 4 and n.prefixlen < 16 or n.version == 6 and n.prefixlen < 112:
-            raise HTTPException(400, f"{n} is too big to sweep: a /16 at most (IPv6: /112)")
+        # Tailscale's range (100.64.0.0/10): collector 2.6.1+ sweeps only the tailnet's machines (tailnet.go).
+        if n.version == 4 and n.prefixlen < 16 and not n.subnet_of(TAILSCALE) or n.version == 6 and n.prefixlen < 112:
+            raise HTTPException(400, f"{n} is too big to sweep: a /16 at most (IPv6: /112; Tailscale's 100.64.0.0/10 whole)")
         out.append(str(n))
     if not out:
         raise HTTPException(400, "at least one subnet, e.g. 192.168.1.0/24")

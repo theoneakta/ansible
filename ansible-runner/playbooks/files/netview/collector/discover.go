@@ -114,11 +114,17 @@ func parallel[T any](items []T, n int, f func(T)) {
 // discover: who answers on a subnet - ARP on a subnet this machine is on
 // (every device answers, with its MAC), ping and TCP probes past a router.
 func discover(subnet string) map[string]*Host {
-	ips, n, err := addresses(subnet)
 	found := map[string]*Host{}
-	if err != nil {
-		log.Printf("%s: %v", subnet, err)
-		return found
+	// A Tailscale range: its machines, not every address (tailnet.go).
+	ips, n, tsNames, tailscale := tailnetIn(subnet)
+	if tailscale {
+		log.Printf("%s: the tailnet's %d addresses in it, from tailscaled", subnet, len(ips))
+	} else {
+		var err error
+		if ips, n, err = addresses(subnet); err != nil {
+			log.Printf("%s: %v", subnet, err)
+			return found
+		}
 	}
 	var mu sync.Mutex
 	add := func(ip, mac string, rtt float64, method string) {
@@ -157,6 +163,11 @@ func discover(subnet string) map[string]*Host {
 				add(ip.String(), "", 0, "tcp")
 			}
 		})
+	}
+	for ip, h := range found { // their tailnet names (DNS, if it answers, wins later)
+		if h.Hostname == "" && tsNames[ip] != "" {
+			h.Hostname = tsNames[ip]
+		}
 	}
 	return found
 }
