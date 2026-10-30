@@ -441,6 +441,7 @@ function readingHtml(r) {
   const head = `<div class="small" style="margin:.2rem 0 .7rem"><b>${VIA[r.kind]}</b> · ${esc(r.collector)} · ${r.ok ? `read ${ago(r.t)} (${r.took_s} s)` : `<span class="err">${esc(r.error)}</span> · tried ${ago(r.t)}${r.last_ok ? `, shown: the reading of ${when(r.last_ok)}` : ""}`}
     ${r.trust && isAdmin() ? ` <button class="btn" data-trust="${esc(r.ip)} ${esc(r.kind)}">Trust the new key</button>` : ""}</div>`;
   if (!Object.keys(s).length) return head;
+  const errs = Object.entries(s.errors || {});
   out.push(`<section><h4>System</h4>${kv([["Name", esc(s.hostname)], ["System", esc(s.os)], ["Version", esc([s.version, s.build && `build ${s.build}`].filter(Boolean).join(", "))],
     ["Kernel", esc(s.kernel)], ["Architecture", esc(s.arch)], ["Cluster", esc(s.cluster)], ["Domain", esc(s.domain)], ["Virtual", esc(s.virt)],
     ["Hardware", esc([s.vendor, s.model].filter(Boolean).join(" "))], ["Serial", esc(s.serial)], ["CPU", esc(s.cpu)], ["Cores", s.cores || null],
@@ -458,6 +459,7 @@ function readingHtml(r) {
   if ((r.packages || []).length) out.push(`<section><h4>${r.kind === "winrm" ? "Programs" : "Packages"} (${r.packages.length})</h4><input type="search" class="filter" data-pkgs style="width:100%;margin-bottom:.4rem" placeholder="Filter">
     <div class="tbl" style="max-height:14rem;overflow-y:auto"><table><tbody>${r.packages.map(([n, v]) => `<tr><td>${esc(n)}</td><td class="small mono">${esc(v)}</td></tr>`).join("")}</tbody></table></div></section>`);
   let html = head + `<div class="expgrid">${out.join("")}</div>`;
+  if (errs.length) html += `<div class="small muted" style="margin-top:.6rem">Not read: ${errs.map(([k, v]) => `${esc(k)} (${esc(/access denied/i.test(v) ? "answers administrators only" : v)})`).join(", ")}</div>`;
   if ((s.nodes || []).length > 1 || (s.guests || []).length) html += `<h4 style="margin-top:1rem">Nodes</h4><div class="tbl"><table><thead><tr><th>Node</th><th>State</th><th>Version</th><th class="n">CPU</th><th>Memory</th><th>Up for</th></tr></thead><tbody>
     ${s.nodes.map(n => `<tr><td><b>${esc(n.name)}</b></td><td>${esc(n.status)}</td><td class="small">${esc(n.pve)}</td><td class="n">${Math.round(100 * n.cpu)} % of ${n.cores}</td><td class="small">${bytesOf(n.mem)} / ${bytesOf(n.mem_total)}</td><td class="nw">${dur(n.uptime_s)}</td></tr>`).join("")}</tbody></table></div>
     <h4 style="margin-top:1rem">Guests (${s.guests_n}, ${s.running_n} running)</h4><div class="tbl"><table><thead><tr><th>ID</th><th>Name</th><th>Kind</th><th>Node</th><th>State</th><th class="n">CPU</th><th>Memory</th><th>Disk</th><th>MAC / addresses</th></tr></thead><tbody>

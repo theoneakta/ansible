@@ -206,7 +206,9 @@ MACS = re.compile(r"(?i)\b([0-9a-f]{2}(?::[0-9a-f]{2}){5})\b")
 
 def parse_proxmox(d):
     ver = d.get("/version") or {}
-    cluster = next((x.get("name", "") for x in d.get("/cluster/status") or [] if x.get("type") == "cluster"), "")
+    status = d.get("/cluster/status") or []
+    cluster = next((x.get("name", "") for x in status if x.get("type") == "cluster"), "")
+    here = next((x.get("name", "") for x in status if x.get("type") == "node" and x.get("local")), "")  # the node asked
     nodes = []
     for n in d.get("/nodes") or []:
         st = d.get(f"/nodes/{n.get('node')}/status") or {}
@@ -230,7 +232,7 @@ def parse_proxmox(d):
                        "uptime_s": r.get("uptime", 0), "os": cfg.get("ostype", ""), "macs": macs, "ips": ips,
                        "tags": [t for t in re.split(r"[;, ]", str(cfg.get("tags", ""))) if t]})
     guests.sort(key=lambda g: g["vmid"] or 0)
-    first = nodes[0] if nodes else {}
+    first = next((n for n in nodes if n["name"] == here), nodes[0] if nodes else {})
     s = {"hostname": first.get("name", ""), "os": f"Proxmox VE {ver.get('version', '')}".strip(), "version": ver.get("version", ""),
          "kernel": first.get("kernel", ""), "cpu": first.get("model", ""), "cores": first.get("cores", 0),
          "mem_total": first.get("mem_total", 0), "mem_avail": first.get("mem_total", 0) - first.get("mem", 0),
