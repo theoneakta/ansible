@@ -1,7 +1,7 @@
 ---
 # cAdvisor on the Docker hosts: CPU, memory, network and uptime of every
 # container on TCP 9338, scraped by Prometheus on the collector
-# (prometheus_stack.yml) - the containers in Sentry Lens's Infrastructure
+# (SentryLens deploy: prometheus.yml) - the containers in Sentry Lens's Infrastructure
 # section. Hosts without Docker are skipped.
 #
 #   containers <-- cadvisor (host network) :9338 <-- Prometheus (192.168.3.150)
@@ -35,9 +35,9 @@
     # Sentry Lens for its jobs - nothing listens on the host. false: not installed.
     docker_agent: true
     docker_agent_url: "http://{{ sentry_address | default(site_server_ip) }}:8082"
-    # The Sentry Lens host (netview_stack.yml): its session secret keys the agents.
+    # The Sentry Lens host (SentryLens deploy: sentrylens.yml): its session secret keys the agents.
     docker_agent_lens_host: "{{ groups['monitoring'][0] }}"
-    # The host as Prometheus names it (prometheus_stack.yml) - the page's name for it.
+    # The host as Prometheus names it (SentryLens deploy: prometheus.yml) - the page's name for it.
     docker_agent_host: "{{ (site_names | default({})).get(inventory_hostname, inventory_hostname) }}"
 
   pre_tasks:

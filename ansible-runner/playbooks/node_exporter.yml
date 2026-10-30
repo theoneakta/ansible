@@ -1,7 +1,7 @@
 ---
 # Prometheus node_exporter on the Linux servers and the Proxmox nodes: CPU,
 # memory, disks, filesystems, network, load and systemd service states on
-# TCP 9100, scraped by Prometheus on the collector (prometheus_stack.yml) -
+# TCP 9100, scraped by Prometheus on the collector (SentryLens deploy: prometheus.yml) -
 # what Sentry Lens's Infrastructure section shows.
 #
 #   host:9100 <-- Prometheus (192.168.3.150) --> Sentry Lens /infra

@@ -16,7 +16,7 @@ all:
       hosts:
         192.168.3.236: {display_name: pve5, lan_view: true}
         192.168.3.237: {display_name: pve6, lan_view: true}
-    # node_exporter (the Infrastructure page's hosts): what prometheus_stack.yml scraped.
+    # node_exporter (the Infrastructure page's hosts): what the old prometheus_stack.yml scraped.
     monitored:
       hosts:
         192.168.3.5: {display_name: lububntu}

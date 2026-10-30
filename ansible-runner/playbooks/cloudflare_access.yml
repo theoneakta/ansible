@@ -10,7 +10,7 @@
 # email, vault_api_token = the key): the One-time PIN login method, a
 # reusable Allow policy for cf_access_emails (the account's own email when
 # empty), and the application with that policy. Prints the team domain and
-# AUD tag - netview_stack.yml's netview_cf_team / netview_cf_aud, so the app
+# AUD tag - SentryLens site.yml's sl_cloudflare team / aud, so the app
 # checks the tokens too and its LAN address can't skip the login.
 #
 # Run:  ./run.sh cloudflare_access.yml

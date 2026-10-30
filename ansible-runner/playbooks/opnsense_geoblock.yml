@@ -15,7 +15,7 @@
 # Needs the GeoLite2 database on the firewall first (Firewall > Aliases >
 # GeoIP settings, the MaxMind CSV URL with a license key) - stops otherwise.
 #
-# Through the OPNsense API (the root web login), like opnsense_netflow.yml.
+# Through the OPNsense API (the root web login), like SentryLens deploy: firewall.yml.
 # Re-running it updates in place.
 #
 # Run:  ./run.sh opnsense_geoblock.yml

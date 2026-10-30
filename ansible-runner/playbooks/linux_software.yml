@@ -31,7 +31,7 @@
     docker_users: [theoneakta]
 
     # softflowd: exports NetFlow for the host's traffic to a collector - by
-    # default flowd on 192.168.3.150 (UDP 2055, flowd_stack.yml). Off
+    # default flowd on 192.168.3.150 (UDP 2055, SentryLens deploy: collector.yml). Off
     # unless requested (--softflowd / GUI).
     softflowd_enabled: false
     softflowd_collector: "192.168.3.150:2055"
