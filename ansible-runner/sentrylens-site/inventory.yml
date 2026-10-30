@@ -9,17 +9,11 @@ all:
     firewall:
       hosts:
         192.168.3.1: {display_name: opnsense, firewall_type: opnsense}
-    # softflowd's exporters (flowd accepts only these); exporters.yml is NOT run
-    # from here yet - softflowd stays on proxmox_softflowd.yml / linux_software.yml.
+    # softflowd's exporters (flowd accepts only these): the hypervisors' LAN
+    # bridges only - they already see every VM's traffic, so softflowd inside
+    # the VMs (installed but stopped on rocky10 and lububntu) would count it twice.
     flow_exporters:
       hosts:
-        192.168.3.150: {display_name: rocky10}
-        192.168.3.154: {display_name: linux-154}
-        192.168.3.4: {display_name: torrent}
-        192.168.3.5: {display_name: lububntu}
-        192.168.3.6: {display_name: docker-apps-domo}
-        192.168.3.7: {display_name: docker-apps}
-        192.168.3.8: {display_name: docker-apps2}
         192.168.3.236: {display_name: pve5, lan_view: true}
         192.168.3.237: {display_name: pve6, lan_view: true}
     # node_exporter (the Infrastructure page's hosts): what prometheus_stack.yml scraped.
