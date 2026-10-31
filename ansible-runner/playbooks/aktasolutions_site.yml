@@ -1,0 +1,103 @@
+---
+# aktasolutions.com: Next.js + Postgres + Redis (docker compose) on the VPS, in /opt/aktasolutions.
+# Source: the aktasolutions-site repo; its scripts/deploy.sh bundles it into site_archive on the
+# controller and runs this playbook.
+# Published on 172.17.0.1:444 (docker bridge) only - Docker-published ports bypass ufw, so binding is
+# what keeps it off the internet; Nginx Proxy Manager on the VPS proxies https://aktasolutions.com
+# (443) to 172.17.0.1:444.
+# Mail: contact messages and new recommendations (with approve/reject links) go out through the
+# SMTP2GO API with vault_api_token of the vault host app-us.smtp2go.com.
+# Optional vault host aktasolutions.com: vault_win_user/vault_win_password = the /admin login,
+# vault_recaptcha_site_key/vault_recaptcha_secret = Google reCAPTCHA v3 (off while missing).
+# Without them the admin password is generated (ADMIN_PASSWORD in env.d/10-secrets on the VPS, with
+# POSTGRES_PASSWORD, IP_SALT and APP_SECRET; missing keys are added, existing ones never change).
+# Run: ansible-playbook playbooks/aktasolutions_site.yml --vault-password-file /run/secrets/vault_pass
+
+- name: aktasolutions.com site
+  hosts: "{{ akta_host | default('100.70.125.118') }}"
+  gather_facts: false
+  become: true
+  vars:
+    app_dir: /opt/aktasolutions
+    site_archive: /tmp/aktasolutions-site.tgz
+    web_bind: 172.17.0.1
+    web_port: 444
+    smtp2go: "{{ hostvars['app-us.smtp2go.com'] }}"
+    akta: "{{ hostvars.get('aktasolutions.com', {}) }}"
+  tasks:
+    - name: App directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ app_dir }}/env.d"
+
+    - name: Remove the previous source (files deleted from the repo must not linger)
+      ansible.builtin.file:
+        path: "{{ app_dir }}/{{ item }}"
+        state: absent
+      loop: [web, db, scripts]
+
+    - name: Unpack the site source
+      ansible.builtin.unarchive:
+        src: "{{ site_archive }}"
+        dest: "{{ app_dir }}"
+
+    - name: Generate missing secrets (existing values are kept)
+      ansible.builtin.shell: |
+        umask 077
+        f=env.d/10-secrets
+        touch $f
+        for k in POSTGRES_PASSWORD IP_SALT APP_SECRET ADMIN_PASSWORD; do
+          grep -q "^$k=" $f || { echo "$k=$(openssl rand -hex 24)" >> $f; echo "added $k"; }
+        done
+      args:
+        chdir: "{{ app_dir }}"
+      register: secrets
+      changed_when: secrets.stdout | length > 0
+
+    - name: Site settings, SMTP2GO key, admin login and reCAPTCHA keys
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/env.d/20-site"
+        mode: "0600"
+        content: |
+          WEB_BIND={{ web_bind }}
+          WEB_PORT={{ web_port }}
+          SITE_URL=https://aktasolutions.com
+          SMTP2GO_API_KEY={{ smtp2go.vault_api_token }}
+          MAIL_FROM=Akta Solutions <noreply@aktasolutions.com>
+          CONTACT_TO=info@aktasolutions.com
+          ADMIN_USER={{ akta.vault_win_user | default('michel') }}
+          {% if akta.vault_win_password is defined %}ADMIN_PASSWORD={{ akta.vault_win_password }}{% endif %}
+
+          RECAPTCHA_SITE_KEY={{ akta.vault_recaptcha_site_key | default('') }}
+          RECAPTCHA_SECRET={{ akta.vault_recaptcha_secret | default('') }}
+      no_log: true
+
+    - name: Assemble .env
+      ansible.builtin.assemble:
+        src: "{{ app_dir }}/env.d"
+        dest: "{{ app_dir }}/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Build and start the stack
+      ansible.builtin.command: docker compose up -d --build --remove-orphans
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Wait until the site reports DB and cache up
+      ansible.builtin.uri:
+        url: "http://{{ web_bind }}:{{ web_port }}/api/health"
+        return_content: true
+      register: health
+      until: health.status == 200 and health.json.db and health.json.cache
+      retries: 30
+      delay: 5
+
+    - name: Drop dangling images from earlier builds
+      ansible.builtin.command: docker image prune -f
+      changed_when: false

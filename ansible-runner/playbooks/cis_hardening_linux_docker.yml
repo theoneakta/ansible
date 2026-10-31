@@ -1,0 +1,126 @@
+---
+# CIS hardening for Linux Docker hosts: cis_hardening_linux.yml unchanged,
+# plus the exceptions a container host needs. Use it instead of
+# cis_hardening_linux.yml on hosts running Docker/Podman (same options):
+#   ./run.sh cis_hardening_linux_docker.yml --cis-os rocky10 --cis-level 1-server --limit 192.168.3.150
+#
+# Exceptions (found running Level 1 on 192.168.3.150 with ntopng_stack.yml):
+#   7.1.11  World-writable files: the role chmods o-w everywhere, including
+#           the files inside Docker's image layers (/var/lib/docker,
+#           /var/lib/containerd - ClickHouse's config.xml/users.xml,
+#           confirmed). Its find has no exclusion setting, so the role only
+#           reports here and the fix runs below, minus those two folders.
+#   7.1.12  Unowned files: Docker's storage (/var/lib/docker) joins the paths
+#           the role already skips (containerd, kubelet...) - container UIDs
+#           have no host account, and chowning them to root breaks the
+#           containers. Bind-mounted data still needs host accounts for its
+#           UIDs (ntopng_stack.yml creates them).
+#   3.3.1.x IP forwarding: cis_hardening_linux.yml keeps it on for a host that
+#           has Docker at run time, but a CIS run from before Docker was
+#           installed leaves net.ipv4.ip_forward = 0 in
+#           /etc/sysctl.d/60-netipv4_sysctl.conf (confirmed) - bridged
+#           containers then have no network. Turned back on, in a file that
+#           sorts after it.
+
+- name: CIS hardening
+  ansible.builtin.import_playbook: cis_hardening_linux.yml
+  # import_playbook vars outrank the imported play's own vars.
+  vars:
+    ubtu22cis_no_world_write_adjust: false
+    ubtu24cis_no_world_write_adjust: false
+    rhel8cis_no_world_write_adjust: false
+    rhel9cis_no_world_write_adjust: false
+    rhel10cis_no_world_write_adjust: false
+    deb11cis_no_world_write_adjust: false
+    deb12cis_no_world_write_adjust: false
+    deb13cis_no_world_write_adjust: false
+
+    # The roles' default plus /var/lib/docker.
+    cis_docker_unowned_search_path: >-
+      \( ! -path "/run/user/*" -a ! -path "/proc/*" -a ! -path "*/containerd/*" -a ! -path "/var/lib/docker/*"
+      -a ! -path "*/kubelet/pods/*" -a ! -path "*/kubelet/plugins/*" -a ! -path "/sys/fs/cgroup/memory/*"
+      -a ! -path "/var/*/private/*" \)
+    ubtu22cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    ubtu24cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    rhel8cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    rhel9cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    rhel10cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    deb11cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    deb12cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+    deb13cis_exclude_unowned_search_path: "{{ cis_docker_unowned_search_path }}"
+
+- name: Docker host exceptions
+  hosts: linux
+  become: true
+  gather_facts: false
+  vars:
+    cis_role: RHEL10-CIS
+    cis_prefix: "{{ cis_role | lower | replace('ubuntu', 'ubtu') | replace('debian', 'deb') | replace('-cis', 'cis') }}"
+    # Left alone by the world-writable fix below.
+    cis_docker_storage: [/var/lib/docker, /var/lib/containerd]
+
+  pre_tasks:
+    # Same login handling as cis_hardening_linux.yml.
+    - name: Use the group default login for hosts without their own
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../inventory/group_vars/windows/vault.yml"
+      when: vault_win_user is not defined
+      tags: always
+
+    - name: Check for the classic sudo (sudo.ws)
+      ansible.builtin.raw: command -v sudo.ws
+      vars:
+        ansible_become: false
+      register: sudo_ws
+      changed_when: false
+      failed_when: false
+      tags: always
+
+    - name: Use the classic sudo for privilege escalation
+      ansible.builtin.set_fact:
+        ansible_become_exe: sudo.ws
+      when: sudo_ws.rc == 0
+      tags: always
+
+  tasks:
+    # The role's own 7.1.11 fix (find + o-w), minus Docker's storage. Same
+    # switches as the role: its rule toggle, and nothing in audit-only runs.
+    - name: "7.1.11 | Secure world-writable files outside Docker's storage"
+      when:
+        - lookup('ansible.builtin.vars', cis_prefix ~ '_rule_7_1_11', default=true) | bool
+        - not (audit_only | default(false) | bool)
+      tags: always
+      block:
+        - name: "7.1.11 | Find world-writable files"
+          ansible.builtin.shell: |
+            set -o pipefail
+            df --local -P | awk 'NR > 1 {print $6}' | xargs -I '{}' find '{}' -xdev -type f -perm -0002 \
+              {% for path in cis_docker_storage %}-not -path '{{ path }}/*' {% endfor %}
+          args:
+            executable: /bin/bash
+          register: world_writable
+          changed_when: false
+          failed_when: false
+
+        - name: "7.1.11 | Remove write for others"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            mode: o-w
+          loop: "{{ world_writable.stdout_lines }}"
+
+    - name: Check for container / VM runtimes that need IP forwarding
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/usr/bin/docker, /usr/bin/podman, /usr/sbin/libvirtd]
+      register: forwarding_runtimes
+      tags: always
+
+    - name: Turn IPv4 forwarding back on for the container runtime
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_file: /etc/sysctl.d/99-container-ip-forward.conf
+        reload: true
+      when:
+        - forwarding_runtimes.results | selectattr('stat.exists') | list | length > 0
+        - not (audit_only | default(false) | bool)
+      tags: always
