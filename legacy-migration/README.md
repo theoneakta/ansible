@@ -73,7 +73,7 @@ Source: Microsoft, [Plan your Windows Server upgrade path](https://learn.microso
 
 ### SQL2005 (VM 118, 192.168.3.103): Windows Server 2008 R2 SP1 → 2012 R2 → 2025 ✅ (2026-10-20)
 
-**Source build:** a clean install of English Windows Server 2008 R2 SP1 Standard, then SQL Server 2005 SP4 Standard x64 and IIS 7.5 with the "Celtics Hub" app (see [github.com/theoneakta/celtics-app](https://github.com/theoneakta/celtics-app), folder `iis-sql2005/`).
+**Source build:** a clean install of English Windows Server 2008 R2 SP1 Standard, then SQL Server 2005 SP4 Standard x64 and IIS 7.5 with the "Celtics Hub" app (see [github.com/theoneakta/nbahub-app](https://github.com/theoneakta/nbahub-app), formerly `celtics-app`, folder `iis-sql2005/`).
 
 **Media ACCEPTED, 2026-10-20:** `en_windows_server_2008_r2_standard_enterprise_datacenter_web_vl_build_x64_dvd_x15-59754.iso`.
 - SHA-1 `ad855ea913aaec3f1d0e1833c1aef7a0de326b0a`, SHA-256 `181ba774…c1193cd`.

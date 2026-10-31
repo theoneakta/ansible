@@ -15,7 +15,7 @@ The point: a 2005-era database engine, treated well, is remarkably stable. Nothi
 | App | "NBA Hub" | roster / stats / schedule / MVP, all 30 teams, two seasons |
 | Data feed | a container on another host (192.168.3.8) | pushes live data into SQL 2005 over TCP 1433 |
 
-The application code lives in a separate public repo: **github.com/theoneakta/celtics-app** (`iis-sql2005/` = the web app on this box, `feeder/` = the data sync).
+The application code lives in a separate public repo: **github.com/theoneakta/nbahub-app** (renamed from `celtics-app` on 2026-10-28) (`iis-sql2005/` = the web app on this box, `feeder/` = the data sync).
 
 ## 1. It survived three in-place OS upgrades with zero data loss
 
