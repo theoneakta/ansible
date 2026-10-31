@@ -44,6 +44,10 @@
     # Rocky/RHEL: no package (not in EPEL 9/10) - built from this upstream
     # release instead (https://github.com/irino/softflowd).
     softflowd_version: "1.1.1"
+    # A VM is refused: its hypervisor's bridge (pve5, pve6) already exports its
+    # traffic, so a second exporter would count it twice. true = a VM whose
+    # hypervisor exports nothing.
+    softflowd_on_vm: false
 
     # Wazuh agent, from Wazuh's own repository - same settings as the Windows
     # hosts (install_software.yml); installed when wazuh_manager is set.
@@ -97,6 +101,7 @@
       register: sudo_ws
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: Use the classic sudo for privilege escalation
       ansible.builtin.set_fact:
@@ -244,9 +249,21 @@
     - name: softflowd (NetFlow exporter)
       when: softflowd_enabled | bool
       block:
-        - name: Gather facts (distribution, default route)
+        - name: Gather facts (distribution, default route, VM or not)
           ansible.builtin.setup:
-            gather_subset: [min, network]
+            gather_subset: [min, network, virtual]
+
+        - name: Not on a VM (its hypervisor already exports its traffic)
+          ansible.builtin.assert:
+            that: >-
+              softflowd_on_vm | bool or
+              ansible_facts['virtualization_role'] | default('') != 'guest'
+            fail_msg: >-
+              {{ inventory_hostname }} is a VM ({{ ansible_facts['virtualization_type'] }}):
+              the hypervisor's bridge already exports its flows - softflowd here
+              would count them twice. softflowd_on_vm=true if its hypervisor
+              exports nothing.
+            quiet: true
 
         - name: Install softflowd (Ubuntu / Debian)
           ansible.builtin.apt:
