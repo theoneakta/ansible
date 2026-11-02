@@ -47,6 +47,6 @@ sl_cloudflare:
   aud: 8375c22f885da275b33199b69162b781b7eaef18c61320c90c94383955584ed6
   emails: []
   public_paths: [static]
-sl_kuma_url: https://kuma.aktasolutions.com
+sl_kuma_url: ""
 sl_prometheus: true
 sl_vaultwarden: true
