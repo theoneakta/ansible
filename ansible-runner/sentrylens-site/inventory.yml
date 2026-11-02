@@ -29,6 +29,11 @@ all:
         192.168.3.236: {display_name: pve5, lan_view: true}
         192.168.3.237: {display_name: pve6, lan_view: true}
         100.70.125.118: {display_name: vps, sentry_address: 100.88.42.44}
+    # The Applications page's checks from outside too (uptime_probe.yml) - and its
+    # alerts when home can't be reached. Replaces Uptime Kuma on the VPS.
+    uptime_probes:
+      hosts:
+        100.70.125.118:
     mirror_nodes:
       hosts:
         192.168.3.236:
