@@ -22,13 +22,13 @@
 #      WAN on an old state.
 #
 # Re-running it updates in place (hosts, region, ...). It recognises the
-# setup made by hand on 192.0.2.1 in October 2026 (same names).
+# setup made by hand on the firewall in October 2026 (same names).
 #
 # Run:  ./run.sh opnsense_pia.yml -e '{"pia_hosts": ["192.0.2.4", "192.0.2.5"]}'
 #       ./run.sh opnsense_pia.yml -e pia_state=absent       (remove it all)
 
 - name: PIA WireGuard on OPNsense
-  hosts: "{{ pia_opnsense | default('192.0.2.1') }}"
+  hosts: "{{ pia_opnsense | default('firewall') }}"
   gather_facts: false
   vars:
     ansible_python_interpreter: /usr/local/bin/python3

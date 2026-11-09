@@ -3,18 +3,24 @@
 Runs entirely inside the `gui` container (see docker-compose.yml) alongside
 the same Ansible stack used by run.sh - nothing here executes on the host.
 """
+import asyncio
 import functools
+import hashlib
+import hmac
+import html
 import json
 import os
 import pathlib
 import re
 import secrets
+import shutil
 import signal
 import socket
 import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -70,120 +76,351 @@ current_run = {"proc": None, "run_id": None, "killed": False}
 app = FastAPI()
 
 # ---------------------------------------------------------------------------
-# GitHub OAuth login gate. This GUI can trigger real installs and CIS
-# hardening using stored vault credentials, so nothing below is served
-# without a signed-in, explicitly-allowed GitHub account - see README.md
-# ("GitHub sign-in") for how to register the OAuth App and set these.
+# Login gate. This GUI can trigger real installs and CIS hardening using
+# stored vault credentials, so nothing below is served to anyone not signed in.
+#
+# Two ways to sign in, chosen on first run at /setup (see README.md):
+#   - local: one username + password (scrypt hash in gui/data/auth.json)
+#   - github: GitHub OAuth App + an allow-list of GitHub usernames
+# GITHUB_OAUTH_* environment variables (.env), when all set, take precedence
+# over auth.json - existing installs configured that way keep working.
+# Until one is configured every page redirects to /setup, which needs the
+# one-time setup code printed in the container log (docker logs ansible-gui-1),
+# so whoever reaches a fresh runner first can't claim it.
 # ---------------------------------------------------------------------------
-GITHUB_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
-GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
-GITHUB_REDIRECT_URI = os.environ.get("GITHUB_OAUTH_REDIRECT_URI", "")
-GITHUB_ALLOWED_USERS = {
-    u.strip().lower() for u in os.environ.get("GITHUB_ALLOWED_USERS", "").split(",") if u.strip()
+AUTH_FILE = DATA_DIR / "auth.json"
+SESSION_KEY_FILE = DATA_DIR / "session.key"
+MIN_PASSWORD_LEN = 12
+
+
+def _env_github_auth() -> Optional[dict]:
+    cfg = {
+        "method": "github", "source": "env",
+        "client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID", ""),
+        "client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", ""),
+        "redirect_uri": os.environ.get("GITHUB_OAUTH_REDIRECT_URI", ""),
+        "allowed_users": [u.strip().lower() for u in os.environ.get("GITHUB_ALLOWED_USERS", "").split(",") if u.strip()],
+    }
+    return cfg if all(cfg[k] for k in ("client_id", "client_secret", "redirect_uri", "allowed_users")) else None
+
+
+def load_auth() -> Optional[dict]:
+    env = _env_github_auth()
+    if env:
+        return env
+    try:
+        cfg = json.loads(AUTH_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    if cfg.get("method") == "local" and cfg.get("username") and cfg.get("password_hash"):
+        return cfg
+    if cfg.get("method") == "github" and all(cfg.get(k) for k in ("client_id", "client_secret", "redirect_uri", "allowed_users")):
+        return cfg
+    return None
+
+
+def _write_private(path: pathlib.Path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)
+
+
+def _session_key() -> str:
+    # SESSION_SECRET_KEY wins; otherwise a key kept in gui/data, so sign-ins
+    # survive restarts and redeploys without another secret to manage.
+    if os.environ.get("SESSION_SECRET_KEY"):
+        return os.environ["SESSION_SECRET_KEY"]
+    try:
+        key = SESSION_KEY_FILE.read_text().strip()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_urlsafe(48)
+    _write_private(SESSION_KEY_FILE, key)
+    return key
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**15, r=8, p=1, maxmem=64 * 1024 * 1024)
+    return f"scrypt$32768$8$1${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        _, n, r, p, salt, digest = stored.split("$")
+        test = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p),
+                              maxmem=64 * 1024 * 1024)
+        return hmac.compare_digest(test.hex(), digest)
+    except (ValueError, TypeError):
+        return False
+
+
+AUTH = load_auth()
+SETUP_CODE = secrets.token_hex(4).upper()  # only used while AUTH is None
+
+# Site files: never in git (the repo is public). On a fresh clone they are
+# created from the templates next to them, then edited on this runner only.
+SITE_TEMPLATES = {
+    INVENTORY_DIR / "hosts.yml": INVENTORY_DIR / "hosts.template.yml",
+    INVENTORY_DIR / "image.yml": INVENTORY_DIR / "image.template.yml",
+    INVENTORY_DIR / "group_vars" / "all" / "site.yml": INVENTORY_DIR / "site.template.yml",
 }
-AUTH_CONFIGURED = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI and GITHUB_ALLOWED_USERS)
-# No SESSION_SECRET_KEY set -> a fresh one is generated per container start,
-# which simply means everyone has to sign in again after a restart/redeploy;
-# that's a fine default for a small internal tool and needs no extra secret
-# to manage. Set it explicitly to keep sessions alive across restarts.
-SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY") or secrets.token_urlsafe(32)
-
-_AUTH_PUBLIC_PATHS = {"/login", "/auth/start", "/auth/callback"}
 
 
-def _auth_page(title: str, message: str, show_signin: bool = False) -> HTMLResponse:
-    button = (
-        '<a class="btn" href="/auth/start">Sign in with GitHub</a>' if show_signin
-        else '<a class="btn" href="/login">Try again</a>'
-    )
+@app.on_event("startup")
+def first_start():
+    # Startup hook, not import-time code: scripts/ import this module too.
+    for dst, src in SITE_TEMPLATES.items():
+        if not dst.exists() and src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            print(f"first start: created {dst.relative_to(BASE)} from {src.name}", flush=True)
+    if AUTH is None:
+        print(f"*** ansible-runner first-run setup: open /setup and enter the setup code {SETUP_CODE} ***", flush=True)
+
+_AUTH_PUBLIC_PATHS = {"/login", "/auth/start", "/auth/callback", "/setup", "/logout"}
+_failed_logins: dict[str, list[float]] = {}  # client ip -> recent failure times (brute-force brake)
+
+
+def _auth_page(title: str, message: str, body: str = "", status: int = 200) -> HTMLResponse:
     return HTMLResponse(f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} - Ansible Runner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)} - Ansible Runner</title>
 <style>
   :root {{ color-scheme: dark; }}
   body {{
-    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem;
     background: #0b0f16; color: #e6edf3; font-family: -apple-system,"Segoe UI",system-ui,Roboto,sans-serif;
   }}
   .card {{
     background: #131a24; border: 1px solid #262f3d; border-radius: 14px; padding: 2.2rem 2.4rem;
-    max-width: 26rem; text-align: center; box-shadow: 0 8px 32px #0008;
+    width: 100%; max-width: 28rem; text-align: center; box-shadow: 0 8px 32px #0008; box-sizing: border-box;
   }}
   .logo {{
     width: 44px; height: 44px; border-radius: 11px; margin: 0 auto 1rem;
     background: linear-gradient(135deg, #ff5c4d, #ffb454);
   }}
   h1 {{ font-size: 1.15rem; margin: 0 0 .5rem; }}
-  p {{ color: #8b96a5; font-size: .88rem; line-height: 1.5; }}
-  .btn {{
+  h2 {{ font-size: .95rem; margin: 1.2rem 0 .4rem; text-align: left; }}
+  p, .hint {{ color: #8b96a5; font-size: .88rem; line-height: 1.5; }}
+  .hint {{ font-size: .78rem; text-align: left; margin: .2rem 0 .6rem; }}
+  form {{ text-align: left; }}
+  label {{ display: block; font-size: .8rem; color: #c3ccd8; margin: .7rem 0 .25rem; }}
+  input[type=text], input[type=password] {{
+    width: 100%; box-sizing: border-box; padding: .5rem .6rem; border-radius: 6px;
+    border: 1px solid #2d3747; background: #0b0f16; color: #e6edf3; font-size: .88rem;
+  }}
+  .choice {{ display: flex; gap: .5rem; margin: .6rem 0; }}
+  .choice label {{
+    flex: 1; margin: 0; padding: .55rem; border: 1px solid #2d3747; border-radius: 7px; cursor: pointer; text-align: center;
+  }}
+  .choice input {{ margin-right: .35rem; }}
+  .err {{ color: #ff8a80; font-size: .85rem; }}
+  .btn, button {{
     display: inline-block; margin-top: 1.1rem; padding: .6rem 1.3rem; border-radius: 7px; text-decoration: none;
-    font-weight: 700; font-size: .85rem; color: #1a0d0d;
+    font-weight: 700; font-size: .85rem; color: #1a0d0d; border: 0; cursor: pointer;
     background: linear-gradient(120deg, #ff5c4d, #ffb454);
   }}
+  fieldset {{ border: 0; padding: 0; margin: 0; }}
 </style></head><body>
 <div class="card">
   <div class="logo"></div>
-  <h1>{title}</h1>
+  <h1>{html.escape(title)}</h1>
   <p>{message}</p>
-  {button}
+  {body}
 </div>
-</body></html>""", status_code=200 if show_signin else 403)
+</body></html>""", status_code=status)
+
+
+def _session_user(request: Request) -> Optional[str]:
+    if AUTH is None:
+        return None
+    user, method = request.session.get("user"), request.session.get("auth")
+    if not user or method != AUTH["method"]:
+        return None
+    if method == "github":
+        return user if user.lower() in AUTH["allowed_users"] else None
+    return user if user == AUTH["username"] else None
 
 
 @app.middleware("http")
-async def require_github_login(request: Request, call_next):
+async def require_login(request: Request, call_next):
     path = request.url.path
     if path in _AUTH_PUBLIC_PATHS:
         return await call_next(request)
-    if not AUTH_CONFIGURED:
+    if AUTH is None:
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "GitHub OAuth is not configured on the server. See README.md."}, status_code=503)
-        return _auth_page(
-            "Not configured",
-            "GitHub OAuth environment variables are missing (GITHUB_OAUTH_CLIENT_ID, "
-            "GITHUB_OAUTH_CLIENT_SECRET, GITHUB_OAUTH_REDIRECT_URI, GITHUB_ALLOWED_USERS). "
-            "This GUI refuses to serve unauthenticated - see README.md.",
-        )
-    user = request.session.get("github_user")
-    if not user or user.lower() not in GITHUB_ALLOWED_USERS:
+            return JSONResponse({"detail": "First-run setup needed - open /setup."}, status_code=503)
+        return RedirectResponse("/setup")
+    if not _session_user(request):
         if path.startswith("/api/"):
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         return RedirectResponse("/login")
     return await call_next(request)
 
 
-# Registered after require_github_login on purpose: Starlette's middleware
-# stack makes whichever is added last the outermost layer, and
-# request.session must exist before require_github_login runs.
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="lax", max_age=14 * 24 * 3600)
+# Registered after require_login on purpose: Starlette's middleware stack
+# makes whichever is added last the outermost layer, and request.session must
+# exist before require_login runs.
+app.add_middleware(SessionMiddleware, secret_key=_session_key(), same_site="lax", max_age=14 * 24 * 3600)
+
+
+async def _form(request: Request) -> dict:
+    # Parsed by hand: urlencoded forms only, no python-multipart dependency.
+    raw = (await request.body())[:16384].decode("utf-8", "replace")
+    return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+
+def _setup_page(request: Request, error: str = "", values: Optional[dict] = None) -> HTMLResponse:
+    v = {k: html.escape(s) for k, s in (values or {}).items()}
+    method = v.get("method", "local")
+    redirect = v.get("redirect_uri") or html.escape(str(request.base_url).rstrip("/") + "/auth/callback")
+    err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+    body = f"""{err}
+<form method="post" action="/setup" autocomplete="off">
+  <label for="code">Setup code</label>
+  <input type="text" id="code" name="code" required>
+  <div class="hint">Printed in the container log: <code>docker logs ansible-gui-1</code></div>
+  <div class="choice">
+    <label><input type="radio" name="method" value="local" {'checked' if method == 'local' else ''}>Username + password</label>
+    <label><input type="radio" name="method" value="github" {'checked' if method == 'github' else ''}>GitHub sign-in</label>
+  </div>
+  <fieldset id="local">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" value="{v.get('username', '')}" autocomplete="username">
+    <label for="password">Password (at least {MIN_PASSWORD_LEN} characters)</label>
+    <input type="password" id="password" name="password" autocomplete="new-password">
+    <label for="password2">Password again</label>
+    <input type="password" id="password2" name="password2" autocomplete="new-password">
+  </fieldset>
+  <fieldset id="github">
+    <div class="hint">GitHub - Settings - Developer settings - OAuth Apps - New OAuth App. Its callback URL must be exactly the one below.</div>
+    <label for="client_id">Client ID</label>
+    <input type="text" id="client_id" name="client_id" value="{v.get('client_id', '')}">
+    <label for="client_secret">Client secret</label>
+    <input type="password" id="client_secret" name="client_secret" autocomplete="off">
+    <label for="redirect_uri">Callback URL</label>
+    <input type="text" id="redirect_uri" name="redirect_uri" value="{redirect}">
+    <label for="allowed_users">Allowed GitHub usernames (comma-separated)</label>
+    <input type="text" id="allowed_users" name="allowed_users" value="{v.get('allowed_users', '')}">
+  </fieldset>
+  <button type="submit">Save and continue</button>
+</form>
+<script>
+  const sync = () => {{
+    const m = document.querySelector('input[name=method]:checked').value;
+    document.getElementById('local').hidden = m !== 'local';
+    document.getElementById('github').hidden = m !== 'github';
+  }};
+  document.querySelectorAll('input[name=method]').forEach(r => r.addEventListener('change', sync));
+  sync();
+</script>"""
+    return _auth_page("First-run setup", "Choose how people sign in to this runner.", body, 400 if error else 200)
+
+
+@app.get("/setup")
+def setup_get(request: Request):
+    if AUTH is not None:
+        return RedirectResponse("/login")
+    return _setup_page(request)
+
+
+@app.post("/setup")
+async def setup_post(request: Request):
+    global AUTH
+    if AUTH is not None:
+        return RedirectResponse("/login", status_code=303)
+    f = await _form(request)
+    if not hmac.compare_digest(f.get("code", "").strip().upper(), SETUP_CODE):
+        await asyncio.sleep(1)
+        return _setup_page(request, "Wrong setup code - see docker logs ansible-gui-1.", f)
+    if f.get("method") == "local":
+        user, pw = f.get("username", "").strip(), f.get("password", "")
+        if not re.match(r"^[A-Za-z0-9._@-]{2,64}$", user):
+            return _setup_page(request, "Username: 2-64 letters, digits, '.', '_', '@' or '-'.", f)
+        if len(pw) < MIN_PASSWORD_LEN or pw != f.get("password2", ""):
+            return _setup_page(request, f"Passwords must match and be at least {MIN_PASSWORD_LEN} characters.", f)
+        cfg = {"method": "local", "username": user, "password_hash": hash_password(pw)}
+    elif f.get("method") == "github":
+        allowed = [u.strip().lower() for u in f.get("allowed_users", "").split(",") if u.strip()]
+        cfg = {"method": "github", "client_id": f.get("client_id", "").strip(),
+               "client_secret": f.get("client_secret", "").strip(), "redirect_uri": f.get("redirect_uri", "").strip(),
+               "allowed_users": allowed}
+        if not all(cfg[k] for k in ("client_id", "client_secret", "redirect_uri", "allowed_users")) \
+                or not re.match(r"^https?://[^\s]+/auth/callback$", cfg["redirect_uri"]):
+            return _setup_page(request, "Fill in every GitHub field; the callback URL must end in /auth/callback.", f)
+    else:
+        return _setup_page(request, "Choose a sign-in method.", f)
+    cfg["created"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _write_private(AUTH_FILE, json.dumps(cfg, indent=2))
+    AUTH = load_auth()
+    request.session.clear()
+    if AUTH and AUTH["method"] == "local":
+        request.session.update({"user": AUTH["username"], "auth": "local"})
+        return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+
+def _login_page(error: str = "", status: int = 200) -> HTMLResponse:
+    err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+    intro = ("This tool can trigger real installs and CIS hardening on the configured hosts, "
+             "so access is limited to specific accounts.")
+    if AUTH["method"] == "github":
+        return _auth_page("Ansible Runner", "Sign in with GitHub to continue. " + intro,
+                          err + '<a class="btn" href="/auth/start">Sign in with GitHub</a>', status)
+    form = f"""{err}
+<form method="post" action="/login">
+  <label for="username">Username</label>
+  <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+  <label for="password">Password</label>
+  <input type="password" id="password" name="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+</form>"""
+    return _auth_page("Ansible Runner", "Sign in to continue. " + intro, form, status)
 
 
 @app.get("/login")
 def login():
-    if not AUTH_CONFIGURED:
-        return _auth_page(
-            "Not configured",
-            "GitHub OAuth environment variables are missing on the server. See README.md.",
-        )
-    return _auth_page(
-        "Ansible Runner",
-        "Sign in with GitHub to continue. This tool can trigger real installs and CIS hardening "
-        "on the configured hosts, so access is limited to specific GitHub accounts.",
-        show_signin=True,
-    )
+    if AUTH is None:
+        return RedirectResponse("/setup")
+    return _login_page()
+
+
+@app.post("/login")
+async def login_post(request: Request):
+    if AUTH is None:
+        return RedirectResponse("/setup", status_code=303)
+    if AUTH["method"] != "local":
+        return RedirectResponse("/login", status_code=303)
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    recent = [t for t in _failed_logins.get(ip, []) if now - t < 300]
+    if len(recent) >= 5:
+        return _login_page("Too many failed sign-ins - wait 5 minutes.", 429)
+    f = await _form(request)
+    ok = hmac.compare_digest(f.get("username", "").strip(), AUTH["username"]) \
+        & verify_password(f.get("password", ""), AUTH["password_hash"])
+    if not ok:
+        _failed_logins[ip] = recent + [now]
+        await asyncio.sleep(1)
+        return _login_page("Wrong username or password.", 401)
+    _failed_logins.pop(ip, None)
+    request.session.clear()
+    request.session.update({"user": AUTH["username"], "auth": "local"})
+    return RedirectResponse("/", status_code=303)
 
 
 @app.get("/auth/start")
 def auth_start(request: Request):
-    if not AUTH_CONFIGURED:
-        return _auth_page(
-            "Not configured",
-            "GitHub OAuth environment variables are missing on the server. See README.md.",
-        )
+    if AUTH is None or AUTH["method"] != "github":
+        return RedirectResponse("/login")
     state = secrets.token_urlsafe(24)
     request.session["oauth_state"] = state
     params = urllib.parse.urlencode({
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": GITHUB_REDIRECT_URI,
+        "client_id": AUTH["client_id"],
+        "redirect_uri": AUTH["redirect_uri"],
         "scope": "read:user",
         "state": state,
         "allow_signup": "false",
@@ -193,24 +430,20 @@ def auth_start(request: Request):
 
 @app.get("/auth/callback")
 def auth_callback(request: Request, code: str = "", state: str = ""):
-    if not AUTH_CONFIGURED:
-        return _auth_page("Not configured", "GitHub OAuth environment variables are missing on the server.")
+    if AUTH is None or AUTH["method"] != "github":
+        return RedirectResponse("/login")
     if not code or not state or state != request.session.pop("oauth_state", None):
-        return _auth_page(
-            "Login failed",
-            "Invalid or expired login attempt (state mismatch). This can happen if the login link "
-            "was reused or took too long. Please try again.",
-            show_signin=True,
-        )
+        return _login_page("Invalid or expired login attempt (state mismatch). This can happen if the login "
+                           "link was reused or took too long. Please try again.", 400)
     try:
         token_resp = requests.post(
             "https://github.com/login/oauth/access_token",
             headers={"Accept": "application/json"},
             data={
-                "client_id": GITHUB_CLIENT_ID,
-                "client_secret": GITHUB_CLIENT_SECRET,
+                "client_id": AUTH["client_id"],
+                "client_secret": AUTH["client_secret"],
                 "code": code,
-                "redirect_uri": GITHUB_REDIRECT_URI,
+                "redirect_uri": AUTH["redirect_uri"],
             },
             timeout=15,
         )
@@ -226,17 +459,19 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
         user_resp.raise_for_status()
         login_name = (user_resp.json().get("login") or "").strip()
     except Exception as e:
-        return _auth_page("Login failed", f"Could not complete GitHub sign-in: {e}", show_signin=True)
+        return _login_page(f"Could not complete GitHub sign-in: {e}", 502)
 
-    if not login_name or login_name.lower() not in GITHUB_ALLOWED_USERS:
+    if not login_name or login_name.lower() not in AUTH["allowed_users"]:
         request.session.clear()
         return _auth_page(
             "Not authorized",
-            f"Signed in to GitHub as '{login_name}', but this account is not on the allowed list "
-            "for this tool. Ask whoever runs it to add you to GITHUB_ALLOWED_USERS.",
+            f"Signed in to GitHub as '{html.escape(login_name)}', but this account is not on the allowed "
+            "list for this tool. Ask whoever runs it to add you.",
+            '<a class="btn" href="/login">Back</a>', 403,
         )
 
-    request.session["github_user"] = login_name
+    request.session.clear()
+    request.session.update({"user": login_name, "auth": "github"})
     return RedirectResponse("/")
 
 
@@ -248,7 +483,7 @@ def logout(request: Request):
 
 @app.get("/api/whoami")
 def api_whoami(request: Request):
-    return {"user": request.session.get("github_user")}
+    return {"user": _session_user(request)}
 
 
 def has_vault_pass() -> bool:
@@ -319,7 +554,7 @@ def reconcile_interrupted_runs():
 # Inventory groups the GUI manages, and the OS each one means. "ssh" is for
 # machines reached over SSH that no install playbook may touch (a NAS, an
 # appliance): connection tests and read-only checks only.
-# "web" is a web application's login (e.g. ntopng.aktasolutions.com): the
+# "web" is a web application's login (e.g. emby.aktasolutions.com): the
 # vault keeps the URL's credentials for read-only checks through its API;
 # nothing connects to it over SSH or WinRM and no playbook targets it.
 HOST_GROUPS = ("windows", "linux", "ssh", "web")
@@ -469,7 +704,7 @@ _LOGIN_PAGE_RE = re.compile(r"login|signin|sign_in|auth", re.IGNORECASE)
 def test_web_host(host: str) -> dict:
     """DNS + HTTPS reachability, then the stored login: a valid one gets the
     page (2xx), a bad or missing one is redirected to the app's login page or
-    refused (401/403) - e.g. ntopng: 200 vs 302 to /lua/login.lua."""
+    refused (401/403) - e.g. 200 vs 302 to the login page."""
     url = f"https://{host}/"
     try:
         addrs = sorted({a[4][0] for a in socket.getaddrinfo(host, 443)})
@@ -854,20 +1089,24 @@ class RunIn(BaseModel):
     rsat: bool = False  # install all RSAT (Remote Server Administration Tools) capabilities
     printer: bool = False  # add a network printer (driverless IPP)
     printer_name: Optional[str] = None  # default in the playbook: HP OfficeJet 8010
-    printer_address: Optional[str] = None  # default in the playbook: 192.0.2.9
+    printer_address: Optional[str] = None  # default: site_printer (server site.yml)
     hp_smart: bool = False  # HP Smart from the Microsoft Store (winget, as the signed-in user)
     drive: Optional["DriveParams"] = None  # map / remove a network drive for the signed-in user
     docker: bool = False  # Linux hosts: Docker Engine + Compose plugin
     docker_users: list[str] = []  # Linux hosts: users for the docker + sudo groups (empty = playbook default)
     softflowd: bool = False  # Linux hosts: softflowd NetFlow exporter
-    softflowd_collector: Optional[str] = None  # host:port, default 192.0.2.8:2055 (netflow2ng)
+    softflowd_collector: Optional[str] = None  # host:port, default site_netflow_collector (server site.yml)
 
 
 # Settings the GUI remembers between runs (gui/data/defaults.json on the
 # server) - e.g. the Wazuh manager: set once, pre-filled after that. Never
 # secrets (no registration password) and nothing per-host (no agent name).
 DEFAULTS_PATH = DATA_DIR / "defaults.json"
-DEFAULTS = {"wazuh": {"manager": "192.0.2.8", "port": "1514", "protocol": "", "group": ""}}
+# "site" pre-fills the form fields (printer, collector, capture, VPN). Its values exist
+# only in defaults.json on the runner - git never holds addresses.
+DEFAULTS = {"wazuh": {"manager": "", "port": "1514", "protocol": "", "group": ""},
+            "site": {"printer": "", "softflowd_collector": "", "sniff_vm_host": "", "sniff_exclude": "",
+                     "vpn_firewall": "", "vpn_hosts": ""}}
 
 
 def load_defaults() -> dict:
@@ -892,7 +1131,7 @@ def api_defaults():
 
 @app.post("/api/defaults/{section}")
 def api_defaults_save(section: str, values: dict):
-    if section not in DEFAULTS:
+    if section not in DEFAULTS or section == "site":  # site: edited on the server only
         raise HTTPException(404, f"No remembered settings called '{section}'.")
     manager = str(values.get("manager", ""))
     if section == "wazuh" and not (_IP_RE.match(manager) or HOST_NAME_RE.match(manager)):
@@ -993,7 +1232,7 @@ def build_extra_vars(body: RunIn) -> dict:
         extra_vars["softflowd_enabled"] = True
         if body.softflowd_collector:
             if not COLLECTOR_RE.match(body.softflowd_collector):
-                raise HTTPException(400, "softflowd collector must be host:port, e.g. 192.0.2.8:2055.")
+                raise HTTPException(400, "softflowd collector must be host:port, e.g. 192.0.2.10:2055.")
             extra_vars["softflowd_collector"] = body.softflowd_collector
     return extra_vars
 
@@ -1429,7 +1668,7 @@ def api_cis_run(body: CisRunIn):
             # Their audit, and the audit_only stop before any remediation,
             # live in tasks tagged only run_audit. Filtered to the level's
             # tags alone, both were skipped and an "audit only" run hardened
-            # the host for real (130 changes on 192.0.2.150, confirmed).
+            # the host for real (130 changes on a Rocky 10 test host, confirmed).
             tags.append("run_audit")
 
     cmd = ["ansible-playbook", profile.get("playbook", CIS_PLAYBOOK), "--tags", ",".join(tags)]
@@ -1690,10 +1929,10 @@ _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 class SniffIn(BaseModel):
     vmid: int = 102  # capture VM (gets the extra NIC)
-    vm_host: str = "192.0.2.8"  # its address in the inventory (linux group)
+    vm_host: str = ""  # its address in the inventory (linux group); pre-filled from defaults.json
     source_bridge: str = "vmbr0"  # bridge on its node whose traffic is mirrored
     mode: str = "uplink"  # uplink | ports - see playbooks/proxmox_sniff.yml
-    exclude_hosts: list[str] = ["192.0.2.188"]  # never mirrored (the TrueNAS's iSCSI)
+    exclude_hosts: list[str] = []  # never mirrored (e.g. the NAS's iSCSI); pre-filled from defaults.json
     state: str = "present"  # present | absent
 
 
@@ -1719,7 +1958,7 @@ _CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$")
 
 
 class VpnIn(BaseModel):
-    firewall: str = "192.0.2.1"  # OPNsense, an "ssh" host with a root login
+    firewall: str = ""  # OPNsense, an "ssh" host with a root login; pre-filled from defaults.json
     login_host: str = "privateinternetaccess.com"  # "web" host holding the PIA login
     region: str = "ca_toronto"
     instance: str = "toronto"

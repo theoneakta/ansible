@@ -1,4 +1,5 @@
 ---
+# Template: copied to inventory/image.yml on first start (that file stays on the runner).
 # Windows image build/capture settings (playbooks/image_build.yml,
 # playbooks/image_capture.yml). Managed by the GUI's "Windows Image" tab,
 # which rewrites this file - comments other than this header aren't kept.
@@ -8,10 +9,10 @@
 # Proxmox token ansible@pam!ansible: user "ansible" in the pam realm (a Linux
 # user of that name must exist on the node), Administrator role on "/", and
 # its token "ansible" with Privilege Separation unchecked so it inherits that.
-proxmox_api_url: https://192.0.2.237:8006/api2/json
+proxmox_api_url: ""                       # e.g. https://192.0.2.5:8006/api2/json
 proxmox_token_id: ansible@pam!ansible
 proxmox_validate_certs: false
-proxmox_node: pve6
+proxmox_node: ""
 proxmox_storage_pool: local-lvm
 proxmox_iso_storage: local
 proxmox_bridge: vmbr0
@@ -24,7 +25,7 @@ image_timezone: Eastern Standard Time
 image_virtio_iso: local:iso/virtio-win.iso
 image_linux_timezone: America/Toronto
 image_locale: en-US
-pxe_server_ip: 192.0.2.8
+pxe_server_ip: ""                         # this Docker host, e.g. 192.0.2.10
 pxe_http_port: 8092
 images:
   win11:
@@ -33,7 +34,7 @@ images:
     iso: local:iso/Windows11.iso
     edition: Windows 11 Pro
     # Microsoft's public generic install key - selects the edition, never activates.
-    product_key: VK7JG-NPHTM-C97JM-9MPGT-3V66T
+    product_key: ""
     template_vmid: 9011
     template_name: win11-pro-base
     disk_size: 64G

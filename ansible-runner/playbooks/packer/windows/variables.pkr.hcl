@@ -4,7 +4,7 @@
 
 variable "proxmox_url" {
   type    = string
-  default = "https://192.0.2.236:8006/api2/json"
+  default = "https://192.0.2.5:8006/api2/json"
 }
 variable "proxmox_token_id" {
   type    = string
@@ -107,7 +107,7 @@ variable "locale" {
 variable "controller_address" {
   description = "Only this address may reach WinRM on deployed PCs (setup-winrm-ssl.ps1 -ControllerAddress)"
   type        = string
-  default     = "192.0.2.8"
+  default     = "192.0.2.10"
 }
 variable "winrm_setup_script" {
   type    = string

@@ -18,7 +18,7 @@
 # <prefix>_section1..7 booleans (unpadded), single controls
 # <prefix>_rule_<x_y_z>. The GUI's CIS section builds all of these (see
 # CIS_PROFILES in gui/app.py); on the CLI:
-#   ./run.sh cis_hardening_linux.yml --cis-os rocky10 --cis-level 1-server --limit 192.0.2.150
+#   ./run.sh cis_hardening_linux.yml --cis-os rocky10 --cis-level 1-server --limit 192.0.2.50
 #
 # Run against one OS family per run: cis_role names a single role.
 
@@ -83,8 +83,8 @@
     # Section 4 (host-based firewall) is off unless picked explicitly on the
     # GUI's "sections" mode or with -e <prefix>_section4=true: it turns on
     # ufw/firewalld/nftables with a default-deny inbound policy, which cuts
-    # off every service not explicitly allowed - e.g. Emby and ntopng run with
-    # host networking on the Docker hosts (192.0.2.7/.8).
+    # off every service not explicitly allowed - e.g. Emby runs with
+    # host networking on the Docker hosts.
     ubtu22cis_section4: false
     ubtu24cis_section4: false
     rhel8cis_section4: false
@@ -97,7 +97,7 @@
     # Journal upload (systemd-journal-upload) off: no central log server yet,
     # and the roles' default target is a placeholder (192.168.50.42) with no
     # certificates - the service then fails at every boot (confirmed live,
-    # fresh Rocky 10 on 192.0.2.150). Skips "authentication is configured"
+    # fresh Rocky 10 test host). Skips "authentication is configured"
     # and "is enabled and active"; journal-remote stays installed.
     rhel8cis_rule_6_2_1_2_2: false
     rhel8cis_rule_6_2_1_2_3: false

@@ -2,9 +2,9 @@
 # CIS hardening for Linux Docker hosts: cis_hardening_linux.yml unchanged,
 # plus the exceptions a container host needs. Use it instead of
 # cis_hardening_linux.yml on hosts running Docker/Podman (same options):
-#   ./run.sh cis_hardening_linux_docker.yml --cis-os rocky10 --cis-level 1-server --limit 192.0.2.150
+#   ./run.sh cis_hardening_linux_docker.yml --cis-os rocky10 --cis-level 1-server --limit 192.0.2.50
 #
-# Exceptions (found running Level 1 on 192.0.2.150 with ntopng_stack.yml):
+# Exceptions (found running Level 1 on a Rocky 10 test host with ntopng_stack.yml):
 #   7.1.11  World-writable files: the role chmods o-w everywhere, including
 #           the files inside Docker's image layers (/var/lib/docker,
 #           /var/lib/containerd - ClickHouse's config.xml/users.xml,

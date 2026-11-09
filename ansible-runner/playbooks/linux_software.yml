@@ -8,7 +8,7 @@
 # create too), with sudo - see inventory/group_vars/linux/vars.yml.
 #
 # Run:  ./run.sh install.yml --docker
-#       ./run.sh install.yml --docker --docker-user alice --limit 192.0.2.150
+#       ./run.sh install.yml --docker --docker-user alice --limit 192.0.2.50
 
 - name: Provision Linux hosts
   hosts: linux
@@ -28,22 +28,26 @@
     # Users added to the docker group (docker without sudo) and to the
     # distro's sudo group (Ubuntu "sudo", Rocky "wheel"). A user that doesn't
     # exist yet is created - with no password, so set one before using sudo.
-    docker_users: [admin]
+    docker_users: "{{ site_docker_users | default([]) }}"   # server site.yml
 
     # softflowd: exports NetFlow for the host's traffic to a collector - by
-    # default netflow2ng on the Docker host (192.0.2.8, UDP 2055), which
-    # feeds ntopng. Off unless requested (--softflowd / GUI).
+    # default flowd at site_netflow_collector (UDP 2055, SentryLens deploy: collector.yml). Off
+    # unless requested (--softflowd / GUI).
     softflowd_enabled: false
-    softflowd_collector: "192.0.2.8:2055"
+    softflowd_collector: "{{ site_netflow_collector | default('') }}"   # server site.yml
     # Interface to watch; empty = the one holding the default route.
     softflowd_interface: ""
-    # NetFlow v9 (what netflow2ng and most collectors expect); maxlife=60 exports
-    # long-running flows every minute instead of only when they end, so ntopng
-    # shows them live.
+    # NetFlow v9 (what Akvorado and most collectors expect); maxlife=60 exports
+    # long-running flows every minute instead of only when they end, so the
+    # collector sees them live.
     softflowd_options: "-n {{ softflowd_collector }} -v 9 -t maxlife=60"
     # Rocky/RHEL: no package (not in EPEL 9/10) - built from this upstream
     # release instead (https://github.com/irino/softflowd).
     softflowd_version: "1.1.1"
+    # A VM is refused: its hypervisor's bridge (pve5, pve6) already exports its
+    # traffic, so a second exporter would count it twice. true = a VM whose
+    # hypervisor exports nothing.
+    softflowd_on_vm: false
 
     # Wazuh agent, from Wazuh's own repository - same settings as the Windows
     # hosts (install_software.yml); installed when wazuh_manager is set.
@@ -54,7 +58,7 @@
     wazuh_group: ""
     wazuh_agent_name: ""
     # An agent must not be newer than its manager - pinned to the manager's
-    # version (wazuh/wazuh-manager:4.14.4 on 192.0.2.8), and held there so
+    # version (wazuh/wazuh-manager:4.14.4 on the manager host), and held there so
     # a system update doesn't move it. Raise it when the manager is upgraded.
     wazuh_agent_version: "4.14.4"
 
@@ -64,9 +68,14 @@
     # tab), like the Windows hosts.
     tailscale_join_enabled: false
     # Unlike Windows, subnet routes are NOT accepted by default: on Linux a
-    # route advertised for the host's own LAN (192.0.2.0/24) takes over its
+    # route advertised for the host's own LAN (e.g. 192.0.2.0/24) takes over its
     # LAN traffic - replies to SSH (Ansible) would go into the tunnel.
     tailscale_accept_routes: false
+    # MagicDNS takes over the host's resolver. Off for hosts whose own
+    # lookups must go to the firewall's DNS - e.g. the Akvorado collector,
+    # where Sentry Lens re-resolves domains through Unbound's cache
+    # (-e tailscale_accept_dns=false).
+    tailscale_accept_dns: true
 
   pre_tasks:
     # The login (vault_win_user/vault_win_password) comes from the host's own
@@ -92,6 +101,7 @@
       register: sudo_ws
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: Use the classic sudo for privilege escalation
       ansible.builtin.set_fact:
@@ -239,9 +249,26 @@
     - name: softflowd (NetFlow exporter)
       when: softflowd_enabled | bool
       block:
-        - name: Gather facts (distribution, default route)
+        - name: A collector is needed (site_netflow_collector in the runner's site.yml, or softflowd_collector)
+          ansible.builtin.assert:
+            that: softflowd_collector | length > 0
+            fail_msg: No NetFlow collector - set site_netflow_collector in inventory/group_vars/all/site.yml or pass softflowd_collector.
+
+        - name: Gather facts (distribution, default route, VM or not)
           ansible.builtin.setup:
-            gather_subset: [min, network]
+            gather_subset: [min, network, virtual]
+
+        - name: Not on a VM (its hypervisor already exports its traffic)
+          ansible.builtin.assert:
+            that: >-
+              softflowd_on_vm | bool or
+              ansible_facts['virtualization_role'] | default('') != 'guest'
+            fail_msg: >-
+              {{ inventory_hostname }} is a VM ({{ ansible_facts['virtualization_type'] }}):
+              the hypervisor's bridge already exports its flows - softflowd here
+              would count them twice. softflowd_on_vm=true if its hypervisor
+              exports nothing.
+            quiet: true
 
         - name: Install softflowd (Ubuntu / Debian)
           ansible.builtin.apt:
@@ -538,7 +565,8 @@
             - name: tailscale up
               ansible.builtin.command: >-
                 tailscale up --auth-key=file:/root/.tailscale-authkey
-                --accept-routes={{ tailscale_accept_routes | bool | lower }} --timeout=90s
+                --accept-routes={{ tailscale_accept_routes | bool | lower }}
+                --accept-dns={{ tailscale_accept_dns | bool | lower }} --timeout=90s
               register: tailscale_up
               changed_when: tailscale_up.rc == 0
               failed_when: false

@@ -1,0 +1,27 @@
+# Inventory template. On first start the GUI (or run.sh) copies this to
+# inventory/hosts.yml, which stays on this runner only - never commit it
+# (the repo is public). Add hosts from the GUI's Hosts tab, or by hand:
+#   windows:
+#     hosts:
+#       192.0.2.20:
+all:
+  children:
+    windows:          # WinRM (credentials: group_vars/windows/vault.yml)
+      hosts:
+    linux:            # SSH (Ubuntu / Rocky / Debian)
+      hosts:
+    ssh:              # SSH-only appliances with a root login (firewall, NAS, hypervisors)
+      hosts:
+    web:              # web app logins, keyed by host name (used by playbooks and scripts)
+      hosts:
+    # Groups some playbooks target by name - put the matching host in each:
+    firewall:         # opnsense_pia.yml - the OPNsense firewall
+      hosts:
+    vps:              # aktasolutions_site.yml - the public web server
+      hosts:
+    trivy_targets:    # trivy_scan.yml - Docker hosts to scan
+      hosts:
+    docker_hosts:
+      hosts:
+    hypervisors:      # Proxmox nodes
+      hosts:

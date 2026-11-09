@@ -4,10 +4,10 @@
 # i.e. the GUI's Install tab "Map network drive" card).
 #
 # Run:
-#   ./run.sh map_network_drive.yml --limit 192.0.2.17 \
-#     -e drive_letter=Z -e 'drive_path=\\192.0.2.188\movies\tv' \
+#   ./run.sh map_network_drive.yml --limit 192.0.2.20 \
+#     -e drive_letter=Z -e 'drive_path=\\nas\share\folder' \
 #     -e drive_username=share -e drive_password=... [-e drive_persistent=false] [-e drive_label=TV]
-#   ./run.sh map_network_drive.yml --limit 192.0.2.17 -e drive_letter=Z -e drive_state=absent
+#   ./run.sh map_network_drive.yml --limit 192.0.2.20 -e drive_letter=Z -e drive_state=absent
 #
 # Someone must be signed in at the PC: the drive is created in their session.
 

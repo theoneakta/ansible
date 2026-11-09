@@ -1,55 +1,46 @@
 # Working on this repo
 
+This repo is **public**. Real addresses, host names-to-roles, user names,
+server paths and account details are in `CLAUDE.local.md` (gitignored) and on
+the runner itself - never in a tracked file.
+
 ## Where it runs
 
-ansible-runner runs as Docker containers on **192.0.2.8** (docker-apps2), in
-`/home/user/docker/ansible`. Ansible is only installed **inside the
-`ansible-gui-1` container** (not on the host, not on this PC).
+ansible-runner runs as Docker containers on the runner host (see
+`CLAUDE.local.md`). Ansible is only installed **inside the `ansible-gui-1`
+container** (not on the host, not on this PC). Playbooks run there only.
 
-## Connecting (from this PC, Git Bash)
+## Site values live on the runner, not in git
 
-```bash
-ssh -i ~/.ssh/claude_agent_key -o BatchMode=yes claude@192.0.2.8 'docker ps'
-```
+- `inventory/hosts.yml` - the real inventory, including the groups the
+  playbooks target (`firewall`, `vps`, `trivy_targets`, `docker_hosts`, ...).
+  Git keeps `inventory/hosts.example.yml` only.
+- `inventory/group_vars/all/site.yml` - every `site_*` value (addresses, URLs,
+  paths, account maps). Git keeps `inventory/site.example.yml` only.
+- `inventory/image.yml` - image build settings. Git keeps `image.example.yml`.
+- `gui/data/defaults.json` - what the GUI pre-fills (section `site`).
 
-- User `claude`, key `~/.ssh/claude_agent_key` (in this Windows profile only); `claude` can run `docker`.
-- From PowerShell: `ssh -i $env:USERPROFILE\.ssh\claude_agent_key claude@192.0.2.8 ...`
-- Never a password, never `user`.
-
-Run Ansible inside the container (vault password is a mounted secret):
-
-```bash
-ssh -i ~/.ssh/claude_agent_key -o BatchMode=yes claude@192.0.2.8 \
-  'docker exec -w /ansible ansible-gui-1 ansible-playbook playbooks/<name>.yml \
-     --vault-password-file /run/secrets/vault_pass'
-```
-
-Ad-hoc against a host: `docker exec -w /ansible ansible-gui-1 ansible <host> -m shell -a '...' --vault-password-file /run/secrets/vault_pass`
+Playbooks, scripts and the GUI read those; a hardcoded address in a tracked
+file is a bug. Examples use 192.0.2.x / 198.51.100.x / 203.0.113.x.
+Before committing: `git diff --cached | grep -nE '([0-9]{1,3}\.){3}[0-9]{1,3}'`.
 
 ## Deploying changes
 
-The container mounts these from `/home/user/docker/ansible` (live, no rebuild):
-`playbooks/`, `inventory/`, `scripts/`, `pxe/data`, `gui/data`.
+The container mounts `playbooks/`, `inventory/`, `scripts/`, `pxe/data`,
+`gui/data` live from the deploy directory (no rebuild). Copy files with `scp`.
+**Never copy `inventory/` from git over the server's** - the server's is the
+real one.
 
-```bash
-scp -i ~/.ssh/claude_agent_key ansible-runner/playbooks/<file> claude@192.0.2.8:/home/user/docker/ansible/playbooks/
-```
-
-`gui/` code (app.py, static/) is baked into the image - copy it, then rebuild:
-
-```bash
-ssh ... 'cd /home/user/docker/ansible && docker compose build gui && docker compose up -d gui'
-```
-
-A rebuild kills any run in progress (and wipes the container's /tmp) - check
-first that no `ansible-playbook` is running in `ansible-gui-1`.
+`gui/` code (app.py, static/) is baked into the image - copy it, then
+`docker compose build gui && docker compose up -d gui`. A rebuild kills any run
+in progress (and wipes the container's /tmp) - check first that no
+`ansible-playbook` is running in `ansible-gui-1`.
 
 ## Rules
 
 - Credentials live in the Ansible vault (group vault + per-host
   `inventory/host_vars/<host>/vault.yml` on the server). Use them; never print
   secrets, never guess credentials.
-- The inventory on the server (`inventory/hosts.yml`) is the real one; groups
-  `windows`, `linux`, `ssh` (SSH-only, e.g. OPNsense 192.0.2.1, TrueNAS
-  192.0.2.188 - root logins), `web` (web app logins).
+- Inventory groups: `windows`, `linux`, `ssh` (SSH-only, e.g. the firewall and
+  the NAS - root logins), `web` (web app logins).
 - Ask before changes to the firewall, the NAS, or anything destructive.

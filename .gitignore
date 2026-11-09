@@ -8,3 +8,16 @@
 
 # Installer ISOs (large, licensed - never commit)
 iso-installer/
+
+# Site data - this repo is PUBLIC. Real values live on the runner only;
+# git keeps the *.example.yml files (documentation-range addresses).
+CLAUDE.local.md
+ansible-runner/inventory/hosts.yml
+ansible-runner/inventory/image.yml
+ansible-runner/inventory/group_vars/all/
+ansible-runner/inventory/host_vars/
+ansible-runner/inventory/*.bak*
+ansible-runner/inventory/**/*.bak*
+
+# Local backup of the pre-rewrite history (holds the old site data) - never commit
+.history-backup/

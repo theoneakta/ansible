@@ -45,7 +45,7 @@
     packer_log: "/ansible/gui-data/packer-build-{{ image_id }}.log"
     # The local admin every deployed PC gets: vault_image_admin_user/_password
     # when set - kept separate on purpose, so images keep their account
-    # (admin) even when the login this toolkit manages hosts with
+    # even when the login this toolkit manages hosts with
     # changes - else the group login. Override per build if wanted.
     image_admin_user: "{{ vault_image_admin_user | default(vault_win_user) }}"
     image_admin_password: "{{ vault_image_admin_password | default(vault_win_password) }}"

@@ -14,7 +14,7 @@
 #
 # Inputs (vars):
 #   drive_letter      Z                       (letter only, no colon needed)
-#   drive_path        \\192.0.2.188\movies\tv   (a sub-folder of a share is fine)
+#   drive_path        \\nas\share\folder     (a sub-folder of a share is fine)
 #   drive_username    user or DOMAIN\user     (empty = the signed-in user's own credentials)
 #   drive_password    the share password
 #   drive_persistent  true  = reconnects at every logon, credentials saved in

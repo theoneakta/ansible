@@ -3,7 +3,7 @@
 
     docker exec -w /ansible ansible-gui-1 python3 scripts/firefly_paypal_import.py [--dry-run]
 
-Reads every *.csv in /ansible/gui-data/paypal (= gui/data/paypal on 192.0.2.8; PayPal
+Reads every *.csv in /ansible/gui-data/paypal (= gui/data/paypal on the runner; PayPal
 -> Activity -> Download, CSV, any period; overlapping exports are fine). Each completed
 payment / refund becomes one record; the same payment in two exports counts once.
 
@@ -30,8 +30,9 @@ import requests
 
 sys.path.insert(0, "/ansible")
 from gui.app import HOST_VARS_DIR, read_vault  # noqa: E402
+from scripts.site_config import site  # noqa: E402
 
-FF = "http://192.0.2.8:8080"
+FF = site("site_firefly_url")
 FOLDER = "/ansible/gui-data/paypal"
 ACCOUNT = "PayPal (history)"   # not just "PayPal": that is the expense account of the BMO "PAYPAL ..." payments
 PAY_TYPES = {"PreApproved Payment Bill User Payment", "Express Checkout Payment", "Website Payment",

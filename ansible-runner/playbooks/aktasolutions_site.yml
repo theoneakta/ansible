@@ -14,7 +14,7 @@
 # Run: ansible-playbook playbooks/aktasolutions_site.yml --vault-password-file /run/secrets/vault_pass
 
 - name: aktasolutions.com site
-  hosts: "{{ akta_host | default('203.0.113.10') }}"
+  hosts: "{{ akta_host | default('vps') }}"
   gather_facts: false
   become: true
   vars:

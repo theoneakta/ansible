@@ -47,7 +47,7 @@
     # converge with win_skip_for_test: true still locked the operator out
     # of a WinRM-managed host after five failed authentications - reported
     # from a live run where the host was lost mid-play and never
-    # recovered"). Confirmed live on 192.0.2.17: a real run applied 1.2.2,
+    # recovered"). Confirmed live on a Windows 11 PC: a real run applied 1.2.2,
     # WinRM auth started rejecting the account shortly after, and recovery
     # needed local/console access to re-run setup-winrm-ssl.ps1 - exactly
     # the failure mode this variable exists to prevent. true also skips
@@ -89,7 +89,7 @@
     win25cis_rule_18_4_1: false
     # ---- Personal PC / laptop exceptions (Windows 11 only) ----
     # Applied only when cis_personal_pc is true: the GUI's "Windows 11 Home / personal laptop" entry,
-    # run.sh --cis-os windows11home. Each was found breaking the XPS (192.0.2.17) - Microsoft-account
+    # run.sh --cis-os windows11home. Each was found breaking a Dell XPS laptop - Microsoft-account
     # sign-in, OneDrive/Outlook, NAS access; the reasons are below, control by control. The plain
     # "Windows 11" entry applies them (full benchmark, minus the remote-management safety above).
     cis_personal_pc: false
@@ -332,7 +332,7 @@
           ansible.windows.win_shell: Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
           # Undefined too: with every scope Undefined (a fresh Windows 11
           # client), the effective policy is Restricted - confirmed live on
-          # 192.0.2.181, see install_software.yml's Chocolatey bootstrap.
+          # a Windows PC, see install_software.yml's Chocolatey bootstrap.
           when: (cis_local_machine_execution_policy.stdout | trim) in ['Undefined', 'Restricted', 'AllSigned']
       when: (run_audit | default(false) | bool) or (audit_only | default(false) | bool)
       tags: always

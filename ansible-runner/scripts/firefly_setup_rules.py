@@ -22,8 +22,9 @@ import requests
 
 sys.path.insert(0, "/ansible")
 from gui.app import HOST_VARS_DIR, read_vault  # noqa: E402
+from scripts.site_config import site  # noqa: E402
 
-FF = "http://192.0.2.8:8080"
+FF = site("site_firefly_url")
 PREFIX = "ansible-runner: "
 
 # Category -> description fragments (case-insensitive). First matching rule wins (top to bottom).

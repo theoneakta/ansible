@@ -3,7 +3,7 @@
 
 Runs inside the ansible-gui container (so it can read the vault):
     docker exec -w /ansible ansible-gui-1 python3 scripts/firefly_simplefin_sync.py [--dry-run]
-Scheduled from the `claude` user's crontab on 192.0.2.8.
+Scheduled from the `claude` user's crontab on the runner.
 
 Secrets come from the vault (ansible-runner "web" hosts):
     fin.aktasolutions.com      vault_api_token             Firefly III personal access token
@@ -18,7 +18,7 @@ SimpleFIN has no transactions (e.g. the bank connection needs a re-login).
 
 Accounts are created in Firefly once, the first time they have transactions,
 with an opening balance that makes Firefly's balance match the bank's. Which
-account is business / personal is set in ACCOUNTS below (by last 4 digits).
+account is business / personal is set in site_firefly_accounts (server site.yml, by last 4 digits).
 """
 import json
 import re
@@ -32,18 +32,16 @@ import requests
 
 sys.path.insert(0, "/ansible")
 from gui.app import HOST_VARS_DIR, read_vault  # noqa: E402
+from scripts.site_config import site  # noqa: E402
 
-FIREFLY = "http://192.0.2.8:8080"
+FIREFLY = site("site_firefly_url")
 SIMPLEFIN_HOST = "beta-bridge.simplefin.org"   # vault entry holding the SimpleFIN access URL
 LOOKBACK_DAYS = 45          # SimpleFIN's recommended maximum per request
 TZ = ZoneInfo("America/Toronto")   # bank days, as BMO shows them
 TAG_IMPORTED = "simplefin"
 # Last 4 digits of the bank account -> (Firefly account name, business/personal tag)
-ACCOUNTS = {
-    "0001": ("Bank Chequing", "business"),
-    "0002": ("Bank Savings", "business"),
-    "0003": ("Bank Joint", "personal"),
-}
+# Last 4 digits of the bank account -> [Firefly account name, business/personal tag], from the server only
+ACCOUNTS = {k: tuple(v) for k, v in site("site_firefly_accounts").items()}
 DRY = "--dry-run" in sys.argv
 
 

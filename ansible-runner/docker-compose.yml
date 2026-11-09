@@ -28,13 +28,14 @@ services:
     environment:
       HOME: /tmp
       ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
-      # GitHub OAuth login gate - see README.md ("GitHub sign-in"). Set these
-      # in a .env file next to this compose file (gitignored, like
-      # .vault_pass); the GUI refuses to serve unauthenticated if unset.
+      # Sign-in - see README.md ("Sign-in"). Optional: left unset, the GUI's
+      # first-run page (/setup) asks for a username + password or GitHub
+      # OAuth and keeps it in gui/data/auth.json. Set all four GITHUB_* in a
+      # .env next to this file (gitignored) to configure GitHub here instead.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-}
-      GITHUB_ALLOWED_USERS: ${GITHUB_ALLOWED_USERS:-theoneakta}
+      GITHUB_ALLOWED_USERS: ${GITHUB_ALLOWED_USERS:-}
       SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:-}
     volumes:
       - ./playbooks:/ansible/playbooks

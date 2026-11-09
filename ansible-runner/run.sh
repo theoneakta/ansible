@@ -33,9 +33,9 @@
 #   --win11debloat                       run Win11Debloat with its own recommended defaults, silently
 #   --rsat                               install all RSAT (Remote Server Administration Tools) capabilities
 #   --docker                             Linux hosts: install Docker Engine + the Compose plugin
-#   --softflowd [--softflowd-collector <host:port>]  Linux hosts: softflowd NetFlow exporter (default collector 192.0.2.8:2055)
+#   --softflowd [--softflowd-collector <host:port>]  Linux hosts: softflowd NetFlow exporter (default collector: site_netflow_collector)
 #   --docker-user <name>                 Linux hosts: add this user to the docker + sudo groups (repeatable;
-#                                        default admin)
+#                                        default: site_docker_users)
 #
 # For playbooks/cis_hardening.yml (CIS Benchmark hardening - see its own header comment first):
 #   --cis-os <windows11|windows11home|windows2019|windows2022|windows2025>  default: windows11
@@ -60,6 +60,13 @@
 #   ./run.sh --vault-rekey [file]        change vault password (then update .vault_pass)
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Site files are never in git (public repo): create them from the templates on
+# first use, then they are edited on this runner only.
+for pair in hosts.yml:hosts.template.yml image.yml:image.template.yml group_vars/all/site.yml:site.template.yml; do
+  dst="inventory/${pair%%:*}"; src="inventory/${pair#*:}"
+  if [[ ! -e "$dst" && -e "$src" ]]; then mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; echo "first start: created $dst from $src"; fi
+done
 
 DEFAULT_VAULT="inventory/group_vars/windows/vault.yml"
 PASSFILE=".vault_pass"

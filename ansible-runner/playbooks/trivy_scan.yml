@@ -1,20 +1,22 @@
 ---
 # Trivy (Aqua Security, open source) -> DefectDojo.
-# Scans, on every Docker host: the images of running containers + every git checkout; on .8 also the
-# GitHub repos of trivy_github_user. Results are re-imported into DefectDojo (http://192.0.2.8:8095),
+# Scans, on every host of the trivy_targets group: the images of running containers + every git checkout;
+# on site_apps_host also the GitHub repos of trivy_github_user. Results are re-imported into DefectDojo
+# (site_defectdojo_url),
 # so findings that disappear get closed and the history stays in one place.
-#   DefectDojo + Trivy server: /home/user/docker/defectdojo on .8 (compose; secrets in .env + vault)
+#   DefectDojo + Trivy server: {{ site_docker_root }}/defectdojo on site_apps_host (compose; secrets in .env + vault)
 #   Vault host defectdojo.aktasolutions.com: vault_win_user/vault_win_password (GUI login, also used for
 #   the API), trivy_token (Trivy server), optional github_token (read-only, needed for private repos).
 # Run: ansible-playbook playbooks/trivy_scan.yml --vault-password-file /run/secrets/vault_pass
-# Nightly: systemd timer trivy-scan.timer on .8.
+# Nightly: systemd timer trivy-scan.timer on site_apps_host.
+# Hosts, addresses and URLs come from the runner's inventory and group_vars/all/site.yml (never git).
 
 - name: GitHub repos to scan
   hosts: localhost
   gather_facts: false
   vars:
-    trivy_github_user: admin
-    # third-party repos we run code from (softflowd: built on the hosts that export NetFlow to ntopng)
+    trivy_github_user: "{{ site_github_user | default('') }}"   # server site.yml; empty = no GitHub repos
+    # third-party repos we run code from (softflowd: built on the hosts that export NetFlow to Akvorado)
     trivy_extra_repos:
       - https://github.com/irino/softflowd.git
     dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
@@ -24,21 +26,22 @@
         url: "{{ 'https://api.github.com/user/repos?affiliation=owner&per_page=100' if dd.github_token | default('') else 'https://api.github.com/users/' ~ trivy_github_user ~ '/repos?per_page=100' }}"
         headers: "{{ {'Authorization': 'Bearer ' ~ dd.github_token} if dd.github_token | default('') else {} }}"
         return_content: true
+      when: trivy_github_user | length > 0 or dd.github_token | default('') | length > 0
       register: gh
       no_log: true
 
     - name: Remember the clone URLs (no forks, no archived repos)
       ansible.builtin.set_fact:
-        trivy_github_repos: "{{ (gh.json | rejectattr('fork') | rejectattr('archived') | map(attribute='clone_url') | list + trivy_extra_repos) | unique }}"
+        trivy_github_repos: "{{ ((gh.json if gh.json is defined else []) | rejectattr('fork') | rejectattr('archived') | map(attribute='clone_url') | list + trivy_extra_repos) | unique }}"
 
 - name: Trivy scan of the Docker hosts
-  hosts: "{{ trivy_hosts | default('192.0.2.6,192.0.2.7,192.0.2.8') }}"
+  hosts: "{{ trivy_hosts | default('trivy_targets') }}"
   gather_facts: false
   become: true
   serial: 1   # one host at a time: all three VMs' disks share the NAS
   vars:
     ansible_become_exe: sudo.ws
-    trivy_server_host: 192.0.2.8
+    trivy_server_host: "{{ site_apps_host }}"
     trivy_image: docker.io/aquasec/trivy:0.76.0
     dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
   tasks:
@@ -72,9 +75,9 @@
   hosts: localhost
   gather_facts: false
   vars:
-    dd_url: http://192.0.2.8:8095
+    dd_url: "{{ site_defectdojo_url }}"
     dd: "{{ hostvars['defectdojo.aktasolutions.com'] }}"
-    scan_hosts: "{{ (trivy_hosts | default('192.0.2.6,192.0.2.7,192.0.2.8')).split(',') }}"
+    scan_hosts: "{{ trivy_hosts.split(',') if trivy_hosts is defined else groups['trivy_targets'] }}"
   tasks:
     - name: Unpack each host's results
       ansible.builtin.shell: |

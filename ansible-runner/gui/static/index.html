@@ -285,8 +285,8 @@
       <div class="card">
         <div class="row">
           <label for="newHost">Add host (name or IP)</label>
-          <input type="text" id="newHost" placeholder="192.0.2.18">
-          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option><option value="ssh">SSH only - no installs (NAS, appliance)</option><option value="web">Web app login (e.g. ntopng) - HTTPS, no installs</option></select>
+          <input type="text" id="newHost" placeholder="192.0.2.20">
+          <select id="newHostOs"><option value="windows">Windows</option><option value="linux">Linux (Ubuntu / Rocky)</option><option value="ssh">SSH only - no installs (NAS, appliance)</option><option value="web">Web app login (e.g. Emby) - HTTPS, no installs</option></select>
         </div>
         <p class="muted">Linux hosts are reached over SSH with the same account as the Windows hosts (Credentials tab, or a per-host override), using sudo. "SSH only" hosts are never touched by the install playbooks - connection tests only. "Web app login" entries keep a site's URL (https://name) and login for read-only checks through its API.</p>
         <div class="actionBar">
@@ -401,7 +401,7 @@
           <p class="muted">Adds the printer driverless over IPP (Windows's built-in IPP class driver - nothing to download); skipped if a printer with that name already exists. HP Smart has no Chocolatey package: it comes from the Microsoft Store via winget, for whoever is signed in at the PC (someone must be signed in).</p>
           <label><input type="checkbox" id="printerAdd" checked> Add the printer</label>
           <label>Printer name <input id="printerName" value="HP OfficeJet 8010"></label>
-          <label>Printer address <input id="printerAddress" value="192.0.2.9"></label>
+          <label>Printer address <input id="printerAddress" placeholder="192.0.2.30"></label>
           <label><input type="checkbox" id="hpSmart" checked> Install HP Smart (Microsoft Store)</label>
         </div>
       </div>
@@ -411,7 +411,7 @@
         <div class="params" id="driveParams">
           <p class="muted">Maps a drive letter for whoever is signed in at the PC (someone must be signed in - a mapped drive belongs to their session). The path can be a share or a folder inside it. Leave the username empty to use the signed-in user's own Windows login. The password is never stored on the runner.</p>
           <label>Drive letter <input id="driveLetter" value="Z" maxlength="2" size="3"></label>
-          <label>Path <input id="drivePath" placeholder="\\192.0.2.188\movies\tv" size="40"></label>
+          <label>Path <input id="drivePath" placeholder="\\nas\share\folder" size="40"></label>
           <label>Username <input id="driveUser" placeholder="user or DOMAIN\user" autocomplete="off"></label>
           <label>Password <input id="drivePass" type="password" autocomplete="new-password"></label>
           <label>Label (optional) <input id="driveLabel" placeholder="TV shows"></label>
@@ -423,15 +423,15 @@
       <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="softflowdToggle"> Install softflowd - NetFlow exporter (Linux hosts)</label>
         <div class="params" id="softflowdParams">
-          <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" value="192.0.2.8:2055" placeholder="192.0.2.8:2055"></div>
-          <p class="muted">Ubuntu and Rocky Linux. Exports NetFlow v9 for the host's main network interface to the collector - by default netflow2ng on the Docker host, which feeds ntopng. Ubuntu installs the package; Rocky has no package, so it's built from the upstream source.</p>
+          <div class="row"><label for="softflowdCollector">Collector (host:port)</label><input type="text" id="softflowdCollector" placeholder="192.0.2.10:2055"></div>
+          <p class="muted">Ubuntu and Rocky Linux. Exports NetFlow v9 for the host's main network interface to the collector - by default the flow collector set on the server (site_netflow_collector). Ubuntu installs the package; Rocky has no package, so it's built from the upstream source.</p>
         </div>
       </div>
 
       <div class="toggleCard">
         <label class="toggleHead"><input type="checkbox" id="dockerToggle"> Install Docker + Docker Compose (Linux hosts)</label>
         <div class="params" id="dockerParams">
-          <div class="row"><label for="dockerUsers">Users for the docker + sudo groups</label><input type="text" id="dockerUsers" value="admin" placeholder="e.g. admin, jdoe"></div>
+          <div class="row"><label for="dockerUsers">Users for the docker + sudo groups</label><input type="text" id="dockerUsers" placeholder="empty = site_docker_users; e.g. alice, jdoe"></div>
           <p class="muted">Ubuntu and Rocky Linux. Installs Docker Engine and the Compose plugin (<code>docker compose</code>) from Docker's own repositories, starts Docker at boot, and adds the users above (comma-separated) to the <code>docker</code> group and the sudo group (<code>sudo</code> on Ubuntu, <code>wheel</code> on Rocky). A user that doesn't exist yet is created without a password - set one before they use sudo. Windows hosts in the selection are not affected.</p>
         </div>
       </div>
@@ -498,7 +498,7 @@
 
       <div class="card">
         <h3 class="cardTitle">Proxmox</h3>
-        <div class="row"><label for="img_proxmox_api_url">API URL</label><input type="text" id="img_proxmox_api_url" placeholder="https://192.0.2.237:8006/api2/json"></div>
+        <div class="row"><label for="img_proxmox_api_url">API URL</label><input type="text" id="img_proxmox_api_url" placeholder="https://192.0.2.5:8006/api2/json"></div>
         <div class="row"><label for="img_proxmox_token_id">API token ID</label><input type="text" id="img_proxmox_token_id" placeholder="ansible@pam!ansible"></div>
         <div class="row"><label for="imgTokenSecret">API token secret</label><input type="password" id="imgTokenSecret" placeholder="(unchanged)"></div>
         <div class="row"><label><input type="checkbox" id="img_proxmox_validate_certs"> Validate Proxmox TLS certificate</label></div>
@@ -524,7 +524,7 @@
 
       <div class="card">
         <h3 class="cardTitle">PXE server</h3>
-        <div class="row"><label for="img_pxe_server_ip">Server IP</label><input type="text" id="img_pxe_server_ip" placeholder="192.0.2.8"></div>
+        <div class="row"><label for="img_pxe_server_ip">Server IP</label><input type="text" id="img_pxe_server_ip" placeholder="192.0.2.10"></div>
         <div class="row"><label for="img_pxe_http_port">HTTP port</label><input type="text" id="img_pxe_http_port" placeholder="8092"></div>
         <p class="muted">Runs as the separate <code>pxe</code> container (<code>./run.sh --pxe</code>); its boot menu lists the images in <code>PXE_IMAGES</code> (<code>.env</code>). PCs need UEFI network boot with Secure Boot <em>off</em> to PXE (iPXE isn't Microsoft-signed) - turn it back on after deployment.</p>
       </div>
@@ -533,18 +533,18 @@
     <!-- ============ ACTIVITY ============ -->
     <!-- ============ NETWORK CAPTURE ============ -->
     <section class="tabPanel" id="tab-sniff">
-      <div class="panelHead"><h2>Network Capture</h2><p>Mirror a Proxmox node's traffic to a capture VM (ntopng).</p></div>
+      <div class="panelHead"><h2>Network Capture</h2><p>Mirror a Proxmox node's traffic to a capture VM.</p></div>
       <div class="card">
         <div class="row"><label for="sniffVmid">Capture VM id</label><input type="number" id="sniffVmid" value="102"></div>
-        <div class="row"><label for="sniffVmHost">Its address (Linux host)</label><input type="text" id="sniffVmHost" value="192.0.2.8"></div>
+        <div class="row"><label for="sniffVmHost">Its address (Linux host)</label><input type="text" id="sniffVmHost" placeholder="192.0.2.10"></div>
         <div class="row"><label for="sniffBridge">Bridge to mirror on its node</label><input type="text" id="sniffBridge" value="vmbr0"></div>
         <div class="row"><label for="sniffMode">What to capture</label>
           <select id="sniffMode">
             <option value="uplink">Uplink - everything the node exchanges with the LAN</option>
             <option value="ports">All bridge ports - adds VM-to-VM traffic inside the node</option>
           </select></div>
-        <div class="row"><label for="sniffExclude">Never capture (IPs)</label><input type="text" id="sniffExclude" value="192.0.2.188" placeholder="comma-separated"></div>
-        <p class="muted">Sets up, on the VM's Proxmox node: an isolated bridge <code>vmbrsniff</code> and a tc mirror of the chosen bridge's traffic to a new NIC on the capture VM, kept in place by a timer (survives reboots). On the capture VM: that NIC as <code>sniff0</code> (no address, promiscuous), added to ntopng. Needs the node on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login. The TrueNAS is excluded by default - its iSCSI storage traffic would swamp the capture.</p>
+        <div class="row"><label for="sniffExclude">Never capture (IPs)</label><input type="text" id="sniffExclude" placeholder="comma-separated"></div>
+        <p class="muted">Sets up, on the VM's Proxmox node: an isolated bridge <code>vmbrsniff</code> and a tc mirror of the chosen bridge's traffic to a new NIC on the capture VM, kept in place by a timer (survives reboots). On the capture VM: that NIC as <code>sniff0</code> (no address, promiscuous), ready for a capture tool (tcpdump, Wireshark, an IDS). Needs the node on the Hosts tab as "SSH only" with a per-host <strong>root</strong> login. The TrueNAS is excluded by default - its iSCSI storage traffic would swamp the capture.</p>
         <div class="actionBar">
           <button class="primary" id="sniffApplyBtn">Set up capture</button>
           <button id="sniffRemoveBtn">Remove capture</button>
@@ -556,12 +556,12 @@
     <section class="tabPanel" id="tab-vpn">
       <div class="panelHead"><h2>VPN (OPNsense)</h2><p>Send chosen LAN hosts through PIA WireGuard on the firewall, with a kill switch.</p></div>
       <div class="card">
-        <div class="row"><label for="vpnFirewall">OPNsense firewall (SSH-only host)</label><input type="text" id="vpnFirewall" value="192.0.2.1"></div>
+        <div class="row"><label for="vpnFirewall">OPNsense firewall (SSH-only host)</label><input type="text" id="vpnFirewall" placeholder="192.0.2.1"></div>
         <div class="row"><label for="vpnLogin">PIA login (web host)</label><input type="text" id="vpnLogin" value="privateinternetaccess.com"></div>
         <div class="row"><label for="vpnRegion">PIA region id</label><input type="text" id="vpnRegion" value="ca_toronto" placeholder="e.g. ca_toronto, ca_montreal, us_east"></div>
         <div class="row"><label for="vpnInstance">Tunnel name</label><input type="text" id="vpnInstance" value="toronto" placeholder="short, lowercase"></div>
         <div class="row"><label for="vpnPort">Local WireGuard port</label><input type="number" id="vpnPort" value="51815"></div>
-        <div class="row"><label for="vpnHosts">Hosts through the VPN (IPs)</label><input type="text" id="vpnHosts" value="192.0.2.4, 192.0.2.5" placeholder="comma-separated"></div>
+        <div class="row"><label for="vpnHosts">Hosts through the VPN (IPs)</label><input type="text" id="vpnHosts" placeholder="comma-separated"></div>
         <div class="row"><label for="vpnBypass">Reached directly (networks)</label><input type="text" id="vpnBypass" value="192.168.0.0/16, 172.16.0.0/12, 100.64.0.0/10" placeholder="comma-separated CIDRs"></div>
         <div class="row"><label><input type="checkbox" id="vpnKill" checked> Kill switch - if the tunnel is down, these hosts get no internet (never the bare WAN)</label></div>
         <div class="row"><label><input type="checkbox" id="vpnDns" checked> Their DNS to PIA's resolver, through the tunnel (no DNS leak)</label></div>
@@ -636,6 +636,12 @@ async function loadDefaults() {
     if (!$('wazuhPort').value) $('wazuhPort').value = w.port || '';
     if (w.protocol) $('wazuhProtocol').value = w.protocol;
     if (!$('wazuhGroup').value) $('wazuhGroup').value = w.group || '';
+    // Site values (addresses) come only from the runner's gui/data/defaults.json.
+    const s = d.site || {};
+    const fill = (id, v) => { if (v && !$(id).value) $(id).value = v; };
+    fill('printerAddress', s.printer); fill('softflowdCollector', s.softflowd_collector);
+    fill('sniffVmHost', s.sniff_vm_host); fill('sniffExclude', s.sniff_exclude);
+    fill('vpnFirewall', s.vpn_firewall); fill('vpnHosts', s.vpn_hosts);
   } catch (e) { /* no defaults - fields stay empty */ }
 }
 $('wazuhSaveDefaultBtn').addEventListener('click', async () => {
@@ -1415,7 +1421,7 @@ $('imgCaptureBtn').addEventListener('click', () => startImageRun('capture'));
 loadImageStatus();
 
 async function startSniffRun(state) {
-  if (state === 'absent' && !confirm('Remove the capture setup (mirror, timer, capture NIC, ntopng interface)?')) return;
+  if (state === 'absent' && !confirm('Remove the capture setup (mirror, timer, capture NIC)?')) return;
   const btns = [$('sniffApplyBtn'), $('sniffRemoveBtn')];
   btns.forEach(b => b.disabled = true);
   try {

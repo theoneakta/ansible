@@ -74,7 +74,7 @@
     # so nothing to download. Default = the HP OfficeJet 8010 on the LAN.
     printer_enabled: false
     printer_name: "HP OfficeJet 8010"
-    printer_address: "192.0.2.9"
+    printer_address: "{{ site_printer | default('') }}"   # server site.yml
     # Skip if a printer whose name matches this is already there (Windows may
     # have auto-added it over WSD, e.g. "printer.internal (HP OfficeJet 8010 series)").
     printer_match: "*{{ printer_name }}*"
@@ -127,7 +127,7 @@
     # unversioned "always latest" vendor URL: every time the vendor ships a
     # new build, the package's pinned checksum stops matching until its
     # maintainer catches up, and the install fails outright ("Checksum ...
-    # did not meet ..."). Confirmed live on 192.0.2.15/.17 for googlechrome
+    # did not meet ..."). Confirmed live on two Windows 11 PCs for googlechrome
     # (googlechromestandaloneenterprise64.msi) and potplayer
     # (.../Version/Latest/PotPlayerSetup64.exe). The download is still HTTPS
     # from the vendor's own CDN, but nothing verifies the file itself - so
@@ -151,8 +151,9 @@
       - { name: firefox,          label: Firefox,                         category: internet }
       - { name: notepadplusplus,  label: Notepad++,                       category: dev }
       - { name: filzyx-duplicate-file-finder, label: Duplicate File Finder, category: tools, ignore_checksums: true }
+
       # PotPlayer's installer (NSIS + UAC plugin) hangs forever over WinRM
-      # and as SYSTEM (>10 min, 192.0.2.17, Oct 2026) but installs in
+      # and as SYSTEM (>10 min, a Windows 11 PC, Oct 2026) but installs in
       # seconds from an admin desktop session -> interactive (see the task).
       - { name: potplayer,        label: PotPlayer,                       category: multimedia, ignore_checksums: true,
           verify: 'C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe', timeout: 600, interactive: true,
@@ -170,6 +171,7 @@
       # --- Verify these IDs with: choco search <name> ---
       - { name: pdfgear,          label: PDFgear,                         category: tools }
       - { name: battle.net,       label: Battle.net,                      category: multimedia }
+      - { name: filzyx-duplicate-file-finder, label: "Duplicate File Finder", category: tools }
 
   tasks:
     # DisabledComponents=0xFF is Microsoft's documented "IPv6 off" (all
@@ -205,7 +207,7 @@
     # Restricted - and the bootstrap fails with PSSecurityException
     # ("running scripts is disabled on this system"), reported only as the
     # generic "Chocolatey bootstrap installation failed." Confirmed live on
-    # 192.0.2.181. Hosts that already have Chocolatey never hit this (no
+    # a Windows PC. Hosts that already have Chocolatey never hit this (no
     # bootstrap). Same fix as cis_hardening.yml's audit-script step:
     # RemoteSigned, only when LocalMachine actually blocks local scripts.
     - name: Check LocalMachine execution policy allows the Chocolatey bootstrap to run
@@ -322,7 +324,7 @@
     - name: Check installed WSL distros
       # Skipped entirely when wsl_target_users is set: that means "install
       # for these specific other users only", not also for this run's own
-      # WinRM account (admin, a pure automation account never used
+      # WinRM account (a pure automation account never used
       # interactively - there's no point installing a distro for it).
       ansible.windows.win_shell: >-
         (wsl --list --quiet | Out-String) -replace '\x00', ''
@@ -504,7 +506,7 @@
     # tailscaled only accepts commands from the user that owns it (normally
     # the logged-on desktop user, via the tray app) - this toolkit's WinRM
     # account gets "401 Unauthorized: Tailscale already in use by <PC>\<user>"
-    # (confirmed live on 192.0.2.181, where the old plain `tailscale up`
+    # (confirmed live on a Windows PC, where the old plain `tailscale up`
     # failed with a bare "non-zero return code"). LocalSystem, however, is
     # always allowed (also confirmed live), so `up --unattended` runs as SYSTEM
     # via a one-off scheduled task, deleted right after - the node then belongs
@@ -647,6 +649,12 @@
     - name: Network drive
       ansible.builtin.include_tasks: tasks/map_network_drive.yml
       when: drive_enabled | bool
+
+    - name: A printer address is needed (site_printer in the runner's site.yml, or printer_address)
+      ansible.builtin.assert:
+        that: printer_address | length > 0
+        fail_msg: No printer address - set site_printer in inventory/group_vars/all/site.yml or pass printer_address.
+      when: printer_enabled | bool
 
     - name: Add the network printer (driverless IPP)
       ansible.windows.win_powershell:

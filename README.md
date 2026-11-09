@@ -21,12 +21,13 @@ ansible-runner/
 ├── run.sh                      # main entry point
 ├── .vault_pass                 # vault password (created by --vault-init, gitignored)
 ├── inventory/
-│   ├── hosts.yml               # list your PCs here
+│   ├── hosts.template.yml      # -> hosts.yml on first start (your hosts; never committed)
+│   ├── site.template.yml       # -> group_vars/all/site.yml: site_* addresses/URLs (never committed)
+│   ├── image.template.yml      # -> image.yml: image build/PXE settings (GUI: Windows Image tab)
 │   ├── group_vars/windows/
 │   │   ├── vars.yml            # connection settings (plain text)
 │   │   └── vault.yml           # encrypted credentials (created by --vault-init)
-│   ├── host_vars/<host>/       # optional per-host overrides
-│   └── image.yml               # Windows image build/PXE settings (GUI: Windows Image tab)
+│   └── host_vars/<host>/       # optional per-host overrides (never committed)
 ├── playbooks/
 │   ├── install_software.yml
 │   ├── cis_hardening.yml       # CIS Benchmark hardening (see below) - CLI and GUI
@@ -40,12 +41,14 @@ ansible-runner/
 ├── gui/                        # web GUI (own Dockerfile, started via --gui)
 │   ├── app.py
 │   ├── static/index.html
-│   └── data/                   # run history SQLite db, gitignored
+│   └── data/                   # run history, auth.json (sign-in), defaults.json - gitignored
 └── pxe/                        # PXE server container (started via --pxe)
     └── data/                   # images, WinPE, Windows ISO copy - gitignored
 ```
 
 `playbooks/` and `inventory/` are mounted into the container, so edits take effect immediately without rebuilding.
+
+**This repo is public, so it holds no site data.** Your hosts, addresses, URLs and account details live only on the runner, in the files created from the `*.template.yml` files on first start (`inventory/hosts.yml`, `inventory/group_vars/all/site.yml`, `inventory/image.yml`, plus `gui/data/`). All of them are gitignored. Playbooks and scripts read `site_*` variables and inventory groups (`firewall`, `vps`, `trivy_targets`, ...) instead of hardcoding addresses. Keep it that way: never put a real address in a tracked file.
 
 ## Quick start
 
@@ -53,7 +56,9 @@ ansible-runner/
 ./run.sh --build          # build the image
 ./run.sh --vault-init     # create .vault_pass + encrypted credentials file
 ./run.sh --vault-edit     # set vault_win_user / vault_win_password
-# edit inventory/hosts.yml with your PCs
+# first start creates inventory/hosts.yml + group_vars/all/site.yml from the templates:
+# add your PCs (or use the GUI Hosts tab) and fill in the site_* values you need
+./run.sh --gui            # then open the GUI: first run asks how to sign in (see "Sign-in")
 ./run.sh --ping           # test connectivity and credentials
 ./run.sh install_software.yml
 ```
@@ -136,14 +141,23 @@ Manage it with:
 1. **Network:** bound to `0.0.0.0:8090` (see `docker-compose.yml`) - reachable from your LAN, which is only safe because of the sign-in gate below. Change it to `127.0.0.1:8080:8000` if you'd rather it only be reachable from the Docker host itself.
 2. **GitHub sign-in:** every page and `/api/*` route requires a signed-in, explicitly-allowed GitHub account. With nothing configured, the GUI refuses to serve anything (a 503 page, not a silent fallback to no-auth).
 
-### GitHub sign-in
+### Sign-in
 
-The GUI is gated behind GitHub OAuth. Nobody can view or use it - including `/api/*` - without signing in as an account on an explicit allow-list.
+Nobody can view or use the GUI - including `/api/*` - without signing in. On a fresh runner every page redirects to **`/setup`**, which asks for the **setup code** printed in the container log (`docker logs ansible-gui-1`, so whoever reaches a new runner first cannot claim it) and one of:
+
+- **Username + password** - one account, password at least 12 characters, stored as a scrypt hash. Five wrong passwords lock sign-in for 5 minutes.
+- **GitHub sign-in** - an OAuth App (steps below) and a list of allowed GitHub usernames.
+
+The choice is saved in `gui/data/auth.json` (mode 600, gitignored). To start over, delete that file and restart the GUI: `/setup` comes back with a new code. Sessions last 14 days and survive restarts (key in `gui/data/session.key`, or `SESSION_SECRET_KEY`).
+
+#### GitHub sign-in
+
+If all four `GITHUB_*` variables below are set in `.env`, they take precedence over `auth.json` and `/setup` is never shown. Otherwise enter the same values on the `/setup` page.
 
 **One-time setup, on GitHub:**
 
 1. GitHub -> Settings -> Developer settings -> [OAuth Apps](https://github.com/settings/developers) -> **New OAuth App**.
-2. **Homepage URL**: wherever the GUI will be reachable - either the plain LAN address (e.g. `http://192.0.2.8:8090`) or a real domain if it's behind a reverse proxy (e.g. `https://ansible.example.com`, via Tailscale Serve/Funnel or similar).
+2. **Homepage URL**: wherever the GUI will be reachable - either the plain LAN address (e.g. `http://192.0.2.10:8090`) or a real domain if it's behind a reverse proxy (e.g. `https://ansible.example.com`, via Tailscale Serve/Funnel or similar).
 3. **Authorization callback URL**: the same host + `/auth/callback` (e.g. `https://ansible.example.com/auth/callback`) - this must match `GITHUB_OAUTH_REDIRECT_URI` below exactly (scheme, host, port if non-default, path). Changing which URL the GUI is reached through later (new domain, adding a reverse proxy, etc.) means updating both this GitHub setting and `.env` together - they have to keep matching.
 4. Register it, then generate a **Client secret**. You now have a Client ID and Client Secret.
 
@@ -153,10 +167,10 @@ The GUI is gated behind GitHub OAuth. Nobody can view or use it - including `/ap
 GITHUB_OAUTH_CLIENT_ID=<from the OAuth App>
 GITHUB_OAUTH_CLIENT_SECRET=<from the OAuth App>
 GITHUB_OAUTH_REDIRECT_URI=https://ansible.example.com/auth/callback
-GITHUB_ALLOWED_USERS=theoneakta        # comma-separated GitHub usernames, case-insensitive
+GITHUB_ALLOWED_USERS=your-github-user  # comma-separated GitHub usernames, case-insensitive
 ```
 
-Then `./run.sh --gui` (or rebuild if it's already running: `docker compose --profile gui build gui && docker compose --profile gui up -d gui`). Visiting the GUI now redirects to a sign-in page; only usernames in `GITHUB_ALLOWED_USERS` get past `/auth/callback` - anyone else authenticates fine with GitHub but is then explicitly rejected. `SESSION_SECRET_KEY` is optional - omit it and a random one is generated per container start (sessions just don't survive a restart, no secret to manage); set it to keep people signed in across redeploys.
+Then `./run.sh --gui` (or rebuild if it's already running: `docker compose --profile gui build gui && docker compose --profile gui up -d gui`). Visiting the GUI now redirects to a sign-in page; only usernames in `GITHUB_ALLOWED_USERS` get past `/auth/callback` - anyone else authenticates fine with GitHub but is then explicitly rejected. `SESSION_SECRET_KEY` is optional - omit it and one is generated once into `gui/data/session.key`.
 
 This only requires the OAuth App's Client ID/Secret and read-only `read:user` scope (just enough to read the authenticated username) - it never touches your repos or org data.
 
@@ -196,7 +210,7 @@ Host-level values override the group default for that host.
 Before adding a PC to the inventory, enable WinRM/HTTPS on it. From an elevated PowerShell prompt **on that PC**:
 
 ```powershell
-.\scripts\setup-winrm-ssl.ps1 -ControllerAddress 192.0.2.8   # your Ansible control host's IP
+.\scripts\setup-winrm-ssl.ps1 -ControllerAddress 192.0.2.10   # your Ansible control host's IP
 ```
 
 This enables WinRM, creates a self-signed certificate and HTTPS listener on port 5986, opens the firewall, enables NTLM (Negotiate) auth, and - importantly - sets `LocalAccountTokenFilterPolicy=1` so a local (non-domain) administrator account other than the built-in `Administrator` can authenticate over the network at all. Without that registry value, WinRM rejects an otherwise-correct username/password from any other local admin account with a plain "Access is denied", which looks identical to a wrong password. It also raises WinRM's default operation timeout and per-shell quotas, which are too tight for long-running tasks like installing a large package via Chocolatey. Safe to re-run - it only changes what isn't already set.
@@ -338,8 +352,8 @@ Accounts: `vault_win_user` with the vault password (SHA-512 hashed in the kickst
 2. **ISOs** - each image's ISO goes on a Proxmox ISO storage (named in its profile's `iso`). A copy of one Windows 11 or Server 2025 ISO also goes in `pxe/data/iso/` on the Docker host: the first capture extracts WinPE from it (~1 GB), and that WinPE deploys every image. Delete the copies afterwards if disk is tight.
 3. **PXE server** - add to `ansible-runner/.env`:
    ```
-   PXE_SERVER_IP=192.0.2.8      # this Docker host
-   PXE_SUBNET=192.0.2.0         # the LAN the PCs PXE-boot on
+   PXE_SERVER_IP=192.0.2.10      # this Docker host
+   PXE_SUBNET=192.0.2.0           # the LAN the PCs PXE-boot on
    PXE_SMB_PASSWORD=<random>      # password of the image share's "pxe" user
    ```
    then `./run.sh --pxe`. It's proxy-DHCP only (the router keeps handing out addresses), plus TFTP, HTTP on 8092 and SMB on 445, using the host's network.
@@ -376,6 +390,6 @@ Rebuild to pull newer versions:
 - **Files in mounted folders owned by root:** `run.sh` runs the container as your host UID/GID to avoid this.
 - **CIS `--cis-audit-only`/`audit_only` fails with `Access is denied` / `CreateProcessW() failed (Win32ErrorCode 5)`, specifically on the `Pre Audit | Run pre_remediation audit` task:** Bitdefender blocking `C:\Program Files\syver\syver.exe` from running. `run_audit.ps1` (part of the CIS role's audit setup) shells out to `syver.exe` - a small third-party binary freshly downloaded from `github.com/krameff/syver` on every audit run - to actually perform the scan. A fresh, unsigned, just-downloaded executable about to run for the first time is a mainstream AV trigger, and this reproduces identically regardless of connection plugin (`psrp` or `winrm`) or WinRM auth method (NTLM/CredSSP made no difference either), since the block happens *inside* `run_audit.ps1` when it launches `syver.exe` - it was never about how Ansible itself reaches the host for this specific step. Fix: a Bitdefender exception scoped to `C:\Program Files\syver\syver.exe` (or its folder) - open **Protection History**, find the blocked `syver.exe` event, and use its **"Add to exceptions"** action, or add a manual exception under Protection > Antivirus > Manage Exceptions. Much narrower than exempting `powershell.exe` itself - this is one specific known third-party tool. Consumer Bitdefender has no scriptable exclusion API and has tamper protection, so this has to be done by hand on the target; nothing here can do it for you automatically. Per-host: this exception (and the failure) is specific to whichever PC hasn't had it added yet, not fleet-wide.
 
-- **CIS `audit_only` fails with `PSSecurityException: ... running scripts is disabled on this system` on that same task, once the Bitdefender issue above is cleared:** a second, independent problem underneath the first one - `& 'run_audit.ps1' @auditArgs` runs a saved script *file*, which PowerShell's execution policy governs (unlike this toolkit's other downloaded-script usage, e.g. Win11Debloat, which runs an in-memory scriptblock and is immune to it). The role's own execution-policy check only looks at GPO-enforced `MachinePolicy`/`UserPolicy` - it misses a plain `LocalMachine`-scope `Restricted` policy, the common case on a PC never explicitly configured for scripting, so it reports "OK" even when this blocks. `cis_hardening.yml` now fixes this itself (a `pre_tasks` step, only when `run_audit`/`audit_only` is set): sets `LocalMachine` to `RemoteSigned` if it's currently `Restricted` or `AllSigned`, nothing stronger - `RemoteSigned` only requires signing for scripts marked as downloaded from the internet (a `Zone.Identifier` stream), and Ansible's own download/unarchive mechanism doesn't set that marker the way a browser would, so the unsigned audit script still runs fine under it. Confirmed working end-to-end on 192.0.2.17 (full audit completed: "Count: 1309, Failed: 319, Skipped: 540") once both this and the Bitdefender exception were in place.
+- **CIS `audit_only` fails with `PSSecurityException: ... running scripts is disabled on this system` on that same task, once the Bitdefender issue above is cleared:** a second, independent problem underneath the first one - `& 'run_audit.ps1' @auditArgs` runs a saved script *file*, which PowerShell's execution policy governs (unlike this toolkit's other downloaded-script usage, e.g. Win11Debloat, which runs an in-memory scriptblock and is immune to it). The role's own execution-policy check only looks at GPO-enforced `MachinePolicy`/`UserPolicy` - it misses a plain `LocalMachine`-scope `Restricted` policy, the common case on a PC never explicitly configured for scripting, so it reports "OK" even when this blocks. `cis_hardening.yml` now fixes this itself (a `pre_tasks` step, only when `run_audit`/`audit_only` is set): sets `LocalMachine` to `RemoteSigned` if it's currently `Restricted` or `AllSigned`, nothing stronger - `RemoteSigned` only requires signing for scripts marked as downloaded from the internet (a `Zone.Identifier` stream), and Ansible's own download/unarchive mechanism doesn't set that marker the way a browser would, so the unsigned audit script still runs fine under it. Confirmed working end-to-end on a Windows 11 PC (full audit completed: "Count: 1309, Failed: 319, Skipped: 540") once both this and the Bitdefender exception were in place.
 
   Separately, and why the default connection plugin above is `psrp` rather than `winrm`: the `winrm` connection plugin executes *every other* module by spawning a fresh `powershell.exe -noninteractive -encodedcommand <base64>` process per task, which is its own distinct false-positive pattern Bitdefender was directly observed blocking (confirmed from Bitdefender's own notification for an earlier, unrelated task). `psrp` runs module code inside a persistent remote runspace instead (the same protocol `Invoke-Command`/`Enter-PSSession` use), with no new process spawned per task - this held up in practice: every other task in a full CIS run succeeded cleanly under `psrp`, with only the `syver.exe` launch (a genuinely different problem) still failing.

@@ -71,7 +71,7 @@ Source: Microsoft, [Plan your Windows Server upgrade path](https://learn.microso
 
 ## Server log
 
-### SQL2005 (VM 118, 192.0.2.103): Windows Server 2008 R2 SP1 → 2012 R2 → 2025 ✅ (2026-10-20)
+### SQL2005 (VM 118): Windows Server 2008 R2 SP1 → 2012 R2 → 2025 ✅ (2026-10-20)
 
 **Source build:** a clean install of English Windows Server 2008 R2 SP1 Standard, then SQL Server 2005 SP4 Standard x64 and IIS 7.5 with the "Celtics Hub" app (see [github.com/theoneakta/nbahub-app](https://github.com/theoneakta/nbahub-app), formerly `celtics-app`, folder `iis-sql2005/`).
 
@@ -100,10 +100,10 @@ They were installed unattended at first logon, before SQL Server: `wusa /quiet /
 | Hardware (Proxmox) | 2 vCPU (kvm64), 8 GB RAM, OS type win7, SeaBIOS. 60 GB disk on **IDE** (`ide0`, 41 GB free), e1000 NIC. |
 | Roles/features | IIS 7.5 (static content, default doc, directory browsing, HTTP errors, ASP.NET, .NET extensibility, ISAPI, logging, request monitor, request filtering, static compression, management console), .NET Framework 3.5.1 |
 | SQL | SQL Server 2005 SP4 Standard x64 (9.00.5000, PatchLevel 9.4.5000), default instance, mixed auth, collation `SQL_Latin1_General_CP1_CI_AS`. All services run as `NT AUTHORITY\NetworkService`. Databases: `roster_db` plus the system databases. |
-| App | "Celtics Hub". IIS site `Celtics` (port 80, app pool `Celtics` .NET 2.0 integrated; Default Web Site stopped). Read-only DB access through `IIS APPPOOL\Celtics`. External feeder container (.8) writes hourly as SQL login `celtics_feeder`. Health check: `http://192.0.2.103/api/health` returns 200. |
+| App | "Celtics Hub". IIS site `Celtics` (port 80, app pool `Celtics` .NET 2.0 integrated; Default Web Site stopped). Read-only DB access through `IIS APPPOOL\Celtics`. External feeder container (.8) writes hourly as SQL login `celtics_feeder`. Health check: `http://<sql2005 address>/api/health` returns 200. |
 | Services | MSSQLSERVER, SQLSERVERAGENT, SQLBrowser, SQLWriter, W3SVC, WinRM, MSDTC: Auto/Running. TermService: Manual/Running. |
-| Firewall | Windows rules: Lab HTTP 80, Lab RDP 3389, Lab SQL Server 1433, Lab SQL Browser 1434, Lab ping (all LAN), WinRM5985 (192.0.2.8 only). The Proxmox per-VM firewall mirrors them: in-policy DROP, out = LAN only. |
-| Network | DHCP 192.0.2.103, gateway and DNS 192.0.2.1 |
+| Firewall | Windows rules: Lab HTTP 80, Lab RDP 3389, Lab SQL Server 1433, Lab SQL Browser 1434, Lab ping (all LAN), WinRM5985 (the Ansible runner only). The Proxmox per-VM firewall mirrors them: in-policy DROP, out = LAN only. |
+| Network | DHCP reservation on the LAN; gateway and DNS: the firewall |
 | Installed software | SQL Server 2005 x64 + Tools + Backward compatibility + SP4, SQL Native Client, VSS Writer, MSXML/Office 2003 Web Components, Visual Studio 2005 Premier Partner Edition (SSMS shell) |
 
 **Pre-flight: ISO check, 2026-10-19:**

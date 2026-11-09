@@ -1,6 +1,6 @@
 # SQL Server 2005 on Windows Server 2025 — a stability showcase
 
-This is the story of one lab VM (`SQL2005`, VM 118 on pve6, 192.0.2.103) that keeps a **real, continuously-serving web application** running on **SQL Server 2005** while the operating system underneath it is upgraded, in place, across **three generations** of Windows Server — and while the application itself grows from a single-team tracker into a 30-team one.
+This is the story of one lab VM (`SQL2005`, VM 118) that keeps a **real, continuously-serving web application** running on **SQL Server 2005** while the operating system underneath it is upgraded, in place, across **three generations** of Windows Server — and while the application itself grows from a single-team tracker into a 30-team one.
 
 The point: a 2005-era database engine, treated well, is remarkably stable. Nothing here was reinstalled, re-platformed or restored from backup. The same `roster_db`, the same `MSSQLSERVER` instance, the same data files carried straight through every change below.
 
@@ -13,7 +13,7 @@ The point: a 2005-era database engine, treated well, is remarkably stable. Nothi
 | Database | **SQL Server 2005 SP4** (9.00.5000) | default instance, mixed auth, never reinstalled |
 | Web | **IIS 10** + ASP.NET 3.5 (C# handlers) | was IIS 7.5 on 2008 R2 |
 | App | "NBA Hub" | roster / stats / schedule / MVP, all 30 teams, two seasons |
-| Data feed | a container on another host (192.0.2.8) | pushes live data into SQL 2005 over TCP 1433 |
+| Data feed | a container on another host | pushes live data into SQL 2005 over TCP 1433 |
 
 The application code lives in a separate public repo: **github.com/theoneakta/nbahub-app** (renamed from `celtics-app` on 2026-10-28) (`iis-sql2005/` = the web app on this box, `feeder/` = the data sync).
 

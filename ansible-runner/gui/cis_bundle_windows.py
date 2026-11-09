@@ -61,7 +61,7 @@ SAFETY = re.compile(
     r"|Allow users to connect remotely by using Remote Desktop Services"
     r"|^WinRM (Client|Service):|Allow Remote Shell Access"
     r"|Apply UAC restrictions to local accounts on network logon|Apply local firewall rules \(Public", re.I)
-# Also left out of Windows 11 "1-personal" - what broke the XPS (192.0.2.17), confirmed live:
+# Also left out of Windows 11 "1-personal" - what broke a Dell XPS laptop, confirmed live:
 # Microsoft-account sign-in, OneDrive/Outlook, account visibility; plus the other controls the
 # playbook turns off for Windows 11 (LAN Manager level, OneDrive, consumer Microsoft accounts).
 PERSONAL = re.compile(r"Block Microsoft accounts|Block all consumer Microsoft account|Prevent the usage of OneDrive"

@@ -32,9 +32,10 @@ import requests
 
 sys.path.insert(0, "/ansible")
 from gui.app import HOST_VARS_DIR, read_vault  # noqa: E402
+from scripts.site_config import site  # noqa: E402
 
-FIREFLY, FIREFLY_PUBLIC = "http://192.0.2.8:8080", "https://fin.aktasolutions.com"
-PAPERLESS, PAPERLESS_PUBLIC = "http://192.0.2.8:8000", "https://paperless.aktasolutions.com"
+FIREFLY, FIREFLY_PUBLIC = site("site_firefly_url"), site("site_firefly_public")
+PAPERLESS, PAPERLESS_PUBLIC = site("site_paperless_url"), site("site_paperless_public")
 DATE_WINDOW = 5         # days between the document date and the bank date
 GIVE_UP_DAYS = 14       # then tag "unmatched"
 SKIP_TYPES = {"Bank statement", "Contract", "Tax"}
